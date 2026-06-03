@@ -19,6 +19,8 @@ export type MessengerStep =
   // ── Handoff CSKH ───────────────────────────────────────────────────────
   | 'AWAITING_CSKH_CHANNEL'       // V2: chờ chọn "Chờ ở đây" / "Để lại SĐT"
   | 'AWAITING_PHONE'              // V2: chờ khách nhập số điện thoại
+  // ── V3: AI conversational ──────────────────────────────────────────────
+  | 'V3_GATHERING'                // V3: AI thu thập size+brand+province qua chat tự nhiên
   // ── Legacy (giữ cho session cũ trong DB) ───────────────────────────────
   | 'AWAITING_TIRE_SIZE_AFTER_CSKH'
   | 'AWAITING_CAR_TIRE_CONFIRM'

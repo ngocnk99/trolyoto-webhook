@@ -12,11 +12,13 @@ import type { Request, Response } from 'express'
 import { RawBodyRequest } from '@nestjs/common'
 import * as crypto from 'crypto'
 import { handleMessengerEvent } from './flow-handler'
+import { handleMessengerEventV3 } from './v3/flow-handler'
 import type { MessengerWebhookBody } from './types'
 
 const VERIFY_TOKEN = process.env.FB_WEBHOOK_VERIFY_TOKEN!
 const APP_SECRET = process.env.FB_APP_SECRET!
-const ALLOWED_PAGE_ID = process.env.FACEBOOK_PAGE_ID
+const PAGE_ID_V2 = process.env.FACEBOOK_PAGE_ID
+const PAGE_ID_V3 = process.env.FACEBOOK_PAGE_ID_V3
 
 function verifySignature(rawBody: Buffer, signature?: string): boolean {
   if (!signature || !APP_SECRET) return !APP_SECRET // skip if no secret configured
@@ -99,16 +101,23 @@ export class WebhookController {
 
   private async processEvents(body: MessengerWebhookBody): Promise<void> {
     for (const entry of body.entry ?? []) {
-      if (ALLOWED_PAGE_ID && entry.id !== ALLOWED_PAGE_ID) {
+      // Route theo page_id: V2 vs V3 dùng handler + token riêng.
+      const isV2 = !!PAGE_ID_V2 && entry.id === PAGE_ID_V2
+      const isV3 = !!PAGE_ID_V3 && entry.id === PAGE_ID_V3
+      if (!isV2 && !isV3) {
         console.warn(
-          `[FB webhook] Ignored entry for page ${entry.id} (expected ${ALLOWED_PAGE_ID})`
+          `[FB webhook] Ignored entry for unknown page ${entry.id} (V2=${PAGE_ID_V2 ?? 'n/a'}, V3=${PAGE_ID_V3 ?? 'n/a'})`
         )
         continue
       }
 
+      const handler = isV3 ? handleMessengerEventV3 : handleMessengerEvent
+      const tag = isV3 ? 'V3' : 'V2'
+      console.log(`[FB webhook] route page=${entry.id} → ${tag}`)
+
       const events = [...(entry.messaging ?? []), ...(entry.standby ?? [])]
       for (const event of events) {
-        await handleMessengerEvent(event, entry.id)
+        await handler(event, entry.id)
       }
     }
   }

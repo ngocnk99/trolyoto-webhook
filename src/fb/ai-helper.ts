@@ -370,6 +370,251 @@ export async function extractBrandNeed(
   }
 }
 
+// ── V3: AI conversational gather turn ──────────────────────────────────────
+
+export type V3BrandTier = 'premium' | 'balanced' | 'budget' | 'all'
+
+export interface V3GatherCollected {
+  tire_size?: string
+  brand_tier?: V3BrandTier | null
+  selected_brands?: string[]
+  province_name?: string
+}
+
+export interface V3GatherInput {
+  collected: V3GatherCollected
+  userInput: string
+  /** Lịch sử hội thoại gần đây (tối đa 6 turn) để AI có ngữ cảnh */
+  recentHistory?: Array<{ role: 'bot' | 'user'; text: string }>
+}
+
+export interface V3GatherUpdate {
+  tire_size?: string | null
+  brand_tier?: V3BrandTier | null
+  selected_brands?: string[] | null
+  province_name?: string | null
+  /** Tên xe khách nêu (khi chưa có size chính xác). Bot orchestrator sẽ tra
+   *  DB+AI để show list size cho khách chọn — KHÔNG hỏi size dạng text. */
+  car_model?: string | null
+}
+
+export interface V3GatherDecision {
+  /** Các trường cần update vào state. Null = ko đổi. */
+  updates: V3GatherUpdate
+  /** Tin nhắn bot sẽ gửi cho khách (tiếng Việt, tự nhiên, có emoji nhẹ) */
+  reply: string
+  /**
+   *  continue       → còn thiếu info → hỏi tiếp
+   *  fetch_results  → đã đủ 3 trường → bot ack + chuẩn bị fetch SP+gara
+   *  handoff_cskh   → khách yêu cầu chuyên viên / khó chịu / out-of-scope
+   */
+  action: 'continue' | 'fetch_results' | 'handoff_cskh'
+  cskh_reason?: string | null
+}
+
+const V3_BRAND_TIER_INFO = {
+  premium: 'Michelin, Bridgestone, Pirelli, Continental, Toyo, Goodyear',
+  balanced: 'Hankook, Yokohama, Dunlop, Laufenn',
+  budget: 'Kumho, RoadX, Sailun, TBB, Otani'
+} as const
+
+/**
+ * V3: một vòng AI conversational để thu thập tire_size + brand + province.
+ *
+ * AI có toàn quyền sinh reply tự nhiên (tiếng Việt, polite, "TROLY"/"em" - "anh/chị").
+ * Bot orchestrator chỉ relay reply + apply updates + thực thi action.
+ *
+ * KHÔNG cho AI sinh ra phần community CTA / wording cards — phần đó deterministic
+ * trong code (giữ y nguyên V2). AI chỉ làm phần gathering.
+ */
+export async function v3GatherTurn(input: V3GatherInput): Promise<V3GatherDecision> {
+  const collected = input.collected || {}
+  const historyText = (input.recentHistory ?? [])
+    .slice(-6)
+    .map(t => `${t.role === 'bot' ? 'TROLY' : 'Khách'}: ${t.text}`)
+    .join('\n')
+
+  const collectedSummary = [
+    `tire_size: ${collected.tire_size ?? '(missing)'}`,
+    `brand_tier: ${collected.brand_tier ?? '(missing)'}`,
+    `selected_brands: ${collected.selected_brands?.join(', ') || '(missing)'}`,
+    `province_name: ${collected.province_name ?? '(missing)'}`
+  ].join('\n')
+
+  try {
+    const { object } = await generateObject({
+      model: openai(MODEL) as any,
+      // FLAT schema (không nested) — tránh issue với OpenAI structured output khi
+      // nested object có nullable array. Schema đơn giản hơn = AI generate đúng hơn.
+      schema: z.object({
+        tire_size: z
+          .string()
+          .nullable()
+          .describe('Tire size XXX/YYRZZ (e.g. 185/65R15) nếu khách CHỐT. Null nếu không có/không chắc.'),
+        brand_tier: z
+          .enum(['premium', 'balanced', 'budget', 'all'])
+          .nullable()
+          .describe(
+            "Phân khúc: 'premium' (cao cấp/bền/êm), 'balanced' (cân bằng), 'budget' (rẻ/tiết kiệm), 'all' (xem hết). Null nếu chưa rõ."
+          ),
+        selected_brands: z
+          .array(z.string())
+          .describe('Brand cụ thể UPPERCASE khách nhắc (vd ["MICHELIN","BRIDGESTONE"]). Mảng RỖNG [] nếu chưa có brand cụ thể (KHÔNG dùng null).'),
+        province_name: z
+          .string()
+          .nullable()
+          .describe('Tên tỉnh/TP chuẩn tiếng Việt (vd "Hà Nội", "Hồ Chí Minh"). Null nếu chưa có/chưa rõ.'),
+        car_model: z
+          .string()
+          .nullable()
+          .describe(
+            'Tên xe khách nêu khi CHƯA có kích cỡ chính xác (vd "VinFast 3", "Toyota Vios", "Fortuner 2020"). Hệ thống sẽ tự tra DB+AI ra list kích cỡ → KHÔNG hỏi size dạng text. Null nếu khách không nêu tên xe hoặc đã có size.'
+          ),
+        reply: z
+          .string()
+          .describe(
+            'Tin nhắn TROLY gửi khách, tiếng Việt tự nhiên, polite (xưng "em"/"TROLY", gọi "anh/chị"). 1-2 emoji 😊👍.'
+          ),
+        action: z
+          .enum(['continue', 'fetch_results', 'handoff_cskh'])
+          .describe(
+            "continue=còn thiếu info, fetch_results=đủ 3 trường, handoff_cskh=khách yêu cầu chuyên viên/khó chịu/ngoài phạm vi"
+          ),
+        cskh_reason: z
+          .string()
+          .nullable()
+          .describe('Lý do handoff (nếu action=handoff_cskh). Null cho continue/fetch_results.')
+      }),
+      system: `Bạn là TROLY — trợ lý ô tô của TROLYoto (nền tảng mua lốp xe ở Việt Nam).
+Nhiệm vụ: thu thập 3 thông tin để báo giá lốp:
+1. tire_size (định dạng XXX/YYRZZ)
+2. brand preference: brand cụ thể HOẶC phân khúc HOẶC xem hết
+3. province (tỉnh/TP ở Việt Nam) — HỎI SAU CÙNG, sau khi đã có size + brand
+
+Phân khúc thương hiệu:
+- premium: ${V3_BRAND_TIER_INFO.premium}
+- balanced: ${V3_BRAND_TIER_INFO.balanced}
+- budget: ${V3_BRAND_TIER_INFO.budget}
+
+PHONG CÁCH (BẮT BUỘC):
+- Xưng "em"/"TROLY", gọi "anh/chị". Kết "ạ".
+- 1 emoji nhẹ là đủ (😊 hoặc 👍).
+- NGẮN — tối đa ~35 từ. KHÔNG dài dòng, KHÔNG kể tier dài.
+- KHÔNG dùng bullet list trong reply.
+
+CẤU TRÚC REPLY (CỰC QUAN TRỌNG):
+- Nếu khách VỪA cung cấp info mới VÀ còn THIẾU field → reply = (ack ngắn) + "\\n\\n" + (CÂU HỎI cho field thiếu kế tiếp). LUÔN có câu hỏi.
+- Tuyệt đối KHÔNG kết thúc reply bằng ack-chỉ-không-hỏi khi state còn thiếu.
+- Khi đủ 3 trường (action=fetch_results) → chỉ cần ack ngắn, không hỏi.
+
+QUY TẮC ƯU TIÊN HỎI:
+- Hỏi MỘT thứ tại một thời điểm. Không dồn 2-3 câu hỏi.
+- Thứ tự ưu tiên hỏi khi thiếu (dựa trên STATE SAU update):
+  1) Nếu thiếu tire_size → hỏi kích cỡ trước.
+  2) Nếu đã có tire_size nhưng thiếu brand → hỏi thương hiệu/phân khúc.
+  3) Nếu đã có tire_size + brand nhưng thiếu province → HỎI KHU VỰC.
+
+QUY TẮC TRÍCH XUẤT:
+- Trích CONSERVATIVE — chỉ điền updates khi CHẮC. Không đoán bừa.
+
+- NHẬN DIỆN TÊN XE (rất quan trọng — set updates.car_model khi CHƯA có tire_size):
+  * Tên đầy đủ: "Toyota Vios", "VinFast VF3", "Honda CR-V", "Mazda CX-5", "Ford Ranger"...
+  * Viết tắt phổ biến: "vios", "fortuner", "civic", "altis", "innova", "ranger", "everest"
+  * VinFast: "vf3", "vf5", "vf6", "vf7", "vf8", "vf9", "lux a", "lux sa", "fadil"
+  * Honda: "crv", "cr-v", "hrv", "hr-v", "city"
+  * Mazda: "cx3", "cx5", "cx8", "mazda3"
+  * Cụm "lốp xe X" / "xe X" → X là car_model
+  * Trả về tên CHUẨN (vd "vf6" → car_model='VinFast VF6'; "crv" → 'Honda CR-V').
+  * KHÔNG tự điền tire_size khi chỉ có tên xe. Hệ thống sẽ tự đưa list size để khách chọn.
+
+- KẾT HỢP BRAND + CAR (vd "michelin vf6"): set CẢ HAI — selected_brands=['MICHELIN'] VÀ car_model='VinFast VF6'.
+
+- "không quan trọng" / "hãng nào cũng được" / "xem hết" → brand_tier='all'.
+- "rẻ" / "tiết kiệm" → brand_tier='budget'. "êm" / "cao cấp" → 'premium'. "cân bằng" / "vừa tiền" → 'balanced'.
+- Khách yêu cầu chuyên viên / không muốn bot → action='handoff_cskh'.
+- Khi ĐỦ 3 trường → action='fetch_results', reply ngắn ack (vd: "Dạ TROLY tìm sản phẩm phù hợp ngay ạ 😊").
+- Khi thiếu → action='continue'.
+
+HẠN CHẾ:
+- KHÔNG trả lời câu hỏi ngoài phạm vi báo giá lốp. Redirect ngắn về chủ đề lốp.
+- KHÔNG bịa giá / khuyến mại — phần đó hệ thống tự xử lý.
+
+VÍ DỤ REPLY ĐÚNG (ngắn + LUÔN có câu hỏi khi còn thiếu):
+- (Thiếu size, khách mới chào) "Dạ anh/chị cho TROLY biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊"
+- (Khách gõ "vinfast 3" hoặc "vf6") → car_model='VinFast VF3' (hoặc 'VinFast VF6'), reply: "Dạ TROLY tra cứu kích cỡ phù hợp ạ 😊" (KHÔNG hỏi size — hệ thống tự đưa list)
+- (Khách gõ "michelin vf6") → selected_brands=['MICHELIN'], car_model='VinFast VF6', reply: "Dạ ghi nhận Michelin ạ 👍\\n\\nTROLY tra cứu kích cỡ cho xe VF6 ngay ạ 😊" (KHÔNG hỏi size text)
+- (Vừa nhận size, thiếu brand) "Dạ ghi nhận 175/75R16 ạ 👍\\n\\nAnh/chị muốn thương hiệu nào ạ — cao cấp, cân bằng, tiết kiệm, hay xem hết? 😊"
+- (Vừa nhận brand, thiếu province) "Dạ ghi nhận thương hiệu cân bằng ạ 👍\\n\\nAnh/chị ở khu vực nào để TROLY tìm gara gần ạ? 😊"
+- (Vừa nhận province, đủ 3 trường) "Dạ TROLY tìm sản phẩm phù hợp ngay ạ 😊" (action=fetch_results)
+
+VÍ DỤ REPLY SAI (TUYỆT ĐỐI TRÁNH):
+- ❌ "Dạ TROLY đã ghi nhận thương hiệu cân bằng ạ 😊" (chỉ ack, KHÔNG hỏi province → khách bị treo)
+- ❌ Khách gõ "michelin vf6" → chỉ extract brand, hỏi "cho biết kích cỡ lốp" (BỎ SÓT car_model — đáng lẽ system phải tra size cho VF6)`,
+      prompt: `STATE đã thu thập:
+${collectedSummary}
+
+LỊCH SỬ GẦN ĐÂY:
+${historyText || '(chưa có)'}
+
+KHÁCH VỪA NHẮN: "${input.userInput}"
+
+Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin TROLY gửi khách), action, cskh_reason.`
+    })
+
+    console.log(
+      `[AI v3GatherTurn] raw response: ${JSON.stringify({
+        tire_size: object.tire_size,
+        brand_tier: object.brand_tier,
+        selected_brands: object.selected_brands,
+        province_name: object.province_name,
+        car_model: object.car_model,
+        action: object.action
+      })}`
+    )
+
+    // Normalize tire_size (uppercase + clean format)
+    let normalizedSize: string | null = null
+    if (object.tire_size) {
+      const m = object.tire_size.match(/(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i)
+      normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
+    }
+    const brandsRaw = object.selected_brands ?? []
+    const normalizedBrands =
+      brandsRaw.length > 0
+        ? brandsRaw.map((b: string) => b.trim().toUpperCase()).filter(Boolean)
+        : null
+
+    return {
+      updates: {
+        tire_size: normalizedSize,
+        brand_tier: object.brand_tier,
+        selected_brands: normalizedBrands,
+        province_name: object.province_name?.trim() || null,
+        car_model: object.car_model?.trim() || null
+      },
+      reply: object.reply,
+      action: object.action,
+      cskh_reason: object.cskh_reason
+    }
+  } catch (e: any) {
+    // Log chi tiết để debug schema/network/quota issues
+    console.error('[AI v3GatherTurn] FAILED', {
+      message: e?.message,
+      name: e?.name,
+      cause: e?.cause,
+      stack: e?.stack?.split('\n').slice(0, 5).join('\n')
+    })
+    // Fallback an toàn: tiếp tục gathering với reply chung
+    return {
+      updates: {},
+      reply:
+        'Xin lỗi anh/chị, TROLY gặp chút trục trặc kỹ thuật 😅\n\nAnh/chị thử nhắn lại giúp em nhé ạ.',
+      action: 'continue',
+      cskh_reason: null
+    }
+  }
+}
+
 export interface AiOptionDef {
   payload: string
   description: string

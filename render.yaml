@@ -1,0 +1,36 @@
+# Render Blueprint — deploy via "New + Blueprint" trên Render dashboard.
+# Hoặc cấu hình thủ công Web Service với buildCommand + startCommand bên dưới.
+
+services:
+  - type: web
+    name: trolyoto-fb-webhook
+    runtime: node
+    region: singapore # gần Việt Nam → latency thấp với FB datacenter
+    plan: starter # $7/mo, always-on, không cold start. Free plan sleep sau 15p idle → KHÔNG khuyến nghị cho webhook.
+    branch: main
+    rootDir: fb-webhook-server # nếu deploy từ mono-repo. Nếu repo riêng, bỏ dòng này.
+    buildCommand: npm install && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Secrets — cấu hình thủ công trong dashboard sau khi deploy.
+      # `sync: false` tránh leak vào blueprint công khai.
+      - key: FB_PAGE_ACCESS_TOKEN
+        sync: false
+      - key: FB_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: FB_APP_SECRET
+        sync: false
+      - key: FACEBOOK_PAGE_ID
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_IMAGE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

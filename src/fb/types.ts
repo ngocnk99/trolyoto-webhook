@@ -45,6 +45,19 @@ export interface SessionState {
   province_name?: string | null
   total_product_count?: number
   shown_national?: boolean         // đã show kết quả toàn quốc rồi (dùng cho Step 13)
+
+  // ── V3 — ward fallback khi province không resolve được ─────────────────
+  /** Mã xã/phường khách xác nhận (vd '13225' = Phường Thái Bình, Hưng Yên).
+   *  Khi có ward_code → query gara theo ward_code (chính xác hơn province). */
+  ward_code?: string
+  ward_name?: string
+
+  // ── V3 — fail counter per step (size / brand / location) ──────────────
+  /** Số lần khách trả lời không hiểu ở mỗi step (size/brand/location).
+   *  1 → bot hỏi lại lần nữa; ≥2 → CSKH handoff. */
+  fail_size?: number
+  fail_brand?: number
+  fail_location?: number
   /** Số lần liên tiếp user gửi free text không match được vào option ở step có button.
    *  Sau khi đạt ngưỡng (MAX_FAILED_ATTEMPTS) → bot reset về welcome. */
   failed_attempts?: number
@@ -146,6 +159,14 @@ export interface MessengerEvent {
     quick_reply?: { payload: string }
     is_echo?: boolean
     app_id?: number
+    attachments?: Array<{
+      type: 'image' | 'audio' | 'video' | 'file' | 'location' | 'fallback'
+      payload?: {
+        url?: string
+        sticker_id?: number
+        coordinates?: { lat: number; long: number }
+      }
+    }>
   }
   postback?: {
     title: string

@@ -28,6 +28,7 @@
 
 import { supabaseAmin } from './supabase'
 import provinceJson from '../province.json'
+import wardJson from '../ward.json'
 import { extractProvinceFromAddress } from './ai-helper'
 
 // ── Public TYPES (input/output contracts) ─────────────────────────────────────
@@ -85,6 +86,15 @@ export interface ProvinceResolution {
 }
 
 export type GarageSortBy = 'quantitysold' | 'lowest_price'
+
+/** V3: 1 ward match từ ward.json — hiển thị cho khách xác nhận khi province không resolve. */
+export interface WardMatch {
+  code: string
+  name: string             // 'Phường Thái Bình' / 'Xã Thái Bình'
+  path: string             // 'Thái Bình, Hưng Yên'
+  path_with_type: string   // 'Phường Thái Bình, Tỉnh Hưng Yên'
+  parent_code: string      // province code cũ (vd '34')
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -353,6 +363,8 @@ export async function fetchTireSizesByCarTags(tagKeys: string[]): Promise<{
 export async function fetchGarageOffers(params: {
   productadminIds: string[]
   provinceCode: string | null
+  /** V3: filter theo ward_code (chính xác hơn province). Ưu tiên hơn provinceCode nếu có. */
+  wardCode?: string | null
   maxGaragesPerTire?: number
   sortBy?: GarageSortBy
   excludeGarageCodes?: string[]
@@ -361,6 +373,7 @@ export async function fetchGarageOffers(params: {
   const {
     productadminIds,
     provinceCode,
+    wardCode,
     maxGaragesPerTire = 3,
     sortBy = 'quantitysold',
     excludeGarageCodes = [],
@@ -368,6 +381,12 @@ export async function fetchGarageOffers(params: {
   } = params
 
   if (!productadminIds.length) return []
+
+  // V3 yêu cầu BẮT BUỘC có province_code HOẶC ward_code — không bao giờ search all
+  if (!provinceCode && !wardCode) {
+    console.warn('[FB db] fetchGarageOffers SKIP — yêu cầu provinceCode hoặc wardCode')
+    return []
+  }
 
   // Lấy thông tin productadmin để gắn vào group
   const { data: paRows, error: paErr } = await supabaseAmin
@@ -386,7 +405,7 @@ export async function fetchGarageOffers(params: {
   )
 
   // Lấy product (gara) JOIN garage cho các product_id
-  // Note: dùng garage!inner để filter theo province_code
+  // Note: dùng garage!inner để filter theo province_code / ward_code
   let pQuery = supabaseAmin
     .from('product')
     .select(
@@ -408,7 +427,8 @@ export async function fetchGarageOffers(params: {
           count_rate,
           slug,
           information,
-          province_code
+          province_code,
+          ward_code
         )
       `
     )
@@ -417,7 +437,11 @@ export async function fetchGarageOffers(params: {
     .eq('display', true)
     .eq('garage.status', true)
 
-  if (provinceCode) {
+  // Ưu tiên ward_code (chính xác hơn). Có ward_code → filter theo ward.
+  // Không có ward_code mà có province_code → filter theo province.
+  if (wardCode) {
+    pQuery = pQuery.eq('garage.ward_code', wardCode)
+  } else if (provinceCode) {
     pQuery = pQuery.eq('garage.province_code', provinceCode)
   }
 
@@ -539,6 +563,8 @@ export async function fetchSpGaraCards(params: {
   tireSize: string
   tireBrand: string
   provinceCode: string | null
+  /** V3: ưu tiên ward_code hơn province_code. Khi có ward_code → filter theo ward. */
+  wardCode?: string | null
   limit?: number
   sortBy?: GarageSortBy
   excludeGarageCodes?: string[]
@@ -548,11 +574,22 @@ export async function fetchSpGaraCards(params: {
     tireSize,
     tireBrand,
     provinceCode,
+    wardCode,
     limit = 3,
     sortBy = 'quantitysold',
     excludeGarageCodes,
     maxFinalPriceFloor
   } = params
+
+  // BẮT BUỘC có province_code HOẶC ward_code
+  if (!provinceCode && !wardCode) {
+    console.warn('[DB fetchSpGaraCards] SKIP — yêu cầu provinceCode hoặc wardCode')
+    return []
+  }
+
+  console.log(
+    `[DB fetchSpGaraCards] params: size="${tireSize}" brand="${tireBrand}" provinceCode="${provinceCode}" wardCode="${wardCode}" limit=${limit} sortBy=${sortBy}`
+  )
 
   // 1. Lấy danh sách SP theo size+brand (rộng để có đủ gara map qua)
   const { items, productadminIds } = await fetchTireCatalog({
@@ -561,18 +598,25 @@ export async function fetchSpGaraCards(params: {
     skip: 0,
     limit: 10
   })
+  console.log(
+    `[DB fetchSpGaraCards] fetchTireCatalog → ${items.length} products (sizeKey=${toSizeKey(tireSize)})`
+  )
   if (productadminIds.length === 0) return []
   const productMap = new Map(items.map(p => [p.id, p]))
 
-  // 2. Lấy gara theo productIds + provinceCode (đã sort/exclude/floor sẵn)
+  // 2. Lấy gara theo productIds + (ward_code hoặc province_code)
   const groups = await fetchGarageOffers({
     productadminIds,
     provinceCode,
+    wardCode,
     maxGaragesPerTire: 3,
     sortBy,
     excludeGarageCodes,
     maxFinalPriceFloor
   })
+  console.log(
+    `[DB fetchSpGaraCards] fetchGarageOffers(ward=${wardCode}, province=${provinceCode}, productIds=${productadminIds.length}) → ${groups.length} groups, total ${groups.reduce((s, g) => s + g.garages.length, 0)} gara offers`
+  )
 
   // 3. Flatten thành cặp SP+gara, sort overall, cap limit
   type Pair = { product: TireCatalogItem; offer: GarageOffer }
@@ -672,6 +716,56 @@ export function resolveProvinceSync(text: string): ProvinceResolution {
   return { code: null, name: null }
 }
 
+type WardEntry = {
+  name: string
+  type: string
+  slug: string
+  name_with_type: string
+  path: string
+  path_with_type: string
+  code: string
+  parent_code: string
+}
+const WARD_MAP = wardJson as Record<string, WardEntry>
+
+/**
+ * V3 fallback: tìm các ward (xã/phường) match với text khách nhập.
+ * Dùng khi province.json không khớp (vd "Thái Bình" sau khi reorg địa giới).
+ *
+ * Match strategy: text khách (đã chuẩn hoá không dấu) chứa trong `name`, `path`
+ * hoặc `slug` của ward. Trả về danh sách match (≤ limit).
+ */
+export function findWardsByText(text: string, limit = 13): WardMatch[] {
+  const needle = stripVn(text)
+  if (!needle || needle.length < 2) return []
+
+  const matches: WardMatch[] = []
+  const seen = new Set<string>()
+  for (const [code, w] of Object.entries(WARD_MAP)) {
+    if (matches.length >= limit) break
+    if (seen.has(code)) continue
+    const haystacks = [stripVn(w.name), stripVn(w.path), stripVn(w.slug.replace(/-/g, ' '))]
+    let hit = false
+    for (const h of haystacks) {
+      if (h && h.includes(needle)) {
+        hit = true
+        break
+      }
+    }
+    if (hit) {
+      seen.add(code)
+      matches.push({
+        code,
+        name: w.name_with_type,
+        path: w.path,
+        path_with_type: w.path_with_type,
+        parent_code: w.parent_code
+      })
+    }
+  }
+  return matches
+}
+
 /**
  * Bóc mã tỉnh/TP từ free text user nhập (vd: "Hà Nội", "TPHCM", "Sài Gòn",
  * "Số 12 Cầu Giấy", "Hải Châu" ...) — kết hợp heuristic + AI.
@@ -728,6 +822,7 @@ type GarageJoined = {
   slug: string | null
   information: unknown
   province_code: string | null
+  ward_code: string | null
 }
 
 type ProductJoinedRow = {

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script
+      src="https://socket.safefamily.vn/socket.io/socket.io.js"
+      integrity="sha512-zoJXRvW2gC8Z0Xo3lBbao5+AS3g6YWr5ztKqaicua11xHo+AvE1b0lT9ODgrHTmNUxeCw0Ry4BGRYZfXu70weg=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+  </head>
+  <body>
+    <h1>test socket.io2</h1>
+    <script>
+      const token =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjaGlsZHJlbnNJZCI6IjMxMjAxIiwidXNlckdyb3Vwc0lkIjozLCJ1c2VySWQiOiIzMTIwMSIsImZ1bGxuYW1lIjoiTGluaCIsImNsaWVudEtleSI6Ijk4NDNhYzc5N2UzOTEyMTUiLCJpYXQiOjE3ODA0NzA4ODAsImV4cCI6MTgxMjAwNjg4MH0.k72ya7KyU3mTT5DH81JJ9qidJB489GD7x8qk-TQJ3Ck'
+      const socket = io.connect(`https://socket.safefamily.vn?token=${token}`)
+      // const socket = io.connect(`https://socketdev.nhathuocgpp.com.vn?token=${token}`);
+      socket.on('connect', () => {
+        console.log(socket.id)
+        socket.on('login', function (data) {
+          console.log('login data: ', data)
+        })
+        socket.on('updateManageChildrenApps', function (data) {
+          console.log('updateManageChildrenApps data: ', data)
+        })
+        socket.on('updateManageChildrenWebs', function (data) {
+          console.log('updateManageChildrenWebs data: ', data)
+        })
+        socket.on('createConversations', function (data) {
+          console.log('createConversations data: ', data)
+        })
+
+        socket.on('connection', function (data) {
+          console.log('connection data: ', data)
+        })
+      })
+    </script>
+  </body>
+</html>

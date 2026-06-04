@@ -34,7 +34,9 @@ import {
   resolveProvince,
   getMinPriceForTireSize,
   fetchTireSizesByCarTags,
-  type SpGaraCard
+  findWardsByText,
+  type SpGaraCard,
+  type WardMatch
 } from '../db'
 import type {
   MessengerEvent,
@@ -47,7 +49,11 @@ import type {
   ConversationMessage,
   BrandTier
 } from '../types'
-import { v3GatherTurn, getTireSizesForCar, getCarNameVariants } from '../ai-helper'
+import {
+  v3GatherTurn,
+  getCarNameVariants,
+  analyzeTireImage
+} from '../ai-helper'
 import { scheduleTimer, cancelTimer } from '../timers'
 
 const PAGE_TOKEN_V3 = process.env.FB_PAGE_ACCESS_TOKEN_V3!
@@ -66,34 +72,52 @@ const BRAND_TIERS = {
   all: { brands: [] as string[] }
 } as const
 
-// QR titles (≤20 ký tự — giống V2 để wording không đổi)
+// QR titles (≤20 ký tự — giống V2 để wording booking/concern/CSKH không đổi)
 const QR_TITLE = {
-  AI_CONSULT: '🤖 Báo giá ngay',
-  CSKH_CONSULT: '👤 Tư vấn kĩ',
-  AI_CONSULT_LATE: '🤖 Báo giá ngay',
-  WAIT_CSKH: '💬 Chờ tư vấn',
   BOOK_DONE: '✅ Đã đặt lịch',
   NOT_YET: '🕐 Chưa cần thay',
   CONCERN: '🤔 Còn băn khoăn',
   BETTER_PRICE: '💰 Giá tốt hơn',
   CLOSER_DEALER: '📍 Đại lý gần hơn',
-  CSKH_HERE: '💬 Chờ ở đây',
-  LEAVE_PHONE: '📞 Để lại SĐT',
   VIEW_PROMO: '🎁 Xem khuyến mại',
   VIEW_OTHER_GARAGE: 'Xem gara khác',
   VIEW_OTHER_PRODUCT: 'Xem SP khác',
   COMMUNITY_SUBSIDY: 'Trợ giá khi cần',
-  COMMUNITY_VOUCHER: 'Nhận voucher 200k'
+  COMMUNITY_VOUCHER: 'Nhận voucher 200k',
+  // V3 mới
+  BRAND_ALL: 'Xem tất cả',
+  CHAT_TVV: '💬 Chat tư vấn viên'
 } as const
 
-function isWorkingHours(): boolean {
-  const vnTime = new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' })
-  )
-  const day = vnTime.getDay()
-  const hour = vnTime.getHours()
-  return day >= 1 && day <= 5 && hour >= 9 && hour < 18
-}
+/** Brand list hiển thị làm QR — chọn các brand phổ biến nhất (FB max 13 QR). */
+const V3_POPULAR_BRANDS = [
+  'MICHELIN',
+  'BRIDGESTONE',
+  'CONTINENTAL',
+  'GOODYEAR',
+  'HANKOOK',
+  'YOKOHAMA',
+  'DUNLOP',
+  'PIRELLI',
+  'KUMHO',
+  'SAILUN',
+  'TOYO'
+] as const
+
+const V3_BRAND_QRS = (): QuickReply[] => [
+  ...V3_POPULAR_BRANDS.map(b => qr(b, `V3_BRAND_NAME:${b}`)),
+  qr(QR_TITLE.BRAND_ALL, 'V3_BRAND:all')
+]
+
+/** Block mô tả phân khúc — luôn kèm khi hỏi brand để khách thấy gợi ý theo nhu cầu. */
+const BRAND_TIER_BLOCK =
+  '• Cao cấp: Michelin, Bridgestone, Continental\n' +
+  '• Cân bằng: Goodyear, Hankook, Yokohama\n' +
+  '• Tiết kiệm: Kumho, Sailun, Laufenn'
+
+const BRAND_ASK_TEXT_FULL =
+  `Anh/chị muốn thương hiệu nào ạ? 😊\n\n${BRAND_TIER_BLOCK}`
+
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -118,18 +142,120 @@ function brandFilterFromState(state: SessionState): string {
   return '__skip_brand__'
 }
 
-/** Trả về câu hỏi hardcoded cho field thiếu kế tiếp (size → brand → province). */
+const TIER_LABEL_VN: Record<'premium' | 'balanced' | 'budget' | 'all', string> = {
+  premium: 'Cao cấp',
+  balanced: 'Cân bằng',
+  budget: 'Tiết kiệm',
+  all: 'Tất cả'
+}
+
+/** Tóm tắt brand cho summary message — ưu tiên tên tier nếu khớp full list. */
+function summarizeBrand(state: SessionState): string {
+  const brands = state.selected_brands ?? []
+  if (brands.length === 0) return 'Tất cả'
+  const tier = state.brand_tier
+  if (tier === 'premium' || tier === 'balanced' || tier === 'budget') {
+    const tierBrands = BRAND_TIERS[tier].brands
+    const matchesTier =
+      brands.length > 1 &&
+      tierBrands.length === brands.length &&
+      tierBrands.every(b => brands.includes(b))
+    if (matchesTier) return TIER_LABEL_VN[tier]
+  }
+  return brands.join(', ')
+}
+
+type FieldKey = 'size' | 'brand' | 'location'
+
+/**
+ * Tin nhắn summary — chỉ show 1 field "cuối cùng" khách cung cấp.
+ * Priority khi khách gửi nhiều field cùng tin: location > brand > size
+ * (vì location là field hoàn tất state để fetch).
+ *
+ * Vd:
+ *   updated=['size']                  → "kích thước: 205/55R17"
+ *   updated=['brand']                 → "thương hiệu: MICHELIN"
+ *   updated=['location']              → "khu vực: Hà Nội"
+ *   updated=['size','brand','location'] → "khu vực: Hà Nội" (lấy location)
+ */
+function buildStateSummary(state: SessionState, updated: FieldKey[]): string {
+  let field: FieldKey | null = null
+  if (updated.includes('location')) field = 'location'
+  else if (updated.includes('brand')) field = 'brand'
+  else if (updated.includes('size')) field = 'size'
+
+  let infoLine = ''
+  if (field === 'size' && state.tire_size) {
+    infoLine = `kích thước: ${state.tire_size}`
+  } else if (field === 'brand') {
+    infoLine = `thương hiệu: ${summarizeBrand(state)}`
+  } else if (field === 'location') {
+    const loc = state.ward_name
+      ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+      : state.province_name ?? '?'
+    infoLine = `khu vực: ${loc}`
+  }
+  const head = infoLine ? `TROLY đã nhận ${infoLine}\n\n` : ''
+  return `${head}Bên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊`
+}
+
+/** Suy ra bot đang hỏi field nào dựa trên state CŨ (size → brand → location). */
+function deriveLastAsked(state: SessionState): 'size' | 'brand' | 'location' | null {
+  if (!state.tire_size) return 'size'
+  if (!state.brand_tier && (!state.selected_brands || state.selected_brands.length === 0)) {
+    return 'brand'
+  }
+  if (!state.province_code && !state.ward_code) return 'location'
+  return null
+}
+
+const MAX_FAIL_PER_STEP = 2 // 1 lần = retry; 2 lần = CSKH handoff
+
+/** Trả về câu hỏi hardcoded cho field thiếu kế tiếp (size → brand → location). */
 function nextMissingFieldQuestion(state: SessionState): string | null {
   if (!state.tire_size) {
     return 'Anh/chị cho TROLY biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
   }
   if (!state.brand_tier && (!state.selected_brands || state.selected_brands.length === 0)) {
-    return 'Anh/chị muốn thương hiệu nào ạ — cao cấp, cân bằng, tiết kiệm, hay xem hết? 😊'
+    return BRAND_ASK_TEXT_FULL
   }
-  if (!state.province_name) {
-    return 'Anh/chị ở khu vực nào để TROLY tìm gara gần ạ? 😊'
+  if (!state.province_code && !state.ward_code) {
+    return 'Anh/chị ở khu vực nào (xã/phường + tỉnh/TP) để TROLY tìm gara gần ạ? 😊'
   }
   return null
+}
+
+/** V3: hiển thị list ward QR khi text địa chỉ khớp nhiều ward (vd "Thái Bình"). */
+async function showWardConfirmOptions(
+  psid: string,
+  sessionId: string,
+  userText: string,
+  wards: WardMatch[],
+  state: SessionState
+): Promise<void> {
+  const capped = wards.slice(0, 11) // chừa chỗ cho "Chat tư vấn viên" (≤13 QR)
+  console.log(
+    `[V3 wardConfirm] "${userText}" → ${capped.length} options: ${capped.map(w => `${w.code}=${w.path}`).join(', ')}`
+  )
+
+  await updateSession(sessionId, {
+    step: 'V3_GATHERING',
+    state: { ...state, cskh_reason: `Ward chưa xác định cho "${userText}"` }
+  })
+
+  const qrs: QuickReply[] = capped.map(w => {
+    // Title: "Phường Thái Bình, Hưng Yên" — cắt vừa 20 ký tự FB
+    const title = w.path.length <= 20 ? w.path : w.path.slice(0, 19) + '…'
+    return qr(title, `V3_WARD:${w.code}`)
+  })
+  qrs.push(qr(QR_TITLE.CHAT_TVV, 'V3_CHAT_TVV'))
+
+  await reply(
+    psid,
+    sessionId,
+    `TROLY tìm thấy ${capped.length} khu vực trùng tên "${userText}" ạ 😊\n\nAnh/chị chọn đúng khu vực của mình giúp em nhé:`,
+    qrs
+  )
 }
 
 /** Lấy lịch sử gần đây từ conversation_log để feed AI ngữ cảnh. */
@@ -246,135 +372,40 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  V3 Welcome — 2 QR (Báo giá ngay / Tư vấn kĩ) — đồng bộ V2
+//  V3 — Welcome ngắn khi tạo session, KHÔNG có 2-button screen.
+//  - Session mới: tạo session step=V3_GATHERING, gửi welcome ngắn (1 tin),
+//    rồi xử lý tin của khách qua handleGathering/handleImage.
 // ════════════════════════════════════════════════════════════════════════════
 
 async function sendV3Welcome(psid: string, sessionId: string): Promise<void> {
   await reply(
     psid,
     sessionId,
-    '🤝 TRỢ LÝ Ô TÔ – TROLYoto rất vui được hỗ trợ anh/chị 😊\n\nAnh/chị muốn:\n• Báo giá ngay → trợ lý ảo (TROLY)\n• Tư vấn kĩ → chuyên viên TROLYoto (9h-18h, T2-T6)',
-    [
-      qr(QR_TITLE.AI_CONSULT, 'QR_AI_CONSULT'),
-      qr(QR_TITLE.CSKH_CONSULT, 'QR_CSKH_CONSULT')
-    ]
+    '🤝 TRỢ LÝ Ô TÔ – nền tảng kết nối DV ô tô tiện lợi, uy tín – rất vui được hỗ trợ anh/chị 😊'
   )
-  await updateSession(sessionId, {
-    step: 'AWAITING_CONSULT_TYPE',
-    state: {}
-  })
-}
-
-/** Nhánh AI: tin nhắn đầu ngắn gọn hỏi size + brand (chưa hỏi location). */
-async function askInitialGathering(psid: string, sessionId: string): Promise<void> {
-  await updateSession(sessionId, { step: 'V3_GATHERING' })
-  await reply(
-    psid,
-    sessionId,
-    'Anh/chị cho TROLY biết kích cỡ lốp + thương hiệu mong muốn nhé ạ 😊\n\nVí dụ: "185/60R15, Michelin" hoặc "lốp xe vios, hãng nào cũng được".'
-  )
-}
-
-async function handleConsultChoice(
-  psid: string,
-  sessionId: string,
-  payload: string,
-  state: SessionState
-): Promise<void> {
-  if (payload === 'QR_AI_CONSULT' || payload === 'QR_AI_CONSULT_LATE') {
-    await updateSession(sessionId, { state: { ...state, consult_type: 'AI' } })
-    await askInitialGathering(psid, sessionId)
-    return
-  }
-  if (payload === 'QR_CSKH_CONSULT') {
-    await updateSession(sessionId, {
-      step: 'AWAITING_AREA_FOR_CSKH',
-      state: { ...state, consult_type: 'CSKH' }
-    })
-    await reply(
-      psid,
-      sessionId,
-      'Anh chị ở khu vực nào để TROLY tìm kiếm đại lý giá tốt gần mình ạ? 😊'
-    )
-    return
-  }
-  if (payload === 'QR_WAIT_CSKH') {
-    await reply(
-      psid,
-      sessionId,
-      'TROLYoto đã ghi nhận ạ 🙏\n\nĐội ngũ chuyên viên sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n\n⏰ Giờ làm việc: 9h - 18h, Thứ 2 - Thứ 6'
-    )
-    await completeSession(sessionId)
-  }
-}
-
-// ── Nhánh CSKH (Tư vấn kĩ) — giữ y V2 ──────────────────────────────────────
-
-async function handleAreaForCskh(
-  psid: string,
-  sessionId: string,
-  text: string,
-  state: SessionState
-): Promise<void> {
-  const newState: SessionState = { ...state, area: text }
-  if (isWorkingHours()) {
-    await updateSession(sessionId, { step: 'AWAITING_SIZE_FOR_CSKH', state: newState })
-    await reply(psid, sessionId, 'Anh chị cần tìm lốp kích cỡ như thế nào ạ? 😊')
-  } else {
-    await updateSession(sessionId, { step: 'AWAITING_CONSULT_TYPE', state: newState })
-    await reply(
-      psid,
-      sessionId,
-      'Hiện đang ngoài giờ làm việc, TROLYoto sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n\nHoặc để tránh mất thời gian, anh chị muốn:',
-      [
-        qr(QR_TITLE.AI_CONSULT_LATE, 'QR_AI_CONSULT_LATE'),
-        qr(QR_TITLE.WAIT_CSKH, 'QR_WAIT_CSKH')
-      ]
-    )
-  }
-}
-
-async function handleSizeForCskh(
-  psid: string,
-  sessionId: string,
-  text: string,
-  state: SessionState
-): Promise<void> {
-  await Promise.all([
-    updateSession(sessionId, {
-      step: 'COMPLETED',
-      state: { ...state, tire_size: text },
-      is_active: false
-    }),
-    reply(psid, sessionId, 'TROLY đã nhận thông tin & sẽ hỗ trợ anh chị sớm nhất ạ 😊')
-  ])
 }
 
 // ── Car → sizes lookup (DB tags + AI OEM) ──────────────────────────────────
 
 /**
- * Tra kích cỡ lốp theo tên xe — merge DB exact tags (ưu tiên) + AI OEM sizes.
- * Dedupe case-insensitive, cap 4. Đồng bộ pattern V2.
+ * V3: Tra kích cỡ lốp theo tên xe — CHỈ DB tag (bỏ AI suggest theo yêu cầu).
+ * Dedupe case-insensitive, cap 4. Nếu DB không có → trả [] để caller báo khách.
  */
 async function lookupCarSizes(carModel: string): Promise<string[]> {
   let dbSizes: string[] = []
-  let aiSizes: string[] = []
   try {
-    const [variants, aiResult] = await Promise.all([
-      getCarNameVariants(carModel),
-      getTireSizesForCar(carModel)
-    ])
-    aiSizes = aiResult
+    const variants = await getCarNameVariants(carModel)
     if (variants.exact.length > 0) {
       const r = await fetchTireSizesByCarTags(variants.exact)
       if (r.sizes.length > 0) dbSizes = r.sizes.map(s => s.size)
     }
+    console.log(`[V3 lookupCarSizes] "${carModel}" → ${dbSizes.length} DB sizes`)
   } catch (e) {
     console.error('[V3 flow] lookupCarSizes:', e)
   }
   const seen = new Set<string>()
   const sizes: string[] = []
-  for (const s of [...dbSizes, ...aiSizes]) {
+  for (const s of dbSizes) {
     if (!s) continue
     const key = s.toUpperCase()
     if (seen.has(key)) continue
@@ -401,6 +432,210 @@ async function showCarSizeOptions(
     sessionId,
     `Dạ xe ${carName} thường dùng các kích cỡ sau, anh/chị chọn giúp em nhé 😊`,
     capped.map(s => qr(s, `V3_TIRE_SIZE:${s}`))
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  V3 — Handlers cho các QR payloads (brand tier, ward confirm, restart)
+// ════════════════════════════════════════════════════════════════════════════
+
+const TIER_LABEL_VI: Record<'premium' | 'balanced' | 'budget' | 'all', string> = {
+  premium: 'cao cấp',
+  balanced: 'cân bằng',
+  budget: 'tiết kiệm',
+  all: 'xem tất cả'
+}
+
+async function handleBrandNameChoice(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  brand: string
+): Promise<void> {
+  console.log(`[V3 flow] V3_BRAND_NAME click → brand=${brand}`)
+  cancelTimer(session.id, 'v3-brand-name-choice')
+  const newState: SessionState = {
+    ...session.state,
+    selected_brands: [brand],
+    brand_tier: 'all' // marker đã chọn brand cụ thể; brand_tier không lọc thêm
+  }
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ ghi nhận thương hiệu ${brand} ạ 👍`
+
+  const hasSize = !!newState.tire_size
+  const hasLocation = !!newState.province_code || !!newState.ward_code
+  if (hasSize && hasLocation) {
+    await reply(psid, session.id, buildStateSummary(newState, ['brand']))
+    await showSpGaraResults(psid, session.id, pageId, newState)
+    return
+  }
+  const nextQ = nextMissingFieldQuestion(newState)
+  await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText)
+}
+
+async function handleBrandTierChoice(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  tier: 'premium' | 'balanced' | 'budget' | 'all'
+): Promise<void> {
+  console.log(`[V3 flow] V3_BRAND click → tier=${tier}`)
+  cancelTimer(session.id, 'v3-brand-choice')
+  const newState: SessionState = {
+    ...session.state,
+    brand_tier: tier,
+    selected_brands: tier === 'all' ? [] : [...BRAND_TIERS[tier].brands]
+  }
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ ghi nhận thương hiệu ${TIER_LABEL_VI[tier]} ạ 👍`
+
+  const hasSize = !!newState.tire_size
+  const hasLocation = !!newState.province_code || !!newState.ward_code
+  if (hasSize && hasLocation) {
+    await reply(psid, session.id, buildStateSummary(newState, ['brand']))
+    await showSpGaraResults(psid, session.id, pageId, newState)
+    return
+  }
+  const nextQ = nextMissingFieldQuestion(newState)
+  await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText)
+}
+
+async function handleWardChoice(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  wardCode: string
+): Promise<void> {
+  console.log(`[V3 flow] V3_WARD click → wardCode=${wardCode}`)
+  cancelTimer(session.id, 'v3-ward-choice')
+
+  // Lookup ward thông tin để hiển thị label
+  const wards = findWardsByText('', 0) // empty search → []. Lookup by code instead via reverse search trong WARD_MAP.
+  // Đơn giản hơn: tìm ward bất kỳ matching wardCode bằng cách search wide
+  // Hoặc dùng map trực tiếp. Để tránh duplicate, đọc lại từ ward.json
+  // Strategy: dùng findWardsByText với 1 ký tự common rồi filter — overkill.
+  // Tốt hơn: thêm getWardByCode helper trong db. Tạm thời lookup bằng tìm rộng.
+  // Để giữ scope, ta trust wardCode + dùng label generic.
+  void wards
+
+  const newState: SessionState = {
+    ...session.state,
+    ward_code: wardCode,
+    // Giữ ward_name từ trước nếu có; nếu chưa có, dùng province_name làm placeholder
+    ward_name: session.state.ward_name ?? session.state.province_name ?? wardCode
+  }
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ ghi nhận khu vực đã chọn ạ 👍`
+
+  const hasSize = !!newState.tire_size
+  const hasBrand =
+    !!newState.brand_tier ||
+    (newState.selected_brands !== undefined && newState.selected_brands.length > 0)
+  if (hasSize && hasBrand) {
+    await reply(psid, session.id, buildStateSummary(newState, ['location']))
+    await showSpGaraResults(psid, session.id, pageId, newState)
+    return
+  }
+  const nextQ = nextMissingFieldQuestion(newState)
+  const needBrand =
+    !!newState.tire_size &&
+    !newState.brand_tier &&
+    (!newState.selected_brands || newState.selected_brands.length === 0)
+  await reply(
+    psid,
+    session.id,
+    nextQ ? `${ackText}\n\n${nextQ}` : ackText,
+    needBrand && nextQ ? V3_BRAND_QRS() : undefined
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  V3 Image — đọc size+brand từ ảnh lốp khách gửi
+// ════════════════════════════════════════════════════════════════════════════
+
+async function handleImage(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  imageUrl: string
+): Promise<void> {
+  cancelTimer(session.id, 'v3-image-restart')
+
+  console.log(`[V3 image] session=${session.id} url=${imageUrl.slice(0, 80)}...`)
+  const analysis = await analyzeTireImage(imageUrl)
+
+  const state = session.state
+  const newState: SessionState = { ...state }
+  const ackParts: string[] = []
+
+  // Áp dụng kết quả nếu confidence ≥ 0.5
+  if (analysis.tire_size && analysis.confidence >= 0.5) {
+    newState.tire_size = analysis.tire_size
+    ackParts.push(`kích cỡ ${analysis.tire_size}`)
+  }
+  if (analysis.brand && analysis.confidence >= 0.5) {
+    const brandUpper = analysis.brand
+    // Ghi đè — brand từ ảnh là thông tin mới nhất, không merge với brand cũ
+    newState.selected_brands = [brandUpper]
+    newState.brand_tier = 'all'
+    ackParts.push(`thương hiệu ${brandUpper}`)
+  }
+
+  // Nếu không đọc được gì → bump fail_size (vì ảnh đang trong context size step)
+  if (ackParts.length === 0) {
+    const failCount = (newState.fail_size ?? 0) + 1
+    newState.fail_size = failCount
+    await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+    console.log(`[V3 image] không đọc được → fail_size=${failCount}`)
+    if (failCount >= MAX_FAIL_PER_STEP) {
+      await cskhHandoff(psid, session.id, newState, `Ảnh không đọc được sau ${failCount} lần`)
+      return
+    }
+    await reply(
+      psid,
+      session.id,
+      'TROLY chưa đọc rõ thông tin trên ảnh ạ 😅\n\nAnh/chị thử chụp lại rõ phần "215/75R16" trên thành lốp, hoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸'
+    )
+    return
+  }
+
+  // Image extract thành công → reset fail_size
+  newState.fail_size = 0
+  if (analysis.brand && analysis.confidence >= 0.5) newState.fail_brand = 0
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ TROLY đọc được ${ackParts.join(' và ')} từ ảnh ạ 👍`
+
+  const hasSize = !!newState.tire_size
+  const hasBrand =
+    !!newState.brand_tier ||
+    (newState.selected_brands !== undefined && newState.selected_brands.length > 0)
+  const hasLocation = !!newState.province_code || !!newState.ward_code
+
+  if (hasSize && hasBrand && hasLocation) {
+    // Đủ 3 trường → summary chỉ field từ ảnh (size và/hoặc brand)
+    const updatedFields: FieldKey[] = []
+    if (analysis.tire_size && analysis.confidence >= 0.5) updatedFields.push('size')
+    if (analysis.brand && analysis.confidence >= 0.5) updatedFields.push('brand')
+    await reply(psid, session.id, buildStateSummary(newState, updatedFields))
+    await showSpGaraResults(psid, session.id, pageId, newState)
+    return
+  }
+
+  const nextQ = nextMissingFieldQuestion(newState)
+  // Nếu đang hỏi brand → kèm QR options
+  const needBrand =
+    !!newState.tire_size &&
+    !newState.brand_tier &&
+    (!newState.selected_brands || newState.selected_brands.length === 0)
+  await reply(
+    psid,
+    session.id,
+    nextQ ? `${ackText}\n\n${nextQ}` : ackText,
+    needBrand && nextQ ? V3_BRAND_QRS() : undefined
   )
 }
 
@@ -453,59 +688,189 @@ async function handleGathering(
     if (!newState.brand_tier) newState.brand_tier = 'all'
   }
 
-  // 3. Resolve province (async helper, có AI fallback)
-  if (decision.updates.province_name && !newState.province_code) {
+  // 3. Resolve location (province + ward). Strategy:
+  //    a. resolveProvince → match province? Save province_code.
+  //    b. findWardsByText → match ward(s)? Nếu 1 ward trong cùng province → auto.
+  //    c. Province không match → ward-only fallback (cho case "Thái Bình" sau reorg).
+  //  LUÔN ghi đè khi AI trả province_name (kể cả state đã có province/ward cũ).
+  let needWardConfirm: WardMatch[] | null = null
+  if (decision.updates.province_name) {
+    // Clear location cũ — sẽ được set lại sau resolve
+    newState.province_code = undefined
+    newState.ward_code = undefined
+    newState.ward_name = undefined
+    const text = decision.updates.province_name
     try {
-      const r = await resolveProvince(decision.updates.province_name)
-      newState.province_code = r.code
-      newState.province_name = r.name ?? decision.updates.province_name
+      const r = await resolveProvince(text)
+      if (r.code) {
+        newState.province_code = r.code
+        newState.province_name = r.name ?? text
+        console.log(`[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`)
+
+        // Cũng quét ward trong text — nếu khớp đúng 1 ward thuộc province → auto-pick.
+        const wardsInText = findWardsByText(text, 5).filter(
+          w => w.parent_code === r.code
+        )
+        if (wardsInText.length === 1) {
+          newState.ward_code = wardsInText[0].code
+          newState.ward_name = wardsInText[0].name
+          console.log(
+            `[V3 gather] auto-detect ward "${wardsInText[0].name}" (${wardsInText[0].code}) within province ${r.name}`
+          )
+        } else if (wardsInText.length > 1) {
+          // Nhiều ward khớp → giữ province, không pick ward (sẽ fallback province khi fetch)
+          console.log(
+            `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
+          )
+        }
+      } else {
+        // Province không match → fallback ward.json search rộng
+        const wards = findWardsByText(text, 11)
+        console.log(`[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`)
+        if (wards.length === 1) {
+          newState.ward_code = wards[0].code
+          newState.ward_name = wards[0].name
+          newState.province_name = wards[0].path
+        } else if (wards.length > 1) {
+          newState.province_name = text
+          needWardConfirm = wards
+        } else {
+          newState.province_name = text
+        }
+      }
     } catch (e) {
       console.error('[V3 gather] resolveProvince:', e)
-      newState.province_name = decision.updates.province_name
+      newState.province_name = text
     }
   }
 
-  // 4. Persist state
+  // 4. Tính trạng thái "AI có hiểu không" — để bump/reset fail counter
+  const wasAsking = deriveLastAsked(state) // state CŨ trước update
+  const aiExtractedAnything = !!(
+    decision.updates.tire_size ||
+    decision.updates.car_model ||
+    decision.updates.brand_tier ||
+    (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
+    decision.updates.province_name
+  )
+
+  if (aiExtractedAnything) {
+    // Khách cung cấp info hữu ích → reset fail counters
+    newState.fail_size = 0
+    newState.fail_brand = 0
+    newState.fail_location = 0
+  }
+
+  // 4b. Persist state
   await updateSession(sessionId, { state: newState })
 
   // 5. Branch theo action
+  // V3: nếu AI fail → kèm QR [Chat tư vấn viên] để khách thoát
+  if (decision.error) {
+    await reply(psid, sessionId, decision.reply, [
+      qr(QR_TITLE.CHAT_TVV, 'V3_CHAT_TVV')
+    ])
+    return
+  }
+
   if (decision.action === 'handoff_cskh') {
     await reply(psid, sessionId, decision.reply)
     await cskhHandoff(psid, sessionId, newState, decision.cskh_reason ?? 'AI v3GatherTurn')
     return
   }
 
-  if (decision.action === 'fetch_results') {
-    // Đảm bảo đủ 3 trường (an toàn — đôi khi AI act sớm)
-    const hasSize = !!newState.tire_size
-    const hasBrand = !!newState.brand_tier
-    const hasProvince = !!newState.province_name
-    if (!hasSize || !hasBrand || !hasProvince) {
-      console.warn(
-        `[V3 gather] action=fetch_results nhưng thiếu field (size=${hasSize}, brand=${hasBrand}, prov=${hasProvince}). Fallback continue.`
-      )
-      await reply(psid, sessionId, decision.reply)
-      return
-    }
+  // Ward confirm có priority cao hơn fetch_results
+  if (needWardConfirm) {
     await reply(psid, sessionId, decision.reply)
-    await showSpGaraResults(
-      psid,
-      sessionId,
-      pageId,
-      newState.province_code ?? null,
-      newState.province_name ?? '',
-      newState
-    )
+    await showWardConfirmOptions(psid, sessionId, decision.updates.province_name ?? '', needWardConfirm, newState)
     return
   }
 
-  // ── Branch 1: AI phát hiện tên xe + chưa có size → BỎ QUA reply AI để tránh
-  //    AI hỏi size text trùng với tin 2 (carousel QR sizes). Dùng tin cứng.
+  // V3: AUTO fetch_results nếu state đã đủ 3 trường (size + brand + location)
+  //  — bất kể AI quyết định gì. Cover case khách re-gather: gửi size mới mà
+  //    state có brand+location từ trước → fetch ngay với data mới.
+  const hasSize = !!newState.tire_size
+  const hasBrand =
+    !!newState.brand_tier ||
+    (newState.selected_brands !== undefined && (newState.selected_brands?.length ?? 0) > 0)
+  const hasLocation = !!newState.province_code || !!newState.ward_code
+
+  if (hasSize && hasBrand && hasLocation) {
+    // Đủ 3 trường → 1 tin summary với CHỈ field khách vừa cung cấp turn này
+    const updatedFields: FieldKey[] = []
+    if (decision.updates.tire_size) updatedFields.push('size')
+    if (
+      decision.updates.brand_tier ||
+      (decision.updates.selected_brands && decision.updates.selected_brands.length > 0)
+    ) {
+      updatedFields.push('brand')
+    }
+    if (decision.updates.province_name) updatedFields.push('location')
+    await reply(psid, sessionId, buildStateSummary(newState, updatedFields))
+    await showSpGaraResults(psid, sessionId, pageId, newState)
+    return
+  }
+
+  // AI muốn fetch nhưng state thực tế chưa đủ → fallback continue
+  if (decision.action === 'fetch_results') {
+    console.warn(
+      `[V3 gather] action=fetch_results nhưng thiếu (size=${hasSize}, brand=${hasBrand}, location=${hasLocation}) → fallback continue`
+    )
+  }
+
+  // ── Fail branch: AI không hiểu — bump fail_X cho field đang hỏi ────────
+  //  - 1 lần fail: hỏi lại (size → ask image; brand/location → re-ask)
+  //  - ≥2 lần fail: cskhHandoff
+  if (!aiExtractedAnything && wasAsking) {
+    const failKey =
+      wasAsking === 'size'
+        ? 'fail_size'
+        : wasAsking === 'brand'
+        ? 'fail_brand'
+        : 'fail_location'
+    const count = ((newState[failKey] as number | undefined) ?? 0) + 1
+    newState[failKey] = count
+    await updateSession(sessionId, { state: newState })
+    console.log(`[V3 gather] fail ${wasAsking}=${count}`)
+
+    if (count >= MAX_FAIL_PER_STEP) {
+      await cskhHandoff(
+        psid,
+        sessionId,
+        newState,
+        `Khách không cung cấp info ở step ${wasAsking} (${count} lần)`
+      )
+      return
+    }
+
+    // 1 lần fail — gửi retry message phù hợp với step
+    if (wasAsking === 'size') {
+      await reply(
+        psid,
+        sessionId,
+        'TROLY chưa hiểu thông tin ạ 😅\n\nAnh/chị có thể gửi ảnh thành lốp xe để TROLY đọc kích cỡ giúp, hoặc nhập định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸'
+      )
+      return
+    }
+    if (wasAsking === 'brand') {
+      await reply(psid, sessionId, BRAND_ASK_TEXT_FULL, V3_BRAND_QRS())
+      return
+    }
+    if (wasAsking === 'location') {
+      await reply(
+        psid,
+        sessionId,
+        'TROLY chưa rõ khu vực ạ 😅\n\nAnh/chị cho TROLY biết xã/phường + tỉnh/TP nhé (vd: "Hai Bà Trưng, Hà Nội") 😊'
+      )
+      return
+    }
+  }
+
+  // ── Branch 1: AI phát hiện tên xe + chưa có size → tra DB-only sizes
   if (decision.updates.car_model && !newState.tire_size) {
     const carName = decision.updates.car_model
-    console.log(`[V3 gather] car_model="${carName}" → lookupCarSizes (bỏ qua AI reply)`)
+    console.log(`[V3 gather] car_model="${carName}" → lookupCarSizes (DB only)`)
 
-    // Compose ack ngắn: nếu vừa nhận brand, ack brand; luôn kèm "tra cứu kích cỡ"
     const justGotBrand =
       (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
       decision.updates.brand_tier
@@ -525,25 +890,50 @@ async function handleGathering(
     if (sizes.length > 0) {
       await showCarSizeOptions(psid, sessionId, carName, sizes)
     } else {
+      // V3: car name không tra ra size → coi là size-fail
+      const failCount = (newState.fail_size ?? 0) + 1
+      newState.fail_size = failCount
+      await updateSession(sessionId, { state: newState })
+      console.log(`[V3 gather] car "${carName}" no DB sizes → fail_size=${failCount}`)
+
+      if (failCount >= MAX_FAIL_PER_STEP) {
+        await cskhHandoff(
+          psid,
+          sessionId,
+          newState,
+          `Không tra được size cho xe "${carName}" (${failCount} lần)`
+        )
+        return
+      }
       await reply(
         psid,
         sessionId,
-        `TROLY chưa tra được kích cỡ cho xe "${carName}" 😅\n\nAnh/chị nhập giúp em kích cỡ lốp nhé? Ví dụ: 185/60R15`
+        `TROLY chưa tìm thấy kích cỡ lốp phù hợp cho xe "${carName}" ạ 😅\n\nAnh/chị có thể gửi ảnh thành lốp xe để TROLY đọc kích cỡ giúp, hoặc nhập định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸`
       )
     }
     return
   }
 
-  // ── Branch 2: gửi reply AI bình thường
-  await reply(psid, sessionId, decision.reply)
+  // ── Branch 2: gửi reply AI bình thường, có thể kèm brand QRs + tier block
+  const needBrand =
+    !!newState.tire_size &&
+    !newState.brand_tier &&
+    (!newState.selected_brands || newState.selected_brands.length === 0)
+  const askingBrand = decision.action === 'continue' && needBrand
+  // Khi hỏi brand → kèm block mô tả phân khúc (nối vào sau AI reply)
+  const replyText = askingBrand
+    ? `${decision.reply}\n\n${BRAND_TIER_BLOCK}`
+    : decision.reply
+  const replyQRs = askingBrand ? V3_BRAND_QRS() : undefined
+  await reply(psid, sessionId, replyText, replyQRs)
 
   // Safety-net: AI đôi khi chỉ ack mà quên hỏi field thiếu kế tiếp.
-  // Nếu reply không có '?' và state vẫn thiếu → tự gửi câu hỏi cứng.
   if (!decision.reply.includes('?')) {
     const fallback = nextMissingFieldQuestion(newState)
     if (fallback) {
       console.log(`[V3 gather] safety-net fallback: ${fallback}`)
-      await reply(psid, sessionId, fallback)
+      const fallbackIsAboutBrand = needBrand && !askingBrand
+      await reply(psid, sessionId, fallback, fallbackIsAboutBrand ? V3_BRAND_QRS() : undefined)
     }
   }
 }
@@ -556,8 +946,6 @@ async function showSpGaraResults(
   psid: string,
   sessionId: string,
   pageId: string,
-  provinceCode: string | null,
-  provinceName: string,
   state: SessionState
 ): Promise<void> {
   const tireSize = state.tire_size ?? ''
@@ -566,51 +954,83 @@ async function showSpGaraResults(
     return
   }
   const brandFilter = brandFilterFromState(state)
+  const wardCode = state.ward_code ?? null
+  const provinceCode = state.province_code ?? null
+  const locationLabel = state.ward_name
+    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+    : state.province_name ?? ''
+
+  // V3 yêu cầu: BẮT BUỘC có ward_code hoặc province_code mới query
+  if (!wardCode && !provinceCode) {
+    console.warn(`[V3 showSpGara] no ward/province → cskhHandoff`)
+    await cskhHandoff(psid, sessionId, state, 'State thiếu ward/province khi fetch')
+    return
+  }
+
+  console.log(
+    `[V3 showSpGara] session=${sessionId} INPUT: size="${tireSize}" brand="${brandFilter}" ward=${wardCode} province=${provinceCode} label="${locationLabel}"`
+  )
 
   try {
-    let cards = await fetchSpGaraCards({
-      tireSize,
-      tireBrand: brandFilter,
-      provinceCode,
-      limit: 3,
-      sortBy: 'quantitysold'
-    })
-    let usedNational = false
+    let cards: SpGaraCard[] = []
+    let usedFallbackProvince = false
 
-    if (cards.length === 0 && provinceCode) {
+    // 1. Ưu tiên ward_code nếu có
+    if (wardCode) {
       cards = await fetchSpGaraCards({
         tireSize,
         tireBrand: brandFilter,
         provinceCode: null,
+        wardCode,
         limit: 3,
         sortBy: 'quantitysold'
       })
-      usedNational = true
+      console.log(`[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`)
+    }
+
+    // 2. Nếu ward không có gara → fallback province (chỉ khi cả 2 đều có)
+    if (cards.length === 0 && provinceCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        provinceCode,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'quantitysold'
+      })
+      usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
+      console.log(
+        `[V3 showSpGara] province fallback (${provinceCode}) → ${cards.length} cards${usedFallbackProvince ? ' [WARD→PROVINCE fallback]' : ''}`
+      )
     }
 
     if (cards.length === 0) {
+      // V3: không có SP/gara → chỉ gửi phone-ask (summary đã gửi trước đó),
+      // set AWAITING_PHONE, tin tiếp theo → pause-by-cskh.
       await updateSession(sessionId, {
-        step: 'AWAITING_CSKH_CHANNEL',
-        state: { ...state, cskh_reason: `Không có SP+gara cho size ${tireSize} ở ${provinceName}` }
+        step: 'AWAITING_PHONE',
+        state: {
+          ...state,
+          cskh_reason: `Không có gara cho size ${tireSize} ở ${locationLabel}`
+        }
       })
       await reply(
         psid,
         sessionId,
-        `Hiện TROLYoto chưa có sản phẩm phù hợp ở ${provinceName} ạ 😅\n\nĐể chuyên viên hỗ trợ anh/chị nhé 😊`,
-        [qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'), qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')]
+        'Hoặc để được hỗ trợ mình nhanh hơn, anh/chị vui lòng để lại số điện thoại ạ 😊'
       )
       return
     }
 
-    const intro = usedNational
-      ? `Dạ TROLYoto đã tìm được sản phẩm phù hợp (gara hỗ trợ ship đến ${provinceName}) ạ 😊`
-      : `Dạ TROLYoto đã tìm được sản phẩm phù hợp ở ${provinceName} - gara hỗ trợ ship ạ 😊`
-    await reply(psid, sessionId, intro)
+    // Có SP → chỉ gửi cards (summary đã gửi trước đó, không cần intro lặp)
+    const displayLabel = usedFallbackProvince
+      ? state.province_name ?? locationLabel
+      : locationLabel
     await sendCards(
       psid,
       sessionId,
       cards.map(buildSpGaraCard),
-      `${cards.length} SP+gara ở ${provinceName}${usedNational ? ' (toàn quốc)' : ''}`
+      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}`
     )
 
     const shownCodes = cards.map(c => c.garageCode).filter((c): c is string => !!c)
@@ -623,7 +1043,7 @@ async function showSpGaraResults(
         ...state,
         shown_garage_codes: shownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: usedNational
+        shown_national: false
       }
     })
 
@@ -769,64 +1189,52 @@ async function handleConcern(
     return
   }
   if (payload === 'QR_CLOSER_DEALER') {
-    await Promise.all([
-      updateSession(sessionId, {
-        step: 'AWAITING_CSKH_CHANNEL',
-        state: { ...state, cskh_reason: 'Khách muốn gara gần/tiện hơn' }
-      }),
-      reply(
-        psid,
-        sessionId,
-        'TROLYoto đã hiểu nhu cầu của anh chị rồi ạ 😊\n\nChuyên viên khách hàng sẽ tư vấn anh chị gara tiện hơn trong thời gian sớm nhất ạ.\n\nAnh chị muốn chờ ở đây hay nhận tư vấn qua điện thoại?',
-        [qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'), qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')]
-      )
-    ])
+    // V3: chuyển thẳng cskhHandoff (2 tin text, không QR)
+    await cskhHandoff(psid, sessionId, state, 'Khách muốn gara gần/tiện hơn')
   }
 }
 
+/**
+ * V3 cskhHandoff: gửi 2 tin nhắn text (không QR), đặt step AWAITING_PHONE.
+ * Tin tiếp theo của khách (phone hoặc khác) sẽ end-permanent (pause-by-cskh).
+ *
+ * @param mode  'default' = chuyển CSKH chung; 'no_product' = không có SP/gara.
+ *               Khác nhau ở tin nhắn ĐẦU TIÊN.
+ */
 async function cskhHandoff(
   psid: string,
   sessionId: string,
   state: SessionState,
-  reason: string
+  reason: string,
+  mode: 'default' | 'no_product' = 'default'
 ): Promise<void> {
+  console.log(`[V3] cskhHandoff session=${sessionId} mode=${mode} reason=${reason}`)
+  cancelTimer(sessionId, 'v3-cskh-handoff')
   await updateSession(sessionId, {
-    step: 'AWAITING_CSKH_CHANNEL',
+    step: 'AWAITING_PHONE',
     state: { ...state, cskh_reason: reason }
   })
+
+  const msg1 =
+    mode === 'no_product'
+      ? 'TROLY đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
+      : 'TROLY đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
+
+  await reply(psid, sessionId, msg1)
   await reply(
     psid,
     sessionId,
-    'Thông tin của anh chị cần được tư vấn kỹ hơn để báo giá đúng nhất 🙏\n\nChăm sóc KH sẽ phản hồi trong giờ làm việc (9h–18h, T2–T6).\n\nAnh chị muốn chờ tại đây hay nhận tư vấn qua điện thoại?',
-    [qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'), qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')]
+    'Hoặc để được hỗ trợ mình nhanh hơn, anh/chị vui lòng để lại số điện thoại ạ 😊'
   )
 }
 
-async function handleCskhChannel(
-  psid: string,
-  sessionId: string,
-  payload: string,
-  state: SessionState
-): Promise<void> {
-  if (payload === 'QR_CSKH_HERE') {
-    await Promise.all([
-      reply(
-        psid,
-        sessionId,
-        'TROLY đã ghi nhận ạ 🙏\n\nĐội ngũ chuyên viên TROLYoto sẽ liên hệ anh/chị trong giờ làm việc sớm nhất 😊\n\n⏰ Giờ làm việc: 9h - 18h, Thứ 2 - Thứ 6'
-      ),
-      completeSession(sessionId)
-    ])
-    return
-  }
-  if (payload === 'QR_LEAVE_PHONE') {
-    await Promise.all([
-      updateSession(sessionId, { step: 'AWAITING_PHONE', state }),
-      reply(psid, sessionId, 'Anh chị nhắn số điện thoại, TROLYoto sẽ liên hệ sớm nhất ạ!')
-    ])
-  }
-}
-
+/**
+ * V3 handlePhoneInput: nhận text bất kỳ ở step AWAITING_PHONE.
+ * - Có phone → ack có số
+ * - Không phone → ack đã ghi nhận
+ * Cả 2 case: end-permanent (is_paused_by_cskh=true). Bot stay silent vĩnh viễn
+ * cho PSID này — giống CSKH thực tế đã vào nhắn.
+ */
 async function handlePhoneInput(
   psid: string,
   sessionId: string,
@@ -834,26 +1242,17 @@ async function handlePhoneInput(
   state: SessionState
 ): Promise<void> {
   const phone = extractPhone(text)
-  if (!phone) {
-    await reply(
-      psid,
-      sessionId,
-      'Số điện thoại chưa hợp lệ ạ 😅\n\nAnh/chị nhập lại giúp em nhé.\nVí dụ: 0901234567'
-    )
-    return
-  }
-  await Promise.all([
-    updateSession(sessionId, {
-      step: 'COMPLETED',
-      state: { ...state, phone },
-      is_active: false
-    }),
-    reply(
-      psid,
-      sessionId,
-      `TROLYoto đã nhận số ${phone} 🙏\n\nChuyên viên sẽ liên hệ anh/chị trong giờ làm việc sớm nhất ạ 😊\n\n⏰ Giờ làm việc: 9h - 18h, Thứ 2 - Thứ 6`
-    )
-  ])
+  const ackText = phone
+    ? `Bên em đã nhận được số điện thoại ${phone} ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ anh/chị trong giờ làm việc sớm nhất 😊\n⏰ 9h–18h từ T2–T6`
+    : 'TROLY đã ghi nhận thông tin ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ hỗ trợ anh/chị trong giờ làm việc sớm nhất 😊\n⏰ 9h–18h từ T2–T6'
+
+  await reply(psid, sessionId, ackText)
+  await updateSession(sessionId, {
+    step: 'PAUSED_BY_CSKH',
+    state: { ...state, phone: phone ?? state.phone },
+    is_active: false,
+    is_paused_by_cskh: true
+  })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -888,9 +1287,11 @@ export async function handleMessengerEventV3(
     if (psid === pageId) return
 
     // Skip non-actionable events (delivery/read)
+    const hasAttachment = !!event.message?.attachments?.length
     const isActionable = !!(
       event.message?.text ||
       event.message?.quick_reply ||
+      hasAttachment ||
       event.postback ||
       event.optin ||
       event.referral
@@ -904,37 +1305,55 @@ export async function handleMessengerEventV3(
     let session: FbSession | null = await getActiveSession(psid, pageId)
     if (session?.is_paused_by_cskh) return
 
-    // optin/referral → welcome
-    if (event.optin || event.referral) {
-      if (!session) session = await createSession(psid, pageId)
-      await sendV3Welcome(psid, session.id)
-      return
-    }
-
     const messageText = event.message?.text?.trim() ?? ''
     const payload =
       event.message?.quick_reply?.payload ?? event.postback?.payload ?? ''
+    const imageUrl = event.message?.attachments?.find(a => a.type === 'image')
+      ?.payload?.url
 
     const latest = session ? null : await getLatestSession(psid, pageId)
     if (!session && latest?.is_paused_by_cskh) return
 
-    if (!session) {
-      session = await createSession(psid, pageId)
+    // optin/referral (Get Started) → tạo session + welcome ngắn
+    if (event.optin || event.referral) {
+      if (!session) {
+        session = await createSession(psid, pageId)
+        await updateSession(session.id, { step: 'V3_GATHERING' })
+      }
       await sendV3Welcome(psid, session.id)
+      console.log(`[V3 flow] optin/referral - welcome sent, waiting for user msg`)
       return
+    }
+
+    if (!session) {
+      // Lần đầu khách nhắn → tạo session step=V3_GATHERING + gửi welcome ngắn.
+      // Tin của khách ngay bên dưới sẽ được xử lý qua handleGathering/handleImage
+      // ngay sau welcome (cùng turn).
+      session = await createSession(psid, pageId)
+      await updateSession(session.id, { step: 'V3_GATHERING' })
+      session = { ...session, step: 'V3_GATHERING' }
+      await sendV3Welcome(psid, session.id)
     }
 
     const { step, state } = session
 
     // Log user msg
-    if (messageText || payload) {
+    if (messageText || payload || imageUrl) {
       appendConversationLog(session.id, {
         role: 'user',
         type: payload ? 'qr_click' : 'text',
-        text: messageText || `[click: ${payload}]`,
+        text:
+          messageText ||
+          (imageUrl ? `[image: ${imageUrl.slice(0, 60)}...]` : `[click: ${payload}]`),
         ts: new Date().toISOString(),
         ...(payload ? { payload } : {})
       }).catch(e => console.error('[V3 log user]', e))
+    }
+
+    // ── Image attachment → handleImage ──────────────────────────────────
+    if (imageUrl) {
+      await handleImage(psid, session, pageId, imageUrl)
+      return
     }
 
     // ── Payload (QR/postback) ────────────────────────────────────────────
@@ -945,7 +1364,6 @@ export async function handleMessengerEventV3(
         console.log(`[V3 flow] V3_TIRE_SIZE click → tire_size=${size}`)
         const newState: SessionState = { ...state, tire_size: size }
         await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
-        // Re-trigger gather turn với size làm input — AI sẽ ack + hỏi bước tiếp
         await handleGathering(
           psid,
           { ...session, state: newState, step: 'V3_GATHERING' },
@@ -954,11 +1372,39 @@ export async function handleMessengerEventV3(
         )
         return
       }
-      // Global payloads (route bất kể step)
-      if (payload === 'QR_CSKH_HERE' || payload === 'QR_LEAVE_PHONE') {
-        await handleCskhChannel(psid, session.id, payload, state)
+
+      // Khách chọn 1 brand cụ thể từ QR (Michelin / Hankook / ...)
+      if (payload.startsWith('V3_BRAND_NAME:')) {
+        const brand = payload.replace('V3_BRAND_NAME:', '').toUpperCase()
+        await handleBrandNameChoice(psid, session, pageId, brand)
         return
       }
+
+      // Khách chọn "Xem tất cả" hoặc click QR tier (legacy compat)
+      if (payload.startsWith('V3_BRAND:')) {
+        const tier = payload.replace('V3_BRAND:', '') as
+          | 'premium'
+          | 'balanced'
+          | 'budget'
+          | 'all'
+        await handleBrandTierChoice(psid, session, pageId, tier)
+        return
+      }
+
+      // Khách chọn ward để xác nhận khu vực
+      if (payload.startsWith('V3_WARD:')) {
+        const wardCode = payload.replace('V3_WARD:', '')
+        await handleWardChoice(psid, session, pageId, wardCode)
+        return
+      }
+
+      // Khách chọn "Chat tư vấn viên" — chuyển CSKH
+      if (payload === 'V3_CHAT_TVV') {
+        await cskhHandoff(psid, session.id, state, 'Khách bấm Chat tư vấn viên')
+        return
+      }
+      // V3: bỏ QR_CSKH_HERE/QR_LEAVE_PHONE (cskhHandoff giờ không có QR).
+      // Nếu tin cũ vẫn còn → bỏ qua silently.
       if (payload === 'QR_BOOK_DONE' || payload === 'QR_NOT_YET' || payload === 'QR_CONCERN') {
         console.log(`[V3 flow] booking-global payload=${payload} step=${step}`)
         await handleBookingState(psid, session.id, payload, state)
@@ -969,17 +1415,8 @@ export async function handleMessengerEventV3(
         await handleConcern(psid, session.id, payload, state)
         return
       }
-      // Welcome consult choice + late AI + wait CSKH
-      if (
-        payload === 'QR_AI_CONSULT' ||
-        payload === 'QR_AI_CONSULT_LATE' ||
-        payload === 'QR_CSKH_CONSULT' ||
-        payload === 'QR_WAIT_CSKH'
-      ) {
-        await handleConsultChoice(psid, session.id, payload, state)
-        return
-      }
-      // V3 hiếm khi dùng QR khác — postback lạ → bỏ qua + log
+      // V3 không có welcome → các QR_AI_CONSULT/QR_CSKH_CONSULT/... không phát
+      // hành; nếu xuất hiện (vd tin cũ) → bỏ qua + log.
       console.log(`[V3 flow] unhandled payload=${payload} step=${step}`)
       return
     }
@@ -990,78 +1427,36 @@ export async function handleMessengerEventV3(
         cancelTimer(session.id, '/reset')
         await resetUserSessions(psid, pageId)
         const fresh = await createSession(psid, pageId)
-        await sendV3Welcome(psid, fresh.id)
+        await updateSession(fresh.id, { step: 'V3_GATHERING' })
+        // Không welcome — khách nhắn tiếp sẽ vào gather. Reply ngắn báo reset.
+        await reply(psid, fresh.id, 'TROLY đã reset cuộc trò chuyện ạ 🔄\n\nAnh/chị cho TROLY biết kích cỡ lốp + thương hiệu mong muốn nhé 😊')
         return
       }
 
       switch (step) {
-        case 'AWAITING_CONSULT_TYPE':
-        case 'WELCOME':
-          // Welcome đang chờ click QR. Khách gõ text → fuzzy match (giống V2):
-          // nếu match → route; không match → resend ngắn.
-          {
-            const t = messageText.toLowerCase()
-            if (/bao\s*gia|tro\s*ly|bot|ai|nhanh|ngay|tuc\s*thi/.test(t)) {
-              await handleConsultChoice(psid, session.id, 'QR_AI_CONSULT', state)
-            } else if (/tu\s*van|chuyen\s*vien|nhan\s*vien|cskh|ky/.test(t)) {
-              await handleConsultChoice(psid, session.id, 'QR_CSKH_CONSULT', state)
-            } else {
-              await reply(
-                psid,
-                session.id,
-                'Anh/chị cần hỗ trợ:',
-                [
-                  qr(QR_TITLE.AI_CONSULT, 'QR_AI_CONSULT'),
-                  qr(QR_TITLE.CSKH_CONSULT, 'QR_CSKH_CONSULT')
-                ]
-              )
-            }
-          }
-          break
-
-        case 'AWAITING_AREA_FOR_CSKH':
-          await handleAreaForCskh(psid, session.id, messageText, state)
-          break
-
-        case 'AWAITING_SIZE_FOR_CSKH':
-          await handleSizeForCskh(psid, session.id, messageText, state)
-          break
-
-        case 'V3_GATHERING':
-          await handleGathering(psid, session, pageId, messageText)
-          break
-
         case 'AWAITING_PHONE':
+          // V3: bất kỳ tin gì ở step này → ack + pause-by-cskh (end vĩnh viễn)
           await handlePhoneInput(psid, session.id, messageText, state)
           break
 
-        case 'AWAITING_CSKH_CHANNEL':
-          // Khách gõ thẳng SĐT → nhận luôn; khác → silent (đợi click QR)
-          if (extractPhone(messageText)) {
-            await updateSession(session.id, { step: 'AWAITING_PHONE', state })
-            await handlePhoneInput(psid, session.id, messageText, state)
-          }
-          break
-
         case 'SHOWING_RESULTS_LOCAL':
-          // Đang chờ timer 15s → im lặng (theo design V2)
+          // Đang chờ timer 15s → im lặng
           console.log(`[V3 flow] SHOWING_RESULTS_LOCAL silent session=${session.id}`)
           break
 
+        case 'WELCOME':
+        case 'V3_GATHERING':
         case 'AWAITING_BOOKING_STATE':
         case 'AWAITING_CONCERN':
-          // Đang chờ click QR booking/concern. Khách gõ text → AI gather có thể
-          // hiểu intent (vd "rẻ hơn không"); tạm xử như gathering để bot phản
-          // hồi tự nhiên thay vì silent.
+        // Legacy V2 steps — V3 không tạo ra nữa nhưng có thể tồn tại trong DB
+        case 'AWAITING_CONSULT_TYPE':
+        case 'AWAITING_AREA_FOR_CSKH':
+        case 'AWAITING_SIZE_FOR_CSKH':
+        default:
+          // V3: mọi free-text đi qua AI gather. AI quyết định extract / hỏi /
+          // handoff. Không còn welcome / consult-choice cứng.
           await handleGathering(psid, session, pageId, messageText)
           break
-
-        case 'COMPLETED':
-        default: {
-          const ns = await createSession(psid, pageId)
-          await sendV3Welcome(psid, ns.id)
-          break
-        }
       }
     }
   } catch (err) {

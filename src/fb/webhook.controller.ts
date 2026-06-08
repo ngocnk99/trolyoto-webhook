@@ -13,12 +13,14 @@ import { RawBodyRequest } from '@nestjs/common'
 import * as crypto from 'crypto'
 import { handleMessengerEvent } from './flow-handler'
 import { handleMessengerEventV3 } from './v3/flow-handler'
+import { handleMessengerEventProduction } from './production/flow-handler'
 import type { MessengerWebhookBody } from './types'
 
 const VERIFY_TOKEN = process.env.FB_WEBHOOK_VERIFY_TOKEN!
 const APP_SECRET = process.env.FB_APP_SECRET!
 const PAGE_ID_V2 = process.env.FACEBOOK_PAGE_ID
 const PAGE_ID_V3 = process.env.FACEBOOK_PAGE_ID_V3
+const PAGE_ID_PRODUCT = process.env.FACEBOOK_PAGE_ID_PRODUCT
 
 function verifySignature(rawBody: Buffer, signature?: string): boolean {
   if (!signature || !APP_SECRET) return !APP_SECRET // skip if no secret configured
@@ -101,18 +103,23 @@ export class WebhookController {
 
   private async processEvents(body: MessengerWebhookBody): Promise<void> {
     for (const entry of body.entry ?? []) {
-      // Route theo page_id: V2 vs V3 dùng handler + token riêng.
+      // Route theo page_id: V2 / V3 / PRODUCT dùng handler + token riêng.
       const isV2 = !!PAGE_ID_V2 && entry.id === PAGE_ID_V2
       const isV3 = !!PAGE_ID_V3 && entry.id === PAGE_ID_V3
-      if (!isV2 && !isV3) {
+      const isProduct = !!PAGE_ID_PRODUCT && entry.id === PAGE_ID_PRODUCT
+      if (!isV2 && !isV3 && !isProduct) {
         console.warn(
-          `[FB webhook] Ignored entry for unknown page ${entry.id} (V2=${PAGE_ID_V2 ?? 'n/a'}, V3=${PAGE_ID_V3 ?? 'n/a'})`
+          `[FB webhook] Ignored entry for unknown page ${entry.id} (V2=${PAGE_ID_V2 ?? 'n/a'}, V3=${PAGE_ID_V3 ?? 'n/a'}, PROD=${PAGE_ID_PRODUCT ?? 'n/a'})`
         )
         continue
       }
 
-      const handler = isV3 ? handleMessengerEventV3 : handleMessengerEvent
-      const tag = isV3 ? 'V3' : 'V2'
+      const handler = isProduct
+        ? handleMessengerEventProduction
+        : isV3
+          ? handleMessengerEventV3
+          : handleMessengerEvent
+      const tag = isProduct ? 'PROD' : isV3 ? 'V3' : 'V2'
       console.log(`[FB webhook] route page=${entry.id} → ${tag}`)
 
       const events = [...(entry.messaging ?? []), ...(entry.standby ?? [])]

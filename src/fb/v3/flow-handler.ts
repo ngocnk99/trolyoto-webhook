@@ -18,6 +18,7 @@
  *  Page riêng: FACEBOOK_PAGE_ID_V3, token FB_PAGE_ACCESS_TOKEN_V3
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { sendMessage, sendTypingOn, markSeen } from '../client'
 import {
   getActiveSession,
@@ -34,6 +35,7 @@ import {
   resolveProvince,
   getMinPriceForTireSize,
   fetchTireSizesByCarTags,
+  fetchTireSizesByCartype,
   findWardsByText,
   type SpGaraCard,
   type WardMatch
@@ -56,7 +58,24 @@ import {
 } from '../ai-helper'
 import { scheduleTimer, cancelTimer } from '../timers'
 
-const PAGE_TOKEN_V3 = process.env.FB_PAGE_ACCESS_TOKEN_V3!
+// Token chọn theo pageId — V3 page và PRODUCTION page dùng chung handler này
+// nhưng token khác nhau. AsyncLocalStorage giữ token theo request scope, an
+// toàn khi nhiều event chạy song song (mỗi handler call → 1 ALS context).
+const PAGE_TOKEN_V3 = process.env.FB_PAGE_ACCESS_TOKEN_V3 ?? ''
+const PAGE_TOKEN_PRODUCT = process.env.FB_PAGE_ACCESS_TOKEN_PRODUCT ?? ''
+const PAGE_ID_PRODUCT = process.env.FACEBOOK_PAGE_ID_PRODUCT
+
+const requestContext = new AsyncLocalStorage<{ token: string; pageId: string }>()
+
+/** Trả token cho request hiện tại (set bởi handleMessengerEventV3). */
+function currentToken(): string {
+  return requestContext.getStore()?.token ?? PAGE_TOKEN_V3
+}
+
+function tokenForPageId(pageId: string): string {
+  if (PAGE_ID_PRODUCT && pageId === PAGE_ID_PRODUCT) return PAGE_TOKEN_PRODUCT
+  return PAGE_TOKEN_V3
+}
 const TROLYOTO_URL = 'https://trolyoto.com'
 const COMMUNITY_URL = 'https://www.facebook.com/groups/748788784953241'
 
@@ -135,6 +154,16 @@ function extractPhone(text: string): string | null {
   return m ? m[0] : null
 }
 
+/** Trong giờ làm việc: 9h-18h, Thứ 2 - Thứ 6 (timezone Asia/Ho_Chi_Minh). */
+function isWorkingHours(): boolean {
+  const vnTime = new Date(
+    new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' })
+  )
+  const day = vnTime.getDay()
+  const hour = vnTime.getHours()
+  return day >= 1 && day <= 5 && hour >= 9 && hour < 18
+}
+
 function brandFilterFromState(state: SessionState): string {
   if (state.selected_brands && state.selected_brands.length > 0) {
     return state.selected_brands.join('|')
@@ -168,17 +197,33 @@ function summarizeBrand(state: SessionState): string {
 type FieldKey = 'size' | 'brand' | 'location'
 
 /**
- * Tin nhắn summary — chỉ show 1 field "cuối cùng" khách cung cấp.
- * Priority khi khách gửi nhiều field cùng tin: location > brand > size
- * (vì location là field hoàn tất state để fetch).
- *
- * Vd:
- *   updated=['size']                  → "kích thước: 205/55R17"
- *   updated=['brand']                 → "thương hiệu: MICHELIN"
- *   updated=['location']              → "khu vực: Hà Nội"
- *   updated=['size','brand','location'] → "khu vực: Hà Nội" (lấy location)
+ * Build intro "Em đã hiểu ý anh/chị" KHI có sản phẩm — verification format:
+ *   "😊 {size} {brand} ở {location} phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ."
+ * Bỏ qua field 'Tất cả' brand để intro gọn.
  */
-function buildStateSummary(state: SessionState, updated: FieldKey[]): string {
+function buildSearchIntro(state: SessionState): string {
+  const parts: string[] = []
+  if (state.tire_size) parts.push(state.tire_size)
+  const brand = summarizeBrand(state)
+  if (brand && brand !== 'Tất cả') parts.push(brand)
+  const location = state.ward_name
+    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+    : state.province_name ?? ''
+  const infoStr = parts.join(' ')
+  let prefix: string
+  if (infoStr && location) prefix = `${infoStr} ở ${location}`
+  else if (infoStr) prefix = infoStr
+  else if (location) prefix = location
+  else return 'Dạ TROLYoto tìm giúp mình ngay đây ạ 😊'
+  return `😊 ${prefix} phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.`
+}
+
+/**
+ * Phần "Em đã nhận ${field}" — chỉ field "cuối cùng" khách cung cấp.
+ * Priority: location > brand > size.
+ * Trả '' nếu không có field nào trong updated array.
+ */
+function buildSummaryHead(state: SessionState, updated: FieldKey[]): string {
   let field: FieldKey | null = null
   if (updated.includes('location')) field = 'location'
   else if (updated.includes('brand')) field = 'brand'
@@ -195,8 +240,7 @@ function buildStateSummary(state: SessionState, updated: FieldKey[]): string {
       : state.province_name ?? '?'
     infoLine = `khu vực: ${loc}`
   }
-  const head = infoLine ? `TROLY đã nhận ${infoLine}\n\n` : ''
-  return `${head}Bên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊`
+  return infoLine ? `Em đã nhận ${infoLine}` : ''
 }
 
 /** Suy ra bot đang hỏi field nào dựa trên state CŨ (size → brand → location). */
@@ -214,13 +258,13 @@ const MAX_FAIL_PER_STEP = 2 // 1 lần = retry; 2 lần = CSKH handoff
 /** Trả về câu hỏi hardcoded cho field thiếu kế tiếp (size → brand → location). */
 function nextMissingFieldQuestion(state: SessionState): string | null {
   if (!state.tire_size) {
-    return 'Anh/chị cho TROLY biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
+    return 'Anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
   }
   if (!state.brand_tier && (!state.selected_brands || state.selected_brands.length === 0)) {
     return BRAND_ASK_TEXT_FULL
   }
   if (!state.province_code && !state.ward_code) {
-    return 'Anh/chị ở khu vực nào (xã/phường + tỉnh/TP) để TROLY tìm gara gần ạ? 😊'
+    return 'Anh/chị ở khu vực nào (xã/phường + tỉnh/TP) để em tìm gara gần ạ? 😊'
   }
   return null
 }
@@ -253,7 +297,7 @@ async function showWardConfirmOptions(
   await reply(
     psid,
     sessionId,
-    `TROLY tìm thấy ${capped.length} khu vực trùng tên "${userText}" ạ 😊\n\nAnh/chị chọn đúng khu vực của mình giúp em nhé:`,
+    `Em tìm thấy ${capped.length} khu vực trùng tên "${userText}" ạ 😊\n\nAnh/chị chọn đúng khu vực của mình giúp em nhé:`,
     qrs
   )
 }
@@ -270,7 +314,7 @@ function recentHistory(
     .map(m => ({ role: m.role as 'bot' | 'user', text: m.text }))
 }
 
-// ── Send-API wrappers (dùng PAGE_TOKEN_V3) ─────────────────────────────────
+// ── Send-API wrappers (token theo request scope qua currentToken()) ────────
 
 async function reply(
   psid: string,
@@ -278,8 +322,9 @@ async function reply(
   text: string,
   quickReplies?: QuickReply[]
 ): Promise<void> {
-  sendTypingOn(psid, PAGE_TOKEN_V3).catch(e => console.error('[V3 typing]', e))
-  await sendMessage(psid, { text, quick_replies: quickReplies }, PAGE_TOKEN_V3)
+  const tok = currentToken()
+  sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
+  await sendMessage(psid, { text, quick_replies: quickReplies }, tok)
 
   appendConversationLog(sessionId, {
     role: 'bot',
@@ -297,13 +342,14 @@ async function sendButtonTemplate(
   buttons: Button[],
   context?: string
 ): Promise<void> {
-  sendTypingOn(psid, PAGE_TOKEN_V3).catch(e => console.error('[V3 typing]', e))
+  const tok = currentToken()
+  sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
   await sendMessage(
     psid,
     {
       attachment: { type: 'template', payload: { template_type: 'button', text, buttons } }
     },
-    PAGE_TOKEN_V3
+    tok
   )
   appendConversationLog(sessionId, {
     role: 'bot',
@@ -323,7 +369,7 @@ async function sendCards(
   await sendMessage(
     psid,
     { attachment: { type: 'template', payload: { template_type: 'generic', elements } } },
-    PAGE_TOKEN_V3
+    currentToken()
   )
   const cards: LoggedCard[] = elements.map(el => ({
     title: el.title,
@@ -388,24 +434,92 @@ async function sendV3Welcome(psid: string, sessionId: string): Promise<void> {
 // ── Car → sizes lookup (DB tags + AI OEM) ──────────────────────────────────
 
 /**
- * V3: Tra kích cỡ lốp theo tên xe — CHỈ DB tag (bỏ AI suggest theo yêu cầu).
- * Dedupe case-insensitive, cap 4. Nếu DB không có → trả [] để caller báo khách.
+ * Convert tên xe → các biến thể cartype code (cover format DB khác nhau).
+ *
+ * Vd "Mazda CX-5" → [
+ *   "MAZDA_CX_5",   // underscore giữa mọi token
+ *   "MAZDACX5",     // join hết
+ *   "MAZDA-CX-5",   // dash
+ *   "MAZDA_CX-5",   // chỉ space → underscore, giữ dash
+ *   "MAZDA_CX5"     // gộp 2 token cuối nếu token cuối ngắn (≤2 ký tự)
+ * ]
+ */
+function toCartypeCodes(carName: string): string[] {
+  const normalized = carName
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^A-Z0-9\s_-]/g, '')
+    .trim()
+  if (!normalized) return []
+
+  const tokens = normalized.split(/[\s_-]+/).filter(Boolean)
+  if (tokens.length === 0) return []
+
+  const variants = new Set<string>()
+  variants.add(tokens.join('_'))
+  variants.add(tokens.join(''))
+  variants.add(tokens.join('-'))
+  variants.add(normalized.replace(/\s+/g, '_')) // giữ dash gốc
+  variants.add(normalized.replace(/\s+/g, '-'))
+  variants.add(normalized.replace(/[\s_-]+/g, '')) // remove all separators
+
+  // Gộp 2 token cuối nếu token cuối là số/ký tự ngắn (vd "CX 5" → "CX5", "CR V" → "CRV")
+  if (tokens.length >= 2) {
+    const lastShort = tokens[tokens.length - 1].length <= 2
+    if (lastShort) {
+      const merged = [...tokens.slice(0, -2), tokens.slice(-2).join('')]
+      variants.add(merged.join('_'))
+      variants.add(merged.join(''))
+      variants.add(merged.join('-'))
+    }
+  }
+
+  return Array.from(variants).filter(s => s.length > 0)
+}
+
+/**
+ * V3: Tra kích cỡ lốp theo tên xe — query SONG SONG 2 nguồn DB:
+ *   1. tag table (productadmin_tag) qua getCarNameVariants
+ *   2. cartype table (productadmin_cartype) qua toCartypeCode
+ * Merge dedup case-insensitive, sort theo quantitysold (qua thứ tự DB), cap 4.
  */
 async function lookupCarSizes(carModel: string): Promise<string[]> {
-  let dbSizes: string[] = []
-  try {
-    const variants = await getCarNameVariants(carModel)
-    if (variants.exact.length > 0) {
-      const r = await fetchTireSizesByCarTags(variants.exact)
-      if (r.sizes.length > 0) dbSizes = r.sizes.map(s => s.size)
-    }
-    console.log(`[V3 lookupCarSizes] "${carModel}" → ${dbSizes.length} DB sizes`)
-  } catch (e) {
-    console.error('[V3 flow] lookupCarSizes:', e)
-  }
+  const cartypeCodes = toCartypeCodes(carModel)
+
+  // Song song: tag-based + cartype-based (cartype với nhiều format variants)
+  const [tagResult, cartypeResult] = await Promise.all([
+    (async () => {
+      try {
+        const variants = await getCarNameVariants(carModel)
+        if (variants.exact.length === 0) return [] as string[]
+        const r = await fetchTireSizesByCarTags(variants.exact)
+        return r.sizes.map(s => s.size)
+      } catch (e) {
+        console.error('[V3 lookupCarSizes] tag query:', e)
+        return [] as string[]
+      }
+    })(),
+    (async () => {
+      if (cartypeCodes.length === 0) return [] as string[]
+      try {
+        const r = await fetchTireSizesByCartype(cartypeCodes)
+        return r.sizes.map(s => s.size)
+      } catch (e) {
+        console.error('[V3 lookupCarSizes] cartype query:', e)
+        return [] as string[]
+      }
+    })()
+  ])
+
+  console.log(
+    `[V3 lookupCarSizes] "${carModel}" tag=${tagResult.length} cartype([${cartypeCodes.join(',')}])=${cartypeResult.length}`
+  )
+
+  // Merge + dedup case-insensitive + cap 4
   const seen = new Set<string>()
   const sizes: string[] = []
-  for (const s of dbSizes) {
+  for (const s of [...tagResult, ...cartypeResult]) {
     if (!s) continue
     const key = s.toUpperCase()
     if (seen.has(key)) continue
@@ -427,10 +541,14 @@ async function showCarSizeOptions(
   sizes: string[]
 ): Promise<void> {
   const capped = sizes.slice(0, 11)
+  const text =
+    capped.length === 1
+      ? `Dạ xe ${carName} có kích cỡ sau, anh/chị xác nhận có phù hợp không ạ? 😊`
+      : `Dạ xe ${carName} thường dùng các kích cỡ sau, anh/chị chọn giúp em nhé 😊`
   await reply(
     psid,
     sessionId,
-    `Dạ xe ${carName} thường dùng các kích cỡ sau, anh/chị chọn giúp em nhé 😊`,
+    text,
     capped.map(s => qr(s, `V3_TIRE_SIZE:${s}`))
   )
 }
@@ -466,8 +584,7 @@ async function handleBrandNameChoice(
   const hasSize = !!newState.tire_size
   const hasLocation = !!newState.province_code || !!newState.ward_code
   if (hasSize && hasLocation) {
-    await reply(psid, session.id, buildStateSummary(newState, ['brand']))
-    await showSpGaraResults(psid, session.id, pageId, newState)
+    await showSpGaraResults(psid, session.id, pageId, newState, ['brand'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -494,8 +611,7 @@ async function handleBrandTierChoice(
   const hasSize = !!newState.tire_size
   const hasLocation = !!newState.province_code || !!newState.ward_code
   if (hasSize && hasLocation) {
-    await reply(psid, session.id, buildStateSummary(newState, ['brand']))
-    await showSpGaraResults(psid, session.id, pageId, newState)
+    await showSpGaraResults(psid, session.id, pageId, newState, ['brand'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -535,8 +651,7 @@ async function handleWardChoice(
     !!newState.brand_tier ||
     (newState.selected_brands !== undefined && newState.selected_brands.length > 0)
   if (hasSize && hasBrand) {
-    await reply(psid, session.id, buildStateSummary(newState, ['location']))
-    await showSpGaraResults(psid, session.id, pageId, newState)
+    await showSpGaraResults(psid, session.id, pageId, newState, ['location'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -597,7 +712,7 @@ async function handleImage(
     await reply(
       psid,
       session.id,
-      'TROLY chưa đọc rõ thông tin trên ảnh ạ 😅\n\nAnh/chị thử chụp lại rõ phần "215/75R16" trên thành lốp, hoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸'
+      'Để em hỗ trợ chính xác hơn, anh/chị thử chụp lại rõ phần "215/75R16" trên thành lốp giúp em ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
     )
     return
   }
@@ -616,12 +731,11 @@ async function handleImage(
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   if (hasSize && hasBrand && hasLocation) {
-    // Đủ 3 trường → summary chỉ field từ ảnh (size và/hoặc brand)
+    // Đủ 3 trường → showSpGaraResults sẽ tự compose summary theo result
     const updatedFields: FieldKey[] = []
     if (analysis.tire_size && analysis.confidence >= 0.5) updatedFields.push('size')
     if (analysis.brand && analysis.confidence >= 0.5) updatedFields.push('brand')
-    await reply(psid, session.id, buildStateSummary(newState, updatedFields))
-    await showSpGaraResults(psid, session.id, pageId, newState)
+    await showSpGaraResults(psid, session.id, pageId, newState, updatedFields)
     return
   }
 
@@ -795,8 +909,23 @@ async function handleGathering(
     (newState.selected_brands !== undefined && (newState.selected_brands?.length ?? 0) > 0)
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
-  if (hasSize && hasBrand && hasLocation) {
-    // Đủ 3 trường → 1 tin summary với CHỈ field khách vừa cung cấp turn này
+  // Đủ 3 trường → fetch. Nhưng CHỈ fetch khi AI thực sự cập nhật field
+  // relevant (size/brand/location). Tránh refetch loop khi state đã complete +
+  // khách chỉ off-topic ở AWAITING_PHONE (sau no-product).
+  const relevantFieldUpdated = !!(
+    decision.updates.tire_size ||
+    decision.updates.brand_tier ||
+    (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
+    decision.updates.province_name
+  )
+
+  // Detect: khách EXPLICIT nêu size (vd "vf3 205/55r17") qua regex trong tin gốc.
+  // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
+  // do AI auto-fill (có thể hallucinate); ưu tiên show car size options.
+  const userExplicitSize = /\d{3}\s*\/?\s*\d{2}\s*[Rr]\s*\d{2}/.test(userInput)
+  const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
+
+  if (hasSize && hasBrand && hasLocation && relevantFieldUpdated && !carWantsOptions) {
     const updatedFields: FieldKey[] = []
     if (decision.updates.tire_size) updatedFields.push('size')
     if (
@@ -806,8 +935,7 @@ async function handleGathering(
       updatedFields.push('brand')
     }
     if (decision.updates.province_name) updatedFields.push('location')
-    await reply(psid, sessionId, buildStateSummary(newState, updatedFields))
-    await showSpGaraResults(psid, sessionId, pageId, newState)
+    await showSpGaraResults(psid, sessionId, pageId, newState, updatedFields)
     return
   }
 
@@ -819,9 +947,10 @@ async function handleGathering(
   }
 
   // ── Fail branch: AI không hiểu — bump fail_X cho field đang hỏi ────────
+  //  - Off-topic question (vd "có phải bot không") → KHÔNG fail (AI đã reply hợp lệ)
   //  - 1 lần fail: hỏi lại (size → ask image; brand/location → re-ask)
   //  - ≥2 lần fail: cskhHandoff
-  if (!aiExtractedAnything && wasAsking) {
+  if (!aiExtractedAnything && wasAsking && !decision.is_off_topic) {
     const failKey =
       wasAsking === 'size'
         ? 'fail_size'
@@ -843,12 +972,12 @@ async function handleGathering(
       return
     }
 
-    // 1 lần fail — gửi retry message phù hợp với step
+    // 1 lần fail — gửi retry message tone tích cực (không "chưa hiểu")
     if (wasAsking === 'size') {
       await reply(
         psid,
         sessionId,
-        'TROLY chưa hiểu thông tin ạ 😅\n\nAnh/chị có thể gửi ảnh thành lốp xe để TROLY đọc kích cỡ giúp, hoặc nhập định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸'
+        'Để em báo giá chính xác hơn, anh/chị gửi giúp em ảnh thành lốp xe để em đọc kích cỡ ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
       )
       return
     }
@@ -860,15 +989,21 @@ async function handleGathering(
       await reply(
         psid,
         sessionId,
-        'TROLY chưa rõ khu vực ạ 😅\n\nAnh/chị cho TROLY biết xã/phường + tỉnh/TP nhé (vd: "Hai Bà Trưng, Hà Nội") 😊'
+        'Anh/chị giúp em xác nhận khu vực chính xác hơn nhé — xã/phường + tỉnh/TP (vd: "Hai Bà Trưng, Hà Nội") 😊'
       )
       return
     }
   }
 
-  // ── Branch 1: AI phát hiện tên xe + chưa có size → tra DB-only sizes
-  if (decision.updates.car_model && !newState.tire_size) {
+  // ── Branch 1: AI phát hiện tên xe + khách KHÔNG explicit nêu size → show options
+  if (carWantsOptions && decision.updates.car_model) {
     const carName = decision.updates.car_model
+    // Bỏ qua tire_size từ AI (có thể hallucinate) + clear stale state.tire_size
+    newState.tire_size = undefined
+    await updateSession(sessionId, { state: newState })
+    console.log(
+      `[V3 gather] car="${carName}" userExplicitSize=false → ignore AI size, show car options`
+    )
     console.log(`[V3 gather] car_model="${carName}" → lookupCarSizes (DB only)`)
 
     const justGotBrand =
@@ -880,9 +1015,9 @@ async function handleGathering(
         decision.updates.selected_brands && decision.updates.selected_brands.length > 0
           ? decision.updates.selected_brands.join(', ')
           : `phân khúc ${decision.updates.brand_tier}`
-      ackText = `Dạ ghi nhận ${brandLabel} ạ 👍\n\nTROLY tra cứu kích cỡ cho xe ${carName} ngay ạ 😊`
+      ackText = `Dạ ghi nhận ${brandLabel} ạ 👍\n\nEm tra cứu kích cỡ cho xe ${carName} ngay ạ 😊`
     } else {
-      ackText = `Dạ TROLY tra cứu kích cỡ cho xe ${carName} ngay ạ 😊`
+      ackText = `Dạ em tra cứu kích cỡ cho xe ${carName} ngay ạ 😊`
     }
     await reply(psid, sessionId, ackText)
 
@@ -908,7 +1043,7 @@ async function handleGathering(
       await reply(
         psid,
         sessionId,
-        `TROLY chưa tìm thấy kích cỡ lốp phù hợp cho xe "${carName}" ạ 😅\n\nAnh/chị có thể gửi ảnh thành lốp xe để TROLY đọc kích cỡ giúp, hoặc nhập định dạng XXX/YYRZZ (vd: 185/60R15) ạ 📸`
+        `Để em hỗ trợ chính xác cho xe "${carName}", anh/chị gửi giúp em ảnh thành lốp xe ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊`
       )
     }
     return
@@ -946,7 +1081,8 @@ async function showSpGaraResults(
   psid: string,
   sessionId: string,
   pageId: string,
-  state: SessionState
+  state: SessionState,
+  updatedFields: FieldKey[]
 ): Promise<void> {
   const tireSize = state.tire_size ?? ''
   if (!tireSize) {
@@ -1004,9 +1140,13 @@ async function showSpGaraResults(
       )
     }
 
+    const head = buildSummaryHead(state, updatedFields)
+
     if (cards.length === 0) {
-      // V3: không có SP/gara → chỉ gửi phone-ask (summary đã gửi trước đó),
-      // set AWAITING_PHONE, tin tiếp theo → pause-by-cskh.
+      // V3: không có SP/gara → summary + "sẽ gửi thông tin sớm nhất" + phone-ask
+      const msg1 = head
+        ? `${head}\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊`
+        : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
       await updateSession(sessionId, {
         step: 'AWAITING_PHONE',
         state: {
@@ -1014,6 +1154,7 @@ async function showSpGaraResults(
           cskh_reason: `Không có gara cho size ${tireSize} ở ${locationLabel}`
         }
       })
+      await reply(psid, sessionId, msg1)
       await reply(
         psid,
         sessionId,
@@ -1022,7 +1163,10 @@ async function showSpGaraResults(
       return
     }
 
-    // Có SP → chỉ gửi cards (summary đã gửi trước đó, không cần intro lặp)
+    // Có SP → intro verification + cards
+    // ("😊 205/55R17 Michelin ở Hà Nội phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.")
+    const msgFound = buildSearchIntro(state)
+    await reply(psid, sessionId, msgFound)
     const displayLabel = usedFallbackProvince
       ? state.province_name ?? locationLabel
       : locationLabel
@@ -1215,10 +1359,13 @@ async function cskhHandoff(
     state: { ...state, cskh_reason: reason }
   })
 
+  const workHours = isWorkingHours()
   const msg1 =
     mode === 'no_product'
-      ? 'TROLY đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
-      : 'TROLY đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
+      ? 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
+      : workHours
+      ? 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ anh/chị sớm nhất có thể ạ 😊'
+      : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
 
   await reply(psid, sessionId, msg1)
   await reply(
@@ -1242,9 +1389,17 @@ async function handlePhoneInput(
   state: SessionState
 ): Promise<void> {
   const phone = extractPhone(text)
-  const ackText = phone
-    ? `Bên em đã nhận được số điện thoại ${phone} ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ anh/chị trong giờ làm việc sớm nhất 😊\n⏰ 9h–18h từ T2–T6`
-    : 'TROLY đã ghi nhận thông tin ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ hỗ trợ anh/chị trong giờ làm việc sớm nhất 😊\n⏰ 9h–18h từ T2–T6'
+  const workHours = isWorkingHours()
+  let ackText: string
+  if (phone) {
+    ackText = workHours
+      ? `Bên em đã nhận được số điện thoại ${phone} ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ anh/chị sớm nhất có thể ạ 😊`
+      : `Bên em đã nhận được số điện thoại ${phone} ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ anh/chị vào buổi làm việc kế tiếp ạ 😊\n⏰ 9h–18h từ T2–T6`
+  } else {
+    ackText = workHours
+      ? 'Em đã ghi nhận thông tin ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ hỗ trợ anh/chị sớm nhất có thể ạ 😊'
+      : 'Em đã ghi nhận thông tin ạ 🙏\n\nChuyên viên TROLYoto sẽ liên hệ hỗ trợ anh/chị vào buổi làm việc kế tiếp ạ 😊\n⏰ 9h–18h từ T2–T6'
+  }
 
   await reply(psid, sessionId, ackText)
   await updateSession(sessionId, {
@@ -1260,6 +1415,15 @@ async function handlePhoneInput(
 // ════════════════════════════════════════════════════════════════════════════
 
 export async function handleMessengerEventV3(
+  event: MessengerEvent,
+  pageId: string
+): Promise<void> {
+  return requestContext.run({ token: tokenForPageId(pageId), pageId }, () =>
+    handleMessengerEventV3Inner(event, pageId)
+  )
+}
+
+async function handleMessengerEventV3Inner(
   event: MessengerEvent,
   pageId: string
 ): Promise<void> {
@@ -1299,8 +1463,24 @@ export async function handleMessengerEventV3(
     if (!isActionable) return
 
     // Typing + seen sớm
-    sendTypingOn(psid, PAGE_TOKEN_V3).catch(e => console.error('[V3 typing-early]', e))
-    markSeen(psid, PAGE_TOKEN_V3).catch(e => console.error('[V3 markSeen]', e))
+    sendTypingOn(psid, currentToken()).catch(e => console.error('[V3 typing-early]', e))
+    markSeen(psid, currentToken()).catch(e => console.error('[V3 markSeen]', e))
+
+    // /reset — bypass MỌI guard (kể cả paused-by-cskh) để dễ test.
+    // Phải check ở ĐÂY, trước khi getActiveSession check pause.
+    if (event.message?.text?.trim() === '/reset') {
+      console.log(`[V3 flow] /reset psid=${psid} — wipe all sessions + welcome`)
+      await resetUserSessions(psid, pageId)
+      const fresh = await createSession(psid, pageId)
+      await updateSession(fresh.id, { step: 'V3_GATHERING' })
+      await sendV3Welcome(psid, fresh.id)
+      await reply(
+        psid,
+        fresh.id,
+        'Em đã reset cuộc trò chuyện ạ 🔄\n\nAnh/chị cho em biết kích cỡ lốp + thương hiệu mong muốn nhé 😊'
+      )
+      return
+    }
 
     let session: FbSession | null = await getActiveSession(psid, pageId)
     if (session?.is_paused_by_cskh) return
@@ -1423,20 +1603,18 @@ export async function handleMessengerEventV3(
 
     // ── Plain text ───────────────────────────────────────────────────────
     if (messageText) {
-      if (messageText === '/reset') {
-        cancelTimer(session.id, '/reset')
-        await resetUserSessions(psid, pageId)
-        const fresh = await createSession(psid, pageId)
-        await updateSession(fresh.id, { step: 'V3_GATHERING' })
-        // Không welcome — khách nhắn tiếp sẽ vào gather. Reply ngắn báo reset.
-        await reply(psid, fresh.id, 'TROLY đã reset cuộc trò chuyện ạ 🔄\n\nAnh/chị cho TROLY biết kích cỡ lốp + thương hiệu mong muốn nhé 😊')
-        return
-      }
-
+      // /reset đã được xử lý SỚM ở đầu dispatcher (bypass paused guard)
       switch (step) {
         case 'AWAITING_PHONE':
-          // V3: bất kỳ tin gì ở step này → ack + pause-by-cskh (end vĩnh viễn)
-          await handlePhoneInput(psid, session.id, messageText, state)
+          // V3: chỉ kết-thúc-pause khi khách gửi SĐT thật. Tin khác (hỏi off-topic,
+          // gửi lại size/brand/location) → tiếp tục handleGathering để khách có thể
+          // hỏi/tìm lại sản phẩm.
+          if (extractPhone(messageText)) {
+            await handlePhoneInput(psid, session.id, messageText, state)
+          } else {
+            console.log(`[V3 flow] AWAITING_PHONE non-phone → handleGathering`)
+            await handleGathering(psid, session, pageId, messageText)
+          }
           break
 
         case 'SHOWING_RESULTS_LOCAL':

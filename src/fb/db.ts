@@ -90,10 +90,10 @@ export type GarageSortBy = 'quantitysold' | 'lowest_price'
 /** V3: 1 ward match từ ward.json — hiển thị cho khách xác nhận khi province không resolve. */
 export interface WardMatch {
   code: string
-  name: string             // 'Phường Thái Bình' / 'Xã Thái Bình'
-  path: string             // 'Thái Bình, Hưng Yên'
-  path_with_type: string   // 'Phường Thái Bình, Tỉnh Hưng Yên'
-  parent_code: string      // province code cũ (vd '34')
+  name: string // 'Phường Thái Bình' / 'Xã Thái Bình'
+  path: string // 'Thái Bình, Hưng Yên'
+  path_with_type: string // 'Phường Thái Bình, Tỉnh Hưng Yên'
+  parent_code: string // province code cũ (vd '34')
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -351,6 +351,82 @@ export async function fetchTireSizesByCarTags(tagKeys: string[]): Promise<{
   }
 }
 
+// ── 1e. fetchTireSizesByCartype (V3 — query qua productadmin_cartype) ─────────
+
+/**
+ * Lấy danh sách kích cỡ lốp cho 1+ cartype code (vd ["HYUNDAI_ACCENT", "HYUNDAIACCENT"]).
+ *
+ * Query: productadmin JOIN productadmin_cartype (inner) WHERE
+ *        productadmin_cartype.code IN cartypeCodes AND tire filters.
+ *
+ * Nhận MẢNG để cover các biến thể format ("MAZDA_CX_5" vs "MAZDA_CX5" vs "MAZDACX5"...).
+ * Bổ sung cho `fetchTireSizesByCarTags`. Caller gộp 2 kết quả, dedup.
+ */
+export async function fetchTireSizesByCartype(
+  cartypeCodes: string | string[]
+): Promise<{
+  sizes: TireSizeWithStock[]
+  productCount: number
+}> {
+  const codes = (
+    Array.isArray(cartypeCodes) ? cartypeCodes : [cartypeCodes]
+  ).filter(c => !!c && c.length > 0)
+  console.log('code', codes)
+  if (codes.length === 0) return { sizes: [], productCount: 0 }
+
+  const { data, error } = await supabaseAmin
+    .from('productadmin')
+    .select(
+      `
+        id,
+        SIZE,
+        quantitysold,
+        productadmin_cartype!inner ( code )
+      `
+    )
+    .eq('type', 'SAN_PHAM')
+    .eq('type2', 'LOP')
+    .eq('forsale', true)
+    .eq('status', true)
+    .in('productadmin_cartype.code', codes)
+
+  if (error) {
+    console.error('[FB db] fetchTireSizesByCartype error:', error)
+    return { sizes: [], productCount: 0 }
+  }
+
+  // Dedupe theo productadmin.id rồi group theo SIZE
+  const seenProducts = new Map<string, { size: string; qty: number }>()
+  for (const row of (data ?? []) as Array<{
+    id: string
+    SIZE: string | null
+    quantitysold: number | null
+  }>) {
+    if (!row.SIZE) continue
+    if (seenProducts.has(row.id)) continue
+    seenProducts.set(row.id, {
+      size: fromSizeKey(row.SIZE),
+      qty: num(row.quantitysold)
+    })
+  }
+
+  const sizeMap = new Map<string, number>()
+  for (const [, v] of Array.from(seenProducts.entries())) {
+    if (!v.size) continue
+    sizeMap.set(v.size, (sizeMap.get(v.size) ?? 0) + v.qty)
+  }
+
+  const sizes: TireSizeWithStock[] = Array.from(sizeMap.entries())
+    .map(([size, quantitysold]) => ({ size, quantitysold }))
+    .sort((a, b) => b.quantitysold - a.quantitysold)
+
+  console.log(
+    `[FB db] fetchTireSizesByCartype([${codes.join(',')}]) → ${sizes.length} sizes from ${seenProducts.size} products`
+  )
+
+  return { sizes, productCount: seenProducts.size }
+}
+
 // ── 2. fetchGarageOffers ──────────────────────────────────────────────────────
 
 /**
@@ -384,7 +460,9 @@ export async function fetchGarageOffers(params: {
 
   // V3 yêu cầu BẮT BUỘC có province_code HOẶC ward_code — không bao giờ search all
   if (!provinceCode && !wardCode) {
-    console.warn('[FB db] fetchGarageOffers SKIP — yêu cầu provinceCode hoặc wardCode')
+    console.warn(
+      '[FB db] fetchGarageOffers SKIP — yêu cầu provinceCode hoặc wardCode'
+    )
     return []
   }
 
@@ -583,7 +661,9 @@ export async function fetchSpGaraCards(params: {
 
   // BẮT BUỘC có province_code HOẶC ward_code
   if (!provinceCode && !wardCode) {
-    console.warn('[DB fetchSpGaraCards] SKIP — yêu cầu provinceCode hoặc wardCode')
+    console.warn(
+      '[DB fetchSpGaraCards] SKIP — yêu cầu provinceCode hoặc wardCode'
+    )
     return []
   }
 
@@ -744,7 +824,11 @@ export function findWardsByText(text: string, limit = 13): WardMatch[] {
   for (const [code, w] of Object.entries(WARD_MAP)) {
     if (matches.length >= limit) break
     if (seen.has(code)) continue
-    const haystacks = [stripVn(w.name), stripVn(w.path), stripVn(w.slug.replace(/-/g, ' '))]
+    const haystacks = [
+      stripVn(w.name),
+      stripVn(w.path),
+      stripVn(w.slug.replace(/-/g, ' '))
+    ]
     let hit = false
     for (const h of haystacks) {
       if (h && h.includes(needle)) {

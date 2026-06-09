@@ -28,7 +28,8 @@ import {
   pauseSessionByCskh,
   completeSession,
   resetUserSessions,
-  appendConversationLog
+  appendConversationLog,
+  markSessionError
 } from '../session'
 import {
   fetchSpGaraCards,
@@ -320,6 +321,23 @@ function recentHistory(
 
 // ── Send-API wrappers (token theo request scope qua currentToken()) ────────
 
+/**
+ * Khi sendMessage trả về !ok → append 1 system log entry mô tả lỗi + set
+ * is_error=true (vd FB error 10/2018300 "app khác đang giữ thread").
+ */
+async function logSendError(
+  sessionId: string,
+  result: { error?: string; errorCode?: number; errorSubcode?: number }
+): Promise<void> {
+  const msg = `sendMessage failed (code=${result.errorCode ?? '?'}, subcode=${result.errorSubcode ?? '?'}): ${result.error ?? ''}`
+  console.error(`[V3 send-error] session=${sessionId} ${msg}`)
+  try {
+    await markSessionError(sessionId, msg)
+  } catch (e) {
+    console.error('[V3 send-error] markSessionError fail:', e)
+  }
+}
+
 async function reply(
   psid: string,
   sessionId: string,
@@ -328,7 +346,11 @@ async function reply(
 ): Promise<void> {
   const tok = currentToken()
   sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
-  await sendMessage(psid, { text, quick_replies: quickReplies }, tok)
+  const result = await sendMessage(psid, { text, quick_replies: quickReplies }, tok)
+  if (!result.ok) {
+    await logSendError(sessionId, result)
+    return
+  }
 
   appendConversationLog(sessionId, {
     role: 'bot',
@@ -348,13 +370,17 @@ async function sendButtonTemplate(
 ): Promise<void> {
   const tok = currentToken()
   sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
-  await sendMessage(
+  const result = await sendMessage(
     psid,
     {
       attachment: { type: 'template', payload: { template_type: 'button', text, buttons } }
     },
     tok
   )
+  if (!result.ok) {
+    await logSendError(sessionId, result)
+    return
+  }
   appendConversationLog(sessionId, {
     role: 'bot',
     type: 'quick_replies',
@@ -370,11 +396,15 @@ async function sendCards(
   elements: GenericElement[],
   context: string
 ): Promise<void> {
-  await sendMessage(
+  const result = await sendMessage(
     psid,
     { attachment: { type: 'template', payload: { template_type: 'generic', elements } } },
     currentToken()
   )
+  if (!result.ok) {
+    await logSendError(sessionId, result)
+    return
+  }
   const cards: LoggedCard[] = elements.map(el => ({
     title: el.title,
     subtitle: el.subtitle,
@@ -954,6 +984,8 @@ async function handleGathering(
   //  - Off-topic question (vd "có phải bot không") → KHÔNG fail (AI đã reply hợp lệ)
   //  - 1 lần fail: hỏi lại (size → ask image; brand/location → re-ask)
   //  - ≥2 lần fail: cskhHandoff
+  //  - Nếu chưa có tin bot nào trong session → prepend welcome intro vào tin retry
+  //    (welcome chỉ xuất hiện ở case khách nhắn không khớp luồng nào)
   if (!aiExtractedAnything && wasAsking && !decision.is_off_topic) {
     const failKey =
       wasAsking === 'size'
@@ -974,6 +1006,15 @@ async function handleGathering(
         `Khách không cung cấp info ở step ${wasAsking} (${count} lần)`
       )
       return
+    }
+
+    // Detect tin bot đầu tiên trong session → chèn welcome intro lên trước retry
+    const noPriorBotReply = !session.conversation_log.some(m => m.role === 'bot')
+    const WELCOME_INTRO =
+      '🤝 TRỢ LÝ Ô TÔ – nền tảng kết nối DV ô tô tiện lợi, uy tín – rất vui được hỗ trợ anh/chị 😊'
+
+    if (noPriorBotReply) {
+      await reply(psid, sessionId, WELCOME_INTRO)
     }
 
     // 1 lần fail — gửi retry message tone tích cực (không "chưa hiểu")
@@ -1553,9 +1594,11 @@ async function handleMessengerEventV3Inner(
     const latest = session ? null : await getLatestSession(psid, pageId)
     if (!session && latest?.is_paused_by_cskh) return
 
-    // optin/referral (Get Started / ad click / m.me link) → session + tin hỏi size
-    //  BỎ welcome chào "🤝 TRỢ LÝ Ô TÔ – ..." vì bên ad/landing đã có intro riêng.
-    //  Gửi thẳng tin hỏi kích cỡ để khách bắt đầu cung cấp thông tin.
+    // optin/referral (Get Started / ad click / m.me link) → CHỈ tạo session, IM LẶNG.
+    //  Ad creative đã có "welcome message" tự bắn rồi → bot không cần chào nữa.
+    //  Tin đầu tiên khách gửi sẽ vào V3_GATHERING: AI tự thu thập size/brand/xe;
+    //  nếu là FAQ (ở đâu, có phải bot, đặt online...) → AI trả lời FAQ;
+    //  nếu AI không trích được gì + không phải FAQ → mới hỏi lại kích cỡ.
     if (event.optin || event.referral) {
       const entryKind = event.optin
         ? `OPTIN (ref="${event.optin.ref ?? ''}")`
@@ -1563,26 +1606,20 @@ async function handleMessengerEventV3Inner(
       if (!session) {
         session = await createSession(psid, pageId)
         await updateSession(session.id, { step: 'V3_GATHERING' })
-        console.log(`[V3 entry] ${entryKind} → NEW session ${session.id} + ask-size`)
+        console.log(`[V3 entry] ${entryKind} → NEW session ${session.id} (silent, chờ khách nhắn)`)
       } else {
-        console.log(`[V3 entry] ${entryKind} → EXISTING session ${session.id} + ask-size again`)
+        console.log(`[V3 entry] ${entryKind} → EXISTING session ${session.id} (silent)`)
       }
-      await reply(
-        psid,
-        session.id,
-        'Để em báo giá chính xác hơn, anh/chị gửi giúp em ảnh thành lốp xe để em đọc kích cỡ ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
-      )
       return
     }
 
     if (!session) {
-      // Lần đầu khách nhắn → tạo session step=V3_GATHERING + gửi welcome ngắn.
-      // Tin của khách ngay bên dưới sẽ được xử lý qua handleGathering/handleImage
-      // ngay sau welcome (cùng turn).
+      // Lần đầu khách nhắn → tạo session step=V3_GATHERING IM LẶNG.
+      //  KHÔNG gửi welcome ở đây — chỉ gửi khi AI không xử lý được tin (fallback).
+      //  Mọi tin extract được info / FAQ → AI trả lời thẳng, không cần intro.
       session = await createSession(psid, pageId)
       await updateSession(session.id, { step: 'V3_GATHERING' })
       session = { ...session, step: 'V3_GATHERING' }
-      await sendV3Welcome(psid, session.id)
     }
 
     const { step, state } = session

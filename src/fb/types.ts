@@ -131,6 +131,11 @@ export interface FbSession {
   conversation_log: ConversationMessage[]
   is_active: boolean
   is_paused_by_cskh: boolean
+  /** Có lỗi gửi message gần nhất (vd FB reject 2018300 — bot không giữ thread). */
+  is_error?: boolean
+  /** Bot đang giữ thread control sau khi gọi take_thread_control thành công.
+   *  Cron pass-back sẽ query session có cờ này = true để trả lại Primary. */
+  bot_owns_thread?: boolean
   created_at: string
   updated_at: string
 }
@@ -147,6 +152,13 @@ export interface MessengerEntry {
   time: number
   messaging?: MessengerEvent[]
   standby?: MessengerEvent[]
+  /** FB gắn `hop_context` ở entry-level khi thread vừa được handover sang app nhận.
+   *  `app_id` = app đã pass control (hoặc current owner) — dùng để detect Pancake
+   *  vừa trả thread cho bot → set bot_owns_thread=true. */
+  hop_context?: {
+    app_id: number
+    metadata?: string
+  }
 }
 
 export interface MessengerEvent {
@@ -182,11 +194,25 @@ export interface MessengerEvent {
     ref?: string
     /** 'ADS' | 'SHORTLINK' | 'MESSAGING' | 'DISCOVER_TAB' | 'CUSTOMER_CHAT_PLUGIN' | ... */
     source?: string
-    /** 'OPEN_THREAD' | ... */
+    /** 'OPEN_THREAD' | 'LEAD_COMPLETE' | ... */
     type?: string
     /** ID của ad nếu source='ADS' */
     ad_id?: string
     referer_uri?: string
+    ads_context_data?: {
+      ad_title?: string
+      post_id?: string
+      video_url?: string
+    }
+  }
+  /** FB Lead Ads — khi khách submit Instant Form từ ad CTM.
+   *  Đi kèm `referral.type='LEAD_COMPLETE'`. Mỗi item là 1 cặp Q (Pancake hoặc
+   *  ad creative đặt sẵn) / A (khách trả lời). */
+  lead?: {
+    data: Array<{
+      question?: string
+      answer?: string
+    }>
   }
 }
 

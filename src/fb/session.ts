@@ -1,5 +1,10 @@
 import { supabaseAmin } from './supabase'
-import type { ConversationMessage, FbSession, MessengerStep, SessionState } from './types'
+import type {
+  ConversationMessage,
+  FbSession,
+  MessengerStep,
+  SessionState
+} from './types'
 
 const TABLE = 'fb_messenger_sessions'
 
@@ -72,7 +77,12 @@ export async function createSession(
 
 export async function updateSession(
   sessionId: string,
-  updates: Partial<Pick<FbSession, 'step' | 'state' | 'is_active' | 'is_paused_by_cskh'>>
+  updates: Partial<
+    Pick<FbSession, 'step' | 'state' | 'is_active' | 'is_paused_by_cskh'>
+  > & {
+    is_error?: boolean
+    bot_owns_thread?: boolean
+  }
 ): Promise<void> {
   const { error } = await supabaseAmin
     .from(TABLE)
@@ -80,6 +90,58 @@ export async function updateSession(
     .eq('id', sessionId)
 
   if (error) console.error('[FB session] updateSession error:', error)
+}
+
+/**
+ * Đánh dấu bot đang giữ thread cho session này (sau khi take_thread_control thành công).
+ * Cron pass-back sẽ query các session có bot_owns_thread=true.
+ */
+export async function setBotOwnsThread(
+  sessionId: string,
+  owns: boolean
+): Promise<void> {
+  console.log('setBotOwnsThread', {
+    sessionId,
+    owns
+  })
+  await updateSession(sessionId, { bot_owns_thread: owns })
+}
+
+/**
+ * Đánh dấu session bị lỗi gửi message (vd FB reject vì bot không giữ thread).
+ * Cũng append 1 log entry mô tả lỗi để debug.
+ */
+export async function markSessionError(
+  sessionId: string,
+  errorText: string
+): Promise<void> {
+  await updateSession(sessionId, { is_error: true })
+  await appendConversationLog(sessionId, {
+    role: 'system',
+    type: 'system',
+    text: `[ERROR] ${errorText}`,
+    ts: new Date().toISOString()
+  })
+}
+
+/**
+ * Lấy tất cả session đang được bot giữ thread (cron pass-back sẽ chạy qua list này).
+ * Limit page_id vì mỗi page có Primary khác nhau.
+ */
+export async function getSessionsOwnedByBot(
+  pageId: string
+): Promise<FbSession[]> {
+  const { data, error } = await supabaseAmin
+    .from(TABLE)
+    .select('*')
+    .eq('page_id', pageId)
+    .eq('bot_owns_thread', true)
+
+  if (error) {
+    console.error('[FB session] getSessionsOwnedByBot error:', error)
+    return []
+  }
+  return (data as FbSession[]) ?? []
 }
 
 /**
@@ -133,7 +195,10 @@ export async function appendConversationLog(
 }
 
 /** Xóa toàn bộ session của một user — dùng cho lệnh /reset khi test. */
-export async function resetUserSessions(psid: string, pageId: string): Promise<void> {
+export async function resetUserSessions(
+  psid: string,
+  pageId: string
+): Promise<void> {
   const { error } = await supabaseAmin
     .from(TABLE)
     .delete()

@@ -74,6 +74,7 @@ export class WebhookController {
     if (!rawBody) {
       return res.status(HttpStatus.BAD_REQUEST).json({ error: 'No body' })
     }
+    console.log('rawBody', rawBody)
 
     if (!verifySignature(rawBody, signature)) {
       console.warn('[FB webhook] Invalid signature')
@@ -85,7 +86,7 @@ export class WebhookController {
     let body: MessengerWebhookBody
     try {
       body = JSON.parse(rawBody.toString('utf-8'))
-      // console.log('body', JSON.stringify(body, null, 2))
+      console.log('body', JSON.stringify(body, null, 2))
     } catch {
       return res.status(HttpStatus.BAD_REQUEST).json({ error: 'Invalid JSON' })
     }
@@ -119,24 +120,60 @@ export class WebhookController {
         continue
       }
 
-      const handler = isProduct
-        ? handleMessengerEventProduction
-        : isV3
-          ? handleMessengerEventV3
-          : handleMessengerEvent
       const tag = isProduct ? 'PROD' : isV3 ? 'V3' : 'V2'
       console.log(`[FB webhook] route page=${entry.id} → ${tag}`)
 
-      const events = [...(entry.messaging ?? []), ...(entry.standby ?? [])]
-      for (const event of events) {
+      // hop_context xuất hiện khi thread vừa được handover sang bot — đây là
+      // dấu hiệu rõ ràng "Pancake vừa pass control sang bot" → mark bot_owns_thread.
+      const hopContext = entry.hop_context
+      if (hopContext) {
+        console.log(
+          `[FB HOP] page=${entry.id} hop_context.app_id=${hopContext.app_id} metadata="${hopContext.metadata ?? ''}"`
+        )
+      }
+
+      // PRIMARY events (entry.messaging) — bot có thread control → xử lý đầy đủ
+      const messaging = entry.messaging ?? []
+      for (const event of messaging) {
         if (
-          event.sender.id === '24081205854909009' ||
-          event.recipient.id === '24081205854909009' ||
+          event.sender?.id === '24081205854909009' ||
+          event.recipient?.id === '24081205854909009' ||
           event.referral
         ) {
           console.log('body', JSON.stringify(body, null, 2))
         }
-        await handler(event, entry.id)
+        if (isProduct) {
+          await handleMessengerEventProduction(event, entry.id, false, hopContext)
+        } else if (isV3) {
+          await handleMessengerEventV3(event, entry.id)
+        } else {
+          await handleMessengerEvent(event, entry.id)
+        }
+      }
+
+      // STANDBY events — bot KHÔNG giữ thread control.
+      //   - PROD: handler vẫn được gọi với isStandby=true. Trong giờ làm việc
+      //     → chỉ log/CSKH echo detection. Ngoài giờ + chưa pause_by_cskh →
+      //     bot tự take_thread_control rồi reply.
+      //   - V2/V3 dev pages: chỉ log (không có time gate, không cần handover).
+      const standby = entry.standby ?? []
+      for (const event of standby) {
+        const summary = {
+          psid: event.sender?.id,
+          referral: event.referral,
+          optin: event.optin,
+          postback: event.postback,
+          text: event.message?.text,
+          is_echo: event.message?.is_echo,
+          app_id: event.message?.app_id,
+          attachments: event.message?.attachments?.map(a => a.type)
+        }
+        console.log(
+          `[FB STANDBY] page=${entry.id} tag=${tag} → ${JSON.stringify(summary)}`
+        )
+        if (isProduct) {
+          await handleMessengerEventProduction(event, entry.id, true)
+        }
       }
     }
   }

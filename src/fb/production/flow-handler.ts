@@ -1,20 +1,48 @@
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- *  PRODUCTION wrapper — dùng CHUNG handler V3, chỉ bọc thêm:
+ *  PRODUCTION wrapper — dùng CHUNG handler V3, bọc thêm:
  *   - Time gate (FROM_TIME → END_TIME, overnight OK)
  *   - /reset bypass time gate (để test bất cứ lúc nào)
+ *   - Whitelist PSID bypass time gate
+ *   - Handover Protocol: bot là Secondary Receiver (Pancake là Primary).
  *
- *  Logic chatbot 100% trong v3/flow-handler.ts (mọi update đều áp dụng cho cả V3
- *  và PRODUCTION). Token đúng được V3 handler tự pick theo pageId qua
- *  AsyncLocalStorage.
+ *  Logic chatbot 100% trong v3/flow-handler.ts. Token đúng được V3 handler tự
+ *  pick theo pageId qua AsyncLocalStorage.
+ *
+ *  ── 4 SCENARIOS ─────────────────────────────────────────────────────────────
+ *
+ *  A) Event ở entry.messaging[]  (bot đang giữ thread)
+ *     - Trong giờ làm việc (CSKH on) → bot SILENT. Không reply.
+ *     - Ngoài giờ làm việc           → bot xử lý qua V3 handler.
+ *
+ *  B) Event ở entry.standby[]    (Pancake đang giữ thread)
+ *     - CSKH echo (is_echo + app_id != bot) → pauseSessionByCskh + log.
+ *     - Customer message trong giờ làm việc → CHỈ log conversation_log (track
+ *       cho future bot decisions). Không reply, không take.
+ *     - Customer message ngoài giờ làm việc:
+ *         + Session đã is_paused_by_cskh → log only, không take, không reply.
+ *         + Chưa pause                    → take_thread_control → V3 handler.
+ *
+ *  Cron 8:30 hàng ngày pass_thread_control trả lại Pancake (handover-cron.ts).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import type { MessengerEvent } from '../types'
+import type { MessengerEvent, ConversationMessage, MessengerEntry } from '../types'
 import { handleMessengerEventV3 } from '../v3/flow-handler'
+import {
+  getActiveSession,
+  getLatestSession,
+  createSession,
+  updateSession,
+  pauseSessionByCskh,
+  setBotOwnsThread,
+  appendConversationLog
+} from '../session'
+import { takeThreadControl } from '../handover'
 
 const FROM_TIME = process.env.FROM_TIME ?? '18:00'
 const END_TIME = process.env.END_TIME ?? '08:30'
+const FB_APP_ID = process.env.FB_APP_ID ?? ''
 
 /** Whitelist PSID bypass time gate (test trên prod page bất kể giờ).
  *  Override qua env PROD_TEST_PSIDS="psid1,psid2,..." nếu muốn thêm. */
@@ -46,27 +74,246 @@ function isInProductionWindow(): boolean {
   return nowMin >= fromMin && nowMin < endMin
 }
 
+/** Detect echo từ app KHÁC bot (vd Pancake gửi tin cho khách → echo bay về với app_id khác). */
+function isEchoFromOtherApp(event: MessengerEvent): boolean {
+  const echo = event.message?.is_echo
+  if (!echo) return false
+  const appId = event.message?.app_id
+  if (!FB_APP_ID || !appId) return echo === true
+  return String(appId) !== String(FB_APP_ID)
+}
+
+/** Tóm tắt event để lưu vào conversation_log khi observe-only (không xử lý). */
+function summarizeEvent(event: MessengerEvent): string {
+  if (event.message?.text) return event.message.text
+  if (event.message?.attachments?.length)
+    return `[attachment: ${event.message.attachments.map(a => a.type).join(',')}]`
+  if (event.postback) return `[click: ${event.postback.title}]`
+  if (event.referral) return `[referral: ${event.referral.source}/${event.referral.ref ?? ''}]`
+  if (event.optin) return `[optin: ${event.optin.type ?? 'default'}]`
+  return '[event]'
+}
+
 /**
- * Production = V3 handler + time gate. /reset BYPASS gate.
+ * Lead Ads payload (referral.type='LEAD_COMPLETE' + lead.data) chứa Q/A pairs
+ * từ Instant Form — Q là câu Pancake/ad creative đặt sẵn, A là user trả lời.
  *
- * Để chỉnh logic chatbot → sửa v3/flow-handler.ts (áp dụng cho cả 2).
+ * Lưu vào conversation_log để V3 handler có context khi xử lý: Q = role 'bot',
+ * A = role 'user'. Trả về true nếu đã log >=1 cặp.
+ */
+async function logLeadData(
+  sessionId: string,
+  event: MessengerEvent
+): Promise<boolean> {
+  const items = event.lead?.data
+  if (!items || items.length === 0) return false
+  const ts = new Date().toISOString()
+  for (const it of items) {
+    if (it.question) {
+      await appendConversationLog(sessionId, {
+        role: 'bot',
+        type: 'text',
+        text: `[LEAD_Q] ${it.question}`,
+        ts
+      })
+    }
+    if (it.answer) {
+      await appendConversationLog(sessionId, {
+        role: 'user',
+        type: 'text',
+        text: it.answer,
+        ts
+      })
+    }
+  }
+  console.log(
+    `[PROD] LEAD_COMPLETE session=${sessionId}: logged ${items.length} Q/A pair(s)`
+  )
+  return true
+}
+
+/**
+ * Production handler — phân nhánh theo 4 scenarios mô tả ở đầu file.
+ *
+ * @param isStandby   true khi event đến qua entry.standby[] (bot là Secondary,
+ *                    Pancake đang giữ thread).
+ * @param hopContext  entry.hop_context (nếu có) — signal "thread vừa được
+ *                    handover sang bot". Nếu app_id == bot's FB_APP_ID →
+ *                    set bot_owns_thread=true cho session.
  */
 export async function handleMessengerEventProduction(
   event: MessengerEvent,
-  pageId: string
+  pageId: string,
+  isStandby = false,
+  hopContext?: MessengerEntry['hop_context']
 ): Promise<void> {
   const psid = event.sender?.id ?? ''
+  if (!psid) return
+
   const isReset = event.message?.text?.trim() === '/reset'
-  const isWhitelistedPsid = psid && PROD_TEST_PSIDS.has(psid)
-  if (!isReset && !isWhitelistedPsid && !isInProductionWindow()) {
+  const isWhitelistedPsid = PROD_TEST_PSIDS.has(psid)
+  const inWindow = isInProductionWindow() // true = giờ bot (18:00-08:30)
+  const isOutOfHours = inWindow // alias for clarity: bot active outside business hours
+
+  // ── (0) hop_context: bot vừa nhận thread từ Pancake → mark owns + log ────
+  //  Đây là signal mạnh: dù event đến qua messaging[] hay standby[], nếu
+  //  hop_context.app_id == bot's FB_APP_ID → bot đang là current owner.
+  //  Mark sớm để cron 8:30 biết pass back.
+  const botJustGotThread =
+    !!hopContext && String(hopContext.app_id) === String(FB_APP_ID)
+  if (botJustGotThread) {
+    const session =
+      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+    if (session) {
+      console.log(
+        `[PROD] hop_context: bot vừa nhận thread psid=${psid} session=${session.id} → set bot_owns_thread=true`
+      )
+      await setBotOwnsThread(session.id, true)
+    }
+  }
+
+  // ── (0b) Lead Ads: lead.data Q/A → lưu vào conversation_log ─────────────
+  //  Bypass handover rules — event đến qua messaging[] kể cả Pancake là Primary.
+  //  Mục đích: V3 handler có context khi user nhắn tiếp.
+  if (event.lead?.data && event.lead.data.length > 0) {
+    let session =
+      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+    if (!session) {
+      session = await createSession(psid, pageId)
+      await updateSession(session.id, { step: 'V3_GATHERING' })
+    }
+    await logLeadData(session.id, event)
+    // Lead Ads event KHÔNG kèm text từ khách — chỉ chứa form data đã submit từ
+    // trước. Không có gì để V3 reply ngay → return sau khi log.
+    return
+  }
+
+  // ── (1) CSKH ECHO — bất kể standby/messaging, in/out giờ ─────────────────
+  // Pancake (hoặc admin Page Inbox) gửi tin cho khách → echo bay về với
+  // app_id != bot. Đây là dấu hiệu CSKH đã engage → pause session vĩnh viễn
+  // cho PSID này để bot không tự động trả lời ở các turn sau.
+  if (isEchoFromOtherApp(event)) {
+    const session =
+      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+    if (session && !session.is_paused_by_cskh) {
+      console.log(
+        `[PROD] CSKH echo detected (app_id=${event.message?.app_id}) psid=${psid} → pause session ${session.id}`
+      )
+      await pauseSessionByCskh(session.id)
+      // Log nội dung CSKH đã gửi vào conversation_log
+      const logMsg: ConversationMessage = {
+        role: 'bot',
+        type: 'text',
+        text: `[CSKH] ${event.message?.text ?? '[attachment/template]'}`,
+        ts: new Date().toISOString()
+      }
+      await appendConversationLog(session.id, logMsg)
+    } else if (!session) {
+      console.log(
+        `[PROD] CSKH echo psid=${psid} nhưng không có session → skip (chưa có history)`
+      )
+    } else {
+      console.log(
+        `[PROD] CSKH echo psid=${psid} session=${session.id} đã paused trước đó → skip`
+      )
+    }
+    return
+  }
+
+  // ── (2) /reset hoặc whitelisted PSID — bypass time gate ──────────────────
+  if (isReset || isWhitelistedPsid) {
+    if (isStandby) {
+      const taken = await takeThreadControl(psid, pageId, isReset ? 'reset' : 'whitelist')
+      if (!taken) {
+        console.warn(
+          `[PROD] take_thread_control fail psid=${psid} (reset/whitelist) → skip`
+        )
+        return
+      }
+      const session = await getActiveSession(psid, pageId)
+      if (session) await setBotOwnsThread(session.id, true)
+    }
+    await handleMessengerEventV3(event, pageId)
+    return
+  }
+
+  // ── (3) Standby branch — Pancake đang giữ thread ─────────────────────────
+  if (isStandby) {
+    // Lấy hoặc tạo session để có chỗ ghi log conversation
+    let session =
+      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+
+    // Trong giờ làm việc → chỉ log, không reply, không take.
+    if (!isOutOfHours) {
+      if (!session) {
+        // Tạo session để track conversation (sẽ dùng ở turn ngoài giờ tiếp theo)
+        session = await createSession(psid, pageId)
+        await updateSession(session.id, { step: 'V3_GATHERING' })
+        console.log(
+          `[PROD] standby in business-hours → NEW session ${session.id} (log only)`
+        )
+      }
+      const userMsg: ConversationMessage = {
+        role: 'user',
+        type: 'text',
+        text: summarizeEvent(event),
+        ts: new Date().toISOString()
+      }
+      await appendConversationLog(session.id, userMsg)
+      console.log(
+        `[PROD] standby in business-hours psid=${psid} session=${session.id} → log: ${userMsg.text.slice(0, 80)}`
+      )
+      return
+    }
+
+    // Ngoài giờ làm việc — bot có nhiệm vụ trả lời.
+    // Nếu session đã pause_by_cskh từ trước → bot KHÔNG can thiệp.
+    if (session?.is_paused_by_cskh) {
+      console.log(
+        `[PROD] standby out-of-hours psid=${psid} session=${session.id} đã pause_by_cskh → log only`
+      )
+      const userMsg: ConversationMessage = {
+        role: 'user',
+        type: 'text',
+        text: summarizeEvent(event),
+        ts: new Date().toISOString()
+      }
+      await appendConversationLog(session.id, userMsg)
+      return
+    }
+
+    // Bot take_thread_control rồi xử lý qua V3.
     console.log(
-      `[PROD] outside time window (${FROM_TIME}-${END_TIME}) → silent for psid=${psid}`
+      `[PROD] standby out-of-hours psid=${psid} → take_thread_control + V3`
+    )
+    const taken = await takeThreadControl(psid, pageId, 'out_of_hours_takeover')
+    if (!taken) {
+      console.warn(`[PROD] take_thread_control fail psid=${psid} → skip`)
+      return
+    }
+    if (session) await setBotOwnsThread(session.id, true)
+    await handleMessengerEventV3(event, pageId)
+    return
+  }
+
+  // ── (4) Messaging branch — bot đã giữ thread (handover trước đó) ─────────
+  if (!isOutOfHours) {
+    // Trong giờ làm việc → bot không reply dù đang giữ thread.
+    console.log(
+      `[PROD] messaging in business-hours psid=${psid} → silent (giờ CSKH)`
     )
     return
   }
-  if (isWhitelistedPsid) {
-    console.log('event', event)
-    console.log(`[PROD] whitelisted test psid=${psid} → bypass time gate`)
+
+  // Ngoài giờ — check pause trước khi reply.
+  const session =
+    (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+  if (session?.is_paused_by_cskh) {
+    console.log(
+      `[PROD] messaging out-of-hours psid=${psid} session=${session.id} pause_by_cskh → skip`
+    )
+    return
   }
+
   await handleMessengerEventV3(event, pageId)
 }

@@ -5,6 +5,17 @@ const FB_API_BASE = `https://graph.facebook.com/${FB_GRAPH_VERSION}`
 
 type SenderAction = 'typing_on' | 'typing_off' | 'mark_seen'
 
+export interface SendResult {
+  ok: boolean
+  status?: number
+  /** Body lỗi raw (string) khi !ok, hoặc null khi thành công. */
+  error?: string
+  /** Mã lỗi parse được từ JSON (vd 10). */
+  errorCode?: number
+  /** Sub-code lỗi (vd 2018300 = "app khác đang giữ thread"). */
+  errorSubcode?: number
+}
+
 async function senderAction(
   recipientId: string,
   action: SenderAction,
@@ -30,7 +41,7 @@ export async function sendMessage(
   recipientId: string,
   message: SendMessagePayload['message'],
   accessToken: string
-): Promise<void> {
+): Promise<SendResult> {
   const body: SendMessagePayload = {
     recipient: { id: recipientId },
     messaging_type: 'RESPONSE',
@@ -42,9 +53,25 @@ export async function sendMessage(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   })
-  if (!res.ok) {
-    const text = await res.text()
-    console.error(`[FB] sendMessage error ${res.status}:`, text)
+  if (res.ok) return { ok: true, status: res.status }
+
+  const text = await res.text()
+  console.error(`[FB] sendMessage error ${res.status}:`, text)
+  let errorCode: number | undefined
+  let errorSubcode: number | undefined
+  try {
+    const parsed = JSON.parse(text)
+    errorCode = parsed?.error?.code
+    errorSubcode = parsed?.error?.error_subcode
+  } catch {
+    // body không phải JSON — bỏ qua
+  }
+  return {
+    ok: false,
+    status: res.status,
+    error: text,
+    errorCode,
+    errorSubcode
   }
 }
 

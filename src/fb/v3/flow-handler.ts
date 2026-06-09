@@ -64,6 +64,10 @@ import { scheduleTimer, cancelTimer } from '../timers'
 const PAGE_TOKEN_V3 = process.env.FB_PAGE_ACCESS_TOKEN_V3 ?? ''
 const PAGE_TOKEN_PRODUCT = process.env.FB_PAGE_ACCESS_TOKEN_PRODUCT ?? ''
 const PAGE_ID_PRODUCT = process.env.FACEBOOK_PAGE_ID_PRODUCT
+/** FB App ID của bot — để phân biệt bot tự gửi vs admin reply qua Business Suite.
+ *  Bot send API → message.app_id = FB_APP_ID; Business Suite/Pages Manager →
+ *  message.app_id KHÁC (263902037430900 cho BS). */
+const FB_APP_ID = process.env.FB_APP_ID
 
 const requestContext = new AsyncLocalStorage<{ token: string; pageId: string }>()
 
@@ -1423,15 +1427,68 @@ export async function handleMessengerEventV3(
   )
 }
 
+/** Log mô tả ngắn loại event để debug entry points. */
+function describeEvent(event: MessengerEvent): string {
+  if (event.message?.is_echo) {
+    return `echo(app_id=${event.message.app_id ?? 'null'})`
+  }
+  if (event.optin) {
+    return `OPTIN(ref="${event.optin.ref ?? ''}" type="${event.optin.type ?? ''}")`
+  }
+  if (event.referral) {
+    return `REFERRAL(source="${event.referral.source ?? ''}" type="${event.referral.type ?? ''}" ad_id="${event.referral.ad_id ?? ''}" ref="${event.referral.ref ?? ''}")`
+  }
+  if (event.message?.quick_reply) {
+    return `QR_CLICK(payload="${event.message.quick_reply.payload}" title="${event.message.text ?? ''}")`
+  }
+  if (event.postback) {
+    return `POSTBACK(payload="${event.postback.payload}" title="${event.postback.title ?? ''}")`
+  }
+  if (event.message?.attachments?.length) {
+    const types = event.message.attachments.map(a => a.type).join(',')
+    return `ATTACHMENT(${types})`
+  }
+  if (event.message?.text) {
+    return `TEXT("${event.message.text.slice(0, 80)}")`
+  }
+  return 'UNKNOWN'
+}
+
 async function handleMessengerEventV3Inner(
   event: MessengerEvent,
   pageId: string
 ): Promise<void> {
   try {
     const psid = event.sender.id
+    console.log(
+      `[V3 entry] psid=${psid} pageId=${pageId} → ${describeEvent(event)}`
+    )
 
     // CSKH takeover detection (echo from page admin)
+    //  FB gửi `is_echo=true` cho MỌI tin nhắn đi ra từ page (nếu app subscribe
+    //  `message_echoes`). Phân biệt qua message.app_id:
+    //    - Bot gửi qua API: app_id = FB_APP_ID (bot's app) → BỎ QUA
+    //    - Admin reply qua Business Suite: app_id = 263902037430900 (BS app)
+    //    - Admin Pages Manager / khác: app_id KHÁC FB_APP_ID
+    //  → pause khi app_id khác FB_APP_ID (hoặc khi không có FB_APP_ID env: bỏ
+    //  qua mọi echo để tránh bot tự pause — admin takeover sẽ không detect được)
     if (event.message?.is_echo) {
+      const echoAppId = event.message.app_id
+      // Không có FB_APP_ID env → không phân biệt được → bỏ qua hết để an toàn
+      if (!FB_APP_ID) {
+        console.log(
+          `[V3] echo received (app_id=${echoAppId}) but FB_APP_ID env not set — skip (set env to enable CSKH detect)`
+        )
+        return
+      }
+      // Bot tự gửi → ignore
+      if (echoAppId && String(echoAppId) === FB_APP_ID) {
+        console.log(
+          `[V3] echo from bot self (app_id=${echoAppId}) → ignore`
+        )
+        return
+      }
+      // Admin reply (app_id khác hoặc không có) → pause
       const recipientPsid = event.recipient.id
       const activeSession = await getActiveSession(recipientPsid, pageId)
       if (activeSession && !activeSession.is_paused_by_cskh) {
@@ -1440,10 +1497,12 @@ async function handleMessengerEventV3Inner(
         appendConversationLog(activeSession.id, {
           role: 'system',
           type: 'system',
-          text: '[V3 bot paused by CSKH reply]',
+          text: `[V3 bot paused by CSKH reply (admin app_id=${echoAppId})]`,
           ts: new Date().toISOString()
         }).catch(e => console.error('[V3 log]', e))
-        console.log(`[V3] Bot paused for psid=${recipientPsid} by CSKH`)
+        console.log(
+          `[V3] Bot paused for psid=${recipientPsid} by CSKH (admin app_id=${echoAppId})`
+        )
       }
       return
     }
@@ -1494,14 +1553,25 @@ async function handleMessengerEventV3Inner(
     const latest = session ? null : await getLatestSession(psid, pageId)
     if (!session && latest?.is_paused_by_cskh) return
 
-    // optin/referral (Get Started) → tạo session + welcome ngắn
+    // optin/referral (Get Started / ad click / m.me link) → session + tin hỏi size
+    //  BỎ welcome chào "🤝 TRỢ LÝ Ô TÔ – ..." vì bên ad/landing đã có intro riêng.
+    //  Gửi thẳng tin hỏi kích cỡ để khách bắt đầu cung cấp thông tin.
     if (event.optin || event.referral) {
+      const entryKind = event.optin
+        ? `OPTIN (ref="${event.optin.ref ?? ''}")`
+        : `REFERRAL (source=${event.referral?.source} type=${event.referral?.type} ad_id=${event.referral?.ad_id ?? 'n/a'} ref="${event.referral?.ref ?? ''}")`
       if (!session) {
         session = await createSession(psid, pageId)
         await updateSession(session.id, { step: 'V3_GATHERING' })
+        console.log(`[V3 entry] ${entryKind} → NEW session ${session.id} + ask-size`)
+      } else {
+        console.log(`[V3 entry] ${entryKind} → EXISTING session ${session.id} + ask-size again`)
       }
-      await sendV3Welcome(psid, session.id)
-      console.log(`[V3 flow] optin/referral - welcome sent, waiting for user msg`)
+      await reply(
+        psid,
+        session.id,
+        'Để em báo giá chính xác hơn, anh/chị gửi giúp em ảnh thành lốp xe để em đọc kích cỡ ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
+      )
       return
     }
 

@@ -173,13 +173,20 @@ export interface MessengerEvent {
     payload: string
   }
   optin?: {
-    ref: string
+    ref?: string
     type?: string
+    payload?: string
   }
   referral?: {
-    ref: string
-    source: string
-    type: string
+    /** param từ ad / m.me?ref=... */
+    ref?: string
+    /** 'ADS' | 'SHORTLINK' | 'MESSAGING' | 'DISCOVER_TAB' | 'CUSTOMER_CHAT_PLUGIN' | ... */
+    source?: string
+    /** 'OPEN_THREAD' | ... */
+    type?: string
+    /** ID của ad nếu source='ADS' */
+    ad_id?: string
+    referer_uri?: string
   }
 }
 

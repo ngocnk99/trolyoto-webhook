@@ -4,10 +4,10 @@ import {
   getLatestSession,
   createSession,
   updateSession,
-  pauseSessionByCskh,
   completeSession,
   resetUserSessions,
-  appendConversationLog
+  appendConversationLog,
+  pauseSessionByCskh
 } from './session'
 // DB layer: chỉ import qua `./db` — KHÔNG import trực tiếp từ libs/chat trong FB bot
 import {
@@ -42,7 +42,7 @@ const TROLYOTO_URL = 'https://trolyoto.com'
 const COMMUNITY_URL = 'https://www.facebook.com/groups/748788784953241'
 
 // ── Timers V2 (xem facebook-chat-bot-v2.md §7) ─────────────────────────────
-const NUDGE_HELP_MS = 15_000   // 15s im lặng sau khi show SP+gara → gửi prompt "cần hỗ trợ thêm gì" + booking QRs
+const NUDGE_HELP_MS = 15_000 // 15s im lặng sau khi show SP+gara → gửi prompt "cần hỗ trợ thêm gì" + booking QRs
 const NUDGE_BOOKING_MS = 45_000 // 45s im lặng sau prompt → coi như "Còn băn khoăn"
 
 // ── Brand tiers V2 (danh sách brand mở rộng — xem facebook-chat-bot-v2.md §4.7) ─
@@ -158,7 +158,10 @@ async function reply(
     type: quickReplies && quickReplies.length > 0 ? 'quick_replies' : 'text',
     text,
     ts: new Date().toISOString(),
-    quick_replies: quickReplies?.map(q => ({ title: q.title, payload: q.payload }))
+    quick_replies: quickReplies?.map(q => ({
+      title: q.title,
+      payload: q.payload
+    }))
   }).catch(e => console.error('[FB log bot]', e))
 }
 
@@ -217,7 +220,11 @@ async function sendCards(
     subtitle: el.subtitle,
     image_url: el.image_url,
     url: el.default_action?.url,
-    buttons: el.buttons?.map(b => ({ title: b.title, url: b.url, payload: b.payload }))
+    buttons: el.buttons?.map(b => ({
+      title: b.title,
+      url: b.url,
+      payload: b.payload
+    }))
   }))
 
   appendConversationLog(sessionId, {
@@ -488,7 +495,10 @@ async function handleTireInput(
       return
     }
     // Không tra được size theo xe → fallback gợi ý kích cỡ phổ biến
-    await fallbackSizeSuggestion(psid, sessionId, pageId, { ...state, car_model: cls.carModel })
+    await fallbackSizeSuggestion(psid, sessionId, pageId, {
+      ...state,
+      car_model: cls.carModel
+    })
     return
   }
 
@@ -556,7 +566,11 @@ async function fallbackSizeSuggestion(
   }
   await updateSession(sessionId, {
     step: 'AWAITING_SIZE_CONFIRM',
-    state: { ...state, failed_attempts: failed, size_suggestions: POPULAR_SIZES }
+    state: {
+      ...state,
+      failed_attempts: failed,
+      size_suggestions: POPULAR_SIZES
+    }
   })
   await reply(
     psid,
@@ -778,7 +792,14 @@ async function handleLocationInput(
     province_code: provinceCode,
     province_name: provinceName ?? text
   }
-  await showSpGaraResults(psid, sessionId, pageId, provinceCode, provinceName ?? text, newState)
+  await showSpGaraResults(
+    psid,
+    sessionId,
+    pageId,
+    provinceCode,
+    provinceName ?? text,
+    newState
+  )
 }
 
 /**
@@ -797,7 +818,11 @@ async function showSpGaraResults(
 ): Promise<void> {
   const tireSize = state.tire_size ?? ''
   if (!tireSize) {
-    await reply(psid, sessionId, 'Thiếu thông tin kích cỡ lốp, vui lòng bắt đầu lại 😊')
+    await reply(
+      psid,
+      sessionId,
+      'Thiếu thông tin kích cỡ lốp, vui lòng bắt đầu lại 😊'
+    )
     return
   }
   const brandFilter = brandFilterFromState(state)
@@ -829,13 +854,19 @@ async function showSpGaraResults(
     if (cards.length === 0) {
       await updateSession(sessionId, {
         step: 'AWAITING_CSKH_CHANNEL',
-        state: { ...state, cskh_reason: `Không có SP+gara cho size ${tireSize} ở ${provinceName}` }
+        state: {
+          ...state,
+          cskh_reason: `Không có SP+gara cho size ${tireSize} ở ${provinceName}`
+        }
       })
       await reply(
         psid,
         sessionId,
         `Hiện TROLYoto chưa có sản phẩm phù hợp ở ${provinceName} ạ 😅\n\nĐể chuyên viên hỗ trợ anh/chị nhé 😊`,
-        [qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'), qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')]
+        [
+          qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'),
+          qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')
+        ]
       )
       return
     }
@@ -851,7 +882,9 @@ async function showSpGaraResults(
       `${cards.length} SP+gara ở ${provinceName}${usedNational ? ' (toàn quốc)' : ''}`
     )
 
-    const shownCodes = cards.map(c => c.garageCode).filter((c): c is string => !!c)
+    const shownCodes = cards
+      .map(c => c.garageCode)
+      .filter((c): c is string => !!c)
     const minPrice = Math.min(...cards.map(c => c.finalPrice))
 
     // V2: sau khi show cards → KHÔNG gửi booking QR ngay. Đợi 15s im lặng rồi
@@ -875,7 +908,11 @@ async function showSpGaraResults(
     )
   } catch (err) {
     console.error('[FB flow] showSpGaraResults:', err)
-    await reply(psid, sessionId, 'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊')
+    await reply(
+      psid,
+      sessionId,
+      'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊'
+    )
   }
 }
 
@@ -971,14 +1008,22 @@ async function handleBookingState(
   payload: string,
   state: SessionState
 ): Promise<void> {
-  console.log(`[FB handler] handleBookingState ENTER session=${sessionId} payload=${payload}`)
+  console.log(
+    `[FB handler] handleBookingState ENTER session=${sessionId} payload=${payload}`
+  )
   if (payload === 'QR_BOOK_DONE') {
     await Promise.all([
       sendButtonTemplate(
         psid,
         sessionId,
         'Cảm ơn anh chị đã tin tưởng TROLYoto! 🙏\n\nGara sẽ chủ động liên hệ để xác nhận lịch ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ để chủ động các khuyến mại tốt nhất trong ngành DV ô tô khi cần ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_SUBSIDY,
+            url: COMMUNITY_URL
+          }
+        ],
         'Đã đặt lịch'
       ),
       completeSession(sessionId)
@@ -991,7 +1036,13 @@ async function handleBookingState(
         psid,
         sessionId,
         'TROLYoto đã hiểu nhu cầu của anh chị rồi ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ - nơi chia sẻ các khuyến mại tốt nhất trong ngành DV ô tô để có sẵn trợ giá khi cần ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_SUBSIDY,
+            url: COMMUNITY_URL
+          }
+        ],
         'Chưa cần thay'
       ),
       completeSession(sessionId)
@@ -1025,14 +1076,22 @@ async function handleConcern(
   payload: string,
   state: SessionState
 ): Promise<void> {
-  console.log(`[FB handler] handleConcern ENTER session=${sessionId} payload=${payload}`)
+  console.log(
+    `[FB handler] handleConcern ENTER session=${sessionId} payload=${payload}`
+  )
   if (payload === 'QR_BETTER_PRICE') {
     await Promise.all([
       sendButtonTemplate(
         psid,
         sessionId,
         'TROLYoto đã hiểu nhu cầu của anh chị rồi ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ - để nhận thêm voucher giảm giá tới 200k ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_VOUCHER, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_VOUCHER,
+            url: COMMUNITY_URL
+          }
+        ],
         'Giá tốt hơn'
       ),
       completeSession(sessionId)
@@ -1064,41 +1123,113 @@ type OptionDef = { keywords: string[]; payload: string }
 
 const STEP_TEXT_OPTIONS: Partial<Record<string, OptionDef[]>> = {
   AWAITING_CONSULT_TYPE: [
-    { keywords: ['bao gia', 'tro ly', 'bot', 'ai', 'nhanh', 'tuc thi', 'ngay'], payload: 'QR_AI_CONSULT' },
-    { keywords: ['tu van', 'chuyen vien', 'nhan vien', 'cskh', 'tu van ki', 'ky'], payload: 'QR_CSKH_CONSULT' }
+    {
+      keywords: ['bao gia', 'tro ly', 'bot', 'ai', 'nhanh', 'tuc thi', 'ngay'],
+      payload: 'QR_AI_CONSULT'
+    },
+    {
+      keywords: [
+        'tu van',
+        'chuyen vien',
+        'nhan vien',
+        'cskh',
+        'tu van ki',
+        'ky'
+      ],
+      payload: 'QR_CSKH_CONSULT'
+    }
   ],
   AWAITING_BOOKING_STATE: [
-    { keywords: ['dat lich', 'da dat', 'dat roi', 'ok dat', 'chot'], payload: 'QR_BOOK_DONE' },
-    { keywords: ['chua can', 'chua thay', 'de sau', 'tu tu', 'chua'], payload: 'QR_NOT_YET' },
-    { keywords: ['ban khoan', 'phan van', 'chua chac', 'suy nghi', 'con'], payload: 'QR_CONCERN' }
+    {
+      keywords: ['dat lich', 'da dat', 'dat roi', 'ok dat', 'chot'],
+      payload: 'QR_BOOK_DONE'
+    },
+    {
+      keywords: ['chua can', 'chua thay', 'de sau', 'tu tu', 'chua'],
+      payload: 'QR_NOT_YET'
+    },
+    {
+      keywords: ['ban khoan', 'phan van', 'chua chac', 'suy nghi', 'con'],
+      payload: 'QR_CONCERN'
+    }
   ],
   AWAITING_CONCERN: [
-    { keywords: ['gia tot', 're hon', 'khuyen mai', 'giam gia', 'voucher', 're'], payload: 'QR_BETTER_PRICE' },
-    { keywords: ['gan hon', 'dai ly gan', 'gara gan', 'tien hon', 'gan nha'], payload: 'QR_CLOSER_DEALER' }
+    {
+      keywords: [
+        'gia tot',
+        're hon',
+        'khuyen mai',
+        'giam gia',
+        'voucher',
+        're'
+      ],
+      payload: 'QR_BETTER_PRICE'
+    },
+    {
+      keywords: ['gan hon', 'dai ly gan', 'gara gan', 'tien hon', 'gan nha'],
+      payload: 'QR_CLOSER_DEALER'
+    }
   ],
   AWAITING_CSKH_CHANNEL: [
-    { keywords: ['cho o day', 'cho day', 'cho', 'doi', 'o day'], payload: 'QR_CSKH_HERE' },
-    { keywords: ['de lai sdt', 'so dien thoai', 'sdt', 'goi', 'dien thoai', 'lien he'], payload: 'QR_LEAVE_PHONE' }
+    {
+      keywords: ['cho o day', 'cho day', 'cho', 'doi', 'o day'],
+      payload: 'QR_CSKH_HERE'
+    },
+    {
+      keywords: [
+        'de lai sdt',
+        'so dien thoai',
+        'sdt',
+        'goi',
+        'dien thoai',
+        'lien he'
+      ],
+      payload: 'QR_LEAVE_PHONE'
+    }
   ]
 }
 
 const STEP_AI_OPTIONS: Partial<Record<string, AiOptionDef[]>> = {
   AWAITING_CONSULT_TYPE: [
-    { payload: 'QR_AI_CONSULT', description: 'Người dùng muốn trợ lý ảo / bot báo giá ngay' },
-    { payload: 'QR_CSKH_CONSULT', description: 'Người dùng muốn chuyên viên thật / tư vấn kĩ' }
+    {
+      payload: 'QR_AI_CONSULT',
+      description: 'Người dùng muốn trợ lý ảo / bot báo giá ngay'
+    },
+    {
+      payload: 'QR_CSKH_CONSULT',
+      description: 'Người dùng muốn chuyên viên thật / tư vấn kĩ'
+    }
   ],
   AWAITING_BOOKING_STATE: [
-    { payload: 'QR_BOOK_DONE', description: 'Người dùng đã đặt lịch / đồng ý chốt gara' },
+    {
+      payload: 'QR_BOOK_DONE',
+      description: 'Người dùng đã đặt lịch / đồng ý chốt gara'
+    },
     { payload: 'QR_NOT_YET', description: 'Người dùng chưa cần thay lốp ngay' },
-    { payload: 'QR_CONCERN', description: 'Người dùng còn băn khoăn, phân vân, chưa quyết' }
+    {
+      payload: 'QR_CONCERN',
+      description: 'Người dùng còn băn khoăn, phân vân, chưa quyết'
+    }
   ],
   AWAITING_CONCERN: [
-    { payload: 'QR_BETTER_PRICE', description: 'Người dùng muốn giá tốt hơn / nhiều khuyến mại hơn' },
-    { payload: 'QR_CLOSER_DEALER', description: 'Người dùng muốn đại lý/gara gần hơn, tiện hơn' }
+    {
+      payload: 'QR_BETTER_PRICE',
+      description: 'Người dùng muốn giá tốt hơn / nhiều khuyến mại hơn'
+    },
+    {
+      payload: 'QR_CLOSER_DEALER',
+      description: 'Người dùng muốn đại lý/gara gần hơn, tiện hơn'
+    }
   ],
   AWAITING_CSKH_CHANNEL: [
-    { payload: 'QR_CSKH_HERE', description: 'Người dùng muốn chờ tư vấn ngay tại khung chat này' },
-    { payload: 'QR_LEAVE_PHONE', description: 'Người dùng muốn để lại số điện thoại để được gọi lại' }
+    {
+      payload: 'QR_CSKH_HERE',
+      description: 'Người dùng muốn chờ tư vấn ngay tại khung chat này'
+    },
+    {
+      payload: 'QR_LEAVE_PHONE',
+      description: 'Người dùng muốn để lại số điện thoại để được gọi lại'
+    }
   ]
 }
 
@@ -1118,7 +1249,10 @@ type StepQuestion = { text: string; qrs: QuickReply[] }
 const STEP_QUESTIONS: Partial<Record<string, StepQuestion>> = {
   AWAITING_CONSULT_TYPE: {
     text: 'Anh/chị cần hỗ trợ:',
-    qrs: [qr(QR_TITLE.AI_CONSULT, 'QR_AI_CONSULT'), qr(QR_TITLE.CSKH_CONSULT, 'QR_CSKH_CONSULT')]
+    qrs: [
+      qr(QR_TITLE.AI_CONSULT, 'QR_AI_CONSULT'),
+      qr(QR_TITLE.CSKH_CONSULT, 'QR_CSKH_CONSULT')
+    ]
   },
   AWAITING_BOOKING_STATE: {
     text: 'Anh/chị thấy sao về các đại lý trên ạ? 😊',
@@ -1130,18 +1264,33 @@ const STEP_QUESTIONS: Partial<Record<string, StepQuestion>> = {
   },
   AWAITING_CONCERN: {
     text: 'Anh chị còn băn khoăn điều gì ạ 😊',
-    qrs: [qr(QR_TITLE.BETTER_PRICE, 'QR_BETTER_PRICE'), qr(QR_TITLE.CLOSER_DEALER, 'QR_CLOSER_DEALER')]
+    qrs: [
+      qr(QR_TITLE.BETTER_PRICE, 'QR_BETTER_PRICE'),
+      qr(QR_TITLE.CLOSER_DEALER, 'QR_CLOSER_DEALER')
+    ]
   },
   AWAITING_CSKH_CHANNEL: {
     text: 'Anh chị muốn chờ ở đây hay nhận tư vấn qua điện thoại?',
-    qrs: [qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'), qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')]
+    qrs: [
+      qr(QR_TITLE.CSKH_HERE, 'QR_CSKH_HERE'),
+      qr(QR_TITLE.LEAVE_PHONE, 'QR_LEAVE_PHONE')
+    ]
   }
 }
 
-async function resendQuestion(psid: string, sessionId: string, step: string): Promise<void> {
+async function resendQuestion(
+  psid: string,
+  sessionId: string,
+  step: string
+): Promise<void> {
   const q = STEP_QUESTIONS[step]
   if (!q) return
-  await reply(psid, sessionId, `Em chưa hiểu ý anh/chị lắm 😅\n\n${q.text}`, q.qrs)
+  await reply(
+    psid,
+    sessionId,
+    `Em chưa hiểu ý anh/chị lắm 😅\n\n${q.text}`,
+    q.qrs
+  )
   await updateSession(sessionId, { step: step as MessengerStep })
 }
 
@@ -1168,11 +1317,16 @@ async function handleNoMatch(
     await completeSession(sessionId)
     return
   }
-  await updateSession(sessionId, { state: { ...state, failed_attempts: failed } })
+  await updateSession(sessionId, {
+    state: { ...state, failed_attempts: failed }
+  })
   await resendQuestion(psid, sessionId, step)
 }
 
-async function resetStrikes(sessionId: string, state: SessionState): Promise<void> {
+async function resetStrikes(
+  sessionId: string,
+  state: SessionState
+): Promise<void> {
   if (state.failed_attempts && state.failed_attempts > 0) {
     await updateSession(sessionId, { state: { ...state, failed_attempts: 0 } })
   }
@@ -1254,7 +1408,9 @@ export async function handleMessengerEvent(
     // Fire-and-forget: gửi typing_on + markSeen ngay khi nhận event để khách
     // thấy bot đang xử lý (DB query + AI call có thể tốn 1-3s). FB typing TTL
     // ~20s, đủ phủ thời gian xử lý; reply() sau đó sẽ tự refresh.
-    sendTypingOn(psid, PAGE_TOKEN).catch(e => console.error('[FB typing-early]', e))
+    sendTypingOn(psid, PAGE_TOKEN).catch(e =>
+      console.error('[FB typing-early]', e)
+    )
     markSeen(psid, PAGE_TOKEN).catch(e => console.error('[FB markSeen]', e))
 
     let session: FbSession | null = await getActiveSession(psid, pageId)
@@ -1304,11 +1460,21 @@ export async function handleMessengerEvent(
     if (payload) {
       // Global payloads (xử lý bất kể step)
       if (payload.startsWith('TIRE_SIZE:')) {
-        await announceBasicPrice(psid, session.id, payload.replace('TIRE_SIZE:', ''), state)
+        await announceBasicPrice(
+          psid,
+          session.id,
+          payload.replace('TIRE_SIZE:', ''),
+          state
+        )
         return
       }
       if (payload === 'QR_SIZE_NOT_RIGHT') {
-        await cskhHandoff(psid, session.id, state, 'Khách bấm "Không đúng" ở bước kích cỡ')
+        await cskhHandoff(
+          psid,
+          session.id,
+          state,
+          'Khách bấm "Không đúng" ở bước kích cỡ'
+        )
         return
       }
       if (payload === 'QR_CSKH_HERE' || payload === 'QR_LEAVE_PHONE') {
@@ -1326,13 +1492,21 @@ export async function handleMessengerEvent(
       }
       // Booking/concern QRs: route GLOBAL (không phụ thuộc step) — chống race với
       // timer 45s; đảm bảo intent của khách luôn xử lý đúng dù step đã đổi.
-      if (payload === 'QR_BOOK_DONE' || payload === 'QR_NOT_YET' || payload === 'QR_CONCERN') {
-        console.log(`[FB flow] booking-global payload=${payload} step=${step} session=${session.id}`)
+      if (
+        payload === 'QR_BOOK_DONE' ||
+        payload === 'QR_NOT_YET' ||
+        payload === 'QR_CONCERN'
+      ) {
+        console.log(
+          `[FB flow] booking-global payload=${payload} step=${step} session=${session.id}`
+        )
         await handleBookingState(psid, session.id, payload, state)
         return
       }
       if (payload === 'QR_BETTER_PRICE' || payload === 'QR_CLOSER_DEALER') {
-        console.log(`[FB flow] concern-global payload=${payload} step=${step} session=${session.id}`)
+        console.log(
+          `[FB flow] concern-global payload=${payload} step=${step} session=${session.id}`
+        )
         await handleConcern(psid, session.id, payload, state)
         return
       }
@@ -1377,7 +1551,9 @@ export async function handleMessengerEvent(
           return
         }
         const opts = STEP_TEXT_OPTIONS[step]
-        let matched: string | null = opts ? matchStepOption(messageText, opts) : null
+        let matched: string | null = opts
+          ? matchStepOption(messageText, opts)
+          : null
         if (!matched) {
           const aiOpts = STEP_AI_OPTIONS[step]
           if (aiOpts) matched = await matchOption(messageText, aiOpts)
@@ -1433,7 +1609,13 @@ export async function handleMessengerEvent(
 
         case 'AWAITING_LOCATION':
         case 'SHOWING_DEALERS':
-          await handleLocationInput(psid, session.id, pageId, messageText, state)
+          await handleLocationInput(
+            psid,
+            session.id,
+            pageId,
+            messageText,
+            state
+          )
           break
 
         case 'SHOWING_RESULTS_LOCAL':

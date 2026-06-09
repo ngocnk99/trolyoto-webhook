@@ -16,6 +16,15 @@ import { handleMessengerEventV3 } from '../v3/flow-handler'
 const FROM_TIME = process.env.FROM_TIME ?? '18:00'
 const END_TIME = process.env.END_TIME ?? '08:30'
 
+/** Whitelist PSID bypass time gate (test trên prod page bất kể giờ).
+ *  Override qua env PROD_TEST_PSIDS="psid1,psid2,..." nếu muốn thêm. */
+const PROD_TEST_PSIDS = new Set(
+  (process.env.PROD_TEST_PSIDS ?? '24081205854909009')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+)
+
 function parseHHMM(s: string): number {
   const [h = 0, m = 0] = s.split(':').map(n => parseInt(n, 10))
   return h * 60 + m
@@ -46,12 +55,18 @@ export async function handleMessengerEventProduction(
   event: MessengerEvent,
   pageId: string
 ): Promise<void> {
+  const psid = event.sender?.id ?? ''
   const isReset = event.message?.text?.trim() === '/reset'
-  if (!isReset && !isInProductionWindow()) {
+  const isWhitelistedPsid = psid && PROD_TEST_PSIDS.has(psid)
+  if (!isReset && !isWhitelistedPsid && !isInProductionWindow()) {
     console.log(
-      `[PROD] outside time window (${FROM_TIME}-${END_TIME}) → silent for psid=${event.sender?.id}`
+      `[PROD] outside time window (${FROM_TIME}-${END_TIME}) → silent for psid=${psid}`
     )
     return
+  }
+  if (isWhitelistedPsid) {
+    console.log('event', event)
+    console.log(`[PROD] whitelisted test psid=${psid} → bypass time gate`)
   }
   await handleMessengerEventV3(event, pageId)
 }

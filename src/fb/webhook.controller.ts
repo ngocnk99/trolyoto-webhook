@@ -77,18 +77,23 @@ export class WebhookController {
 
     if (!verifySignature(rawBody, signature)) {
       console.warn('[FB webhook] Invalid signature')
-      return res.status(HttpStatus.UNAUTHORIZED).json({ error: 'Invalid signature' })
+      return res
+        .status(HttpStatus.UNAUTHORIZED)
+        .json({ error: 'Invalid signature' })
     }
 
     let body: MessengerWebhookBody
     try {
       body = JSON.parse(rawBody.toString('utf-8'))
+      // console.log('body', JSON.stringify(body, null, 2))
     } catch {
       return res.status(HttpStatus.BAD_REQUEST).json({ error: 'Invalid JSON' })
     }
 
     if (body.object !== 'page') {
-      return res.status(HttpStatus.NOT_FOUND).json({ error: 'Not a page event' })
+      return res
+        .status(HttpStatus.NOT_FOUND)
+        .json({ error: 'Not a page event' })
     }
 
     // 200 OK ngay — FB stops retrying. Node process tiếp tục chạy xử lý event.
@@ -124,6 +129,13 @@ export class WebhookController {
 
       const events = [...(entry.messaging ?? []), ...(entry.standby ?? [])]
       for (const event of events) {
+        if (
+          event.sender.id === '24081205854909009' ||
+          event.recipient.id === '24081205854909009' ||
+          event.referral
+        ) {
+          console.log('body', JSON.stringify(body, null, 2))
+        }
         await handler(event, entry.id)
       }
     }

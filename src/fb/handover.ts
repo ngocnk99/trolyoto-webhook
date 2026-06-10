@@ -97,6 +97,20 @@ export async function takeThreadControl(
     })
     if (!res.ok) {
       const text = await res.text()
+      // Error 27 / subcode 1893035 = "App requesting thread control đã có quyền".
+      //  Bot đã giữ thread (vd hop_context trước đó) → coi như success luôn.
+      let subcode: number | undefined
+      try {
+        subcode = JSON.parse(text)?.error?.error_subcode
+      } catch {
+        // bỏ qua
+      }
+      if (subcode === 1893035) {
+        console.log(
+          `[handover] take_thread_control psid=${psid} page=${pageId}: bot đã giữ thread sẵn (subcode=1893035) → treat as success`
+        )
+        return true
+      }
       console.error(
         `[handover] take_thread_control psid=${psid} page=${pageId} error ${res.status}:`,
         text

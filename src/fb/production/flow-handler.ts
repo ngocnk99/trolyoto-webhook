@@ -147,8 +147,19 @@ export async function handleMessengerEventProduction(
   isStandby = false,
   hopContext?: MessengerEntry['hop_context']
 ): Promise<void> {
-  const psid = event.sender?.id ?? ''
-  if (!psid) return
+  // ECHO event: sender=page, recipient=customer. Với non-echo: sender=customer.
+  //  → Customer PSID = recipient.id khi is_echo, ngược lại = sender.id.
+  const isEcho = event.message?.is_echo === true
+  const psid = isEcho
+    ? (event.recipient?.id ?? '')
+    : (event.sender?.id ?? '')
+  if (!psid || psid === pageId) {
+    // Safety net: nếu PSID rỗng hoặc đúng = pageId (parse sai) → skip
+    console.warn(
+      `[PROD] skip event: derived psid="${psid}" pageId="${pageId}" isEcho=${isEcho}`
+    )
+    return
+  }
 
   const isReset = event.message?.text?.trim() === '/reset'
   const isWhitelistedPsid = PROD_TEST_PSIDS.has(psid)
@@ -189,34 +200,46 @@ export async function handleMessengerEventProduction(
   }
 
   // ── (1) CSKH ECHO — bất kể standby/messaging, in/out giờ ─────────────────
-  // Pancake (hoặc admin Page Inbox) gửi tin cho khách → echo bay về với
+  // Page Inbox / Business Suite / Pancake gửi tin cho khách → echo bay về với
   // app_id != bot. Đây là dấu hiệu CSKH đã engage → pause session vĩnh viễn
   // cho PSID này để bot không tự động trả lời ở các turn sau.
+  //
+  // App_id thường gặp:
+  //   - 263902037430900: Meta Business Suite / Page Inbox (admin gửi qua FB UI)
+  //   - 1733556690196497: Pancake CRM
+  //   - Khác app_id của bot (FB_APP_ID) đều coi là CSKH.
+  //
+  // Edge: nếu chưa có session → CREATE rồi pause luôn (để khách quay lại
+  // sau bot vẫn stay silent vĩnh viễn cho PSID đó).
   if (isEchoFromOtherApp(event)) {
-    const session =
+    const appId = event.message?.app_id ?? 'unknown'
+    let session =
       (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
-    if (session && !session.is_paused_by_cskh) {
+    if (!session) {
+      session = await createSession(psid, pageId)
       console.log(
-        `[PROD] CSKH echo detected (app_id=${event.message?.app_id}) psid=${psid} → pause session ${session.id}`
+        `[PROD] CSKH echo app_id=${appId} psid=${psid} (chưa có session) → CREATE session ${session.id} + pause`
       )
-      await pauseSessionByCskh(session.id)
-      // Log nội dung CSKH đã gửi vào conversation_log
-      const logMsg: ConversationMessage = {
-        role: 'bot',
-        type: 'text',
-        text: `[CSKH] ${event.message?.text ?? '[attachment/template]'}`,
-        ts: new Date().toISOString()
-      }
-      await appendConversationLog(session.id, logMsg)
-    } else if (!session) {
+    } else if (!session.is_paused_by_cskh) {
       console.log(
-        `[PROD] CSKH echo psid=${psid} nhưng không có session → skip (chưa có history)`
+        `[PROD] CSKH echo app_id=${appId} psid=${psid} → pause session ${session.id}`
       )
     } else {
       console.log(
-        `[PROD] CSKH echo psid=${psid} session=${session.id} đã paused trước đó → skip`
+        `[PROD] CSKH echo app_id=${appId} psid=${psid} session=${session.id} đã paused → chỉ log thêm`
       )
     }
+    if (!session.is_paused_by_cskh) {
+      await pauseSessionByCskh(session.id)
+    }
+    // Log nội dung CSKH đã gửi vào conversation_log để có ngữ cảnh đầy đủ
+    const logMsg: ConversationMessage = {
+      role: 'bot',
+      type: 'text',
+      text: `[CSKH app=${appId}] ${event.message?.text ?? '[attachment/template]'}`,
+      ts: new Date().toISOString()
+    }
+    await appendConversationLog(session.id, logMsg)
     return
   }
 

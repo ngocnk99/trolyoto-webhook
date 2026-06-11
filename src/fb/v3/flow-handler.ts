@@ -260,6 +260,13 @@ function deriveLastAsked(state: SessionState): 'size' | 'brand' | 'location' | n
 
 const MAX_FAIL_PER_STEP = 2 // 1 lần = retry; 2 lần = CSKH handoff
 
+/** Delay nhỏ giữa 2 reply liên tiếp — đảm bảo FB Messenger deliver đúng thứ tự.
+ *  Khi không delay, FB có thể swap order do queue processing không atomic. */
+const REPLY_GAP_MS = 1200
+function delay(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms))
+}
+
 /** Trả về câu hỏi hardcoded cho field thiếu kế tiếp (size → brand → location). */
 function nextMissingFieldQuestion(state: SessionState): string | null {
   if (!state.tire_size) {
@@ -1015,6 +1022,7 @@ async function handleGathering(
 
     if (noPriorBotReply) {
       await reply(psid, sessionId, WELCOME_INTRO)
+      await delay(REPLY_GAP_MS)
     }
 
     // 1 lần fail — gửi retry message tone tích cực (không "chưa hiểu")
@@ -1113,6 +1121,7 @@ async function handleGathering(
     if (fallback) {
       console.log(`[V3 gather] safety-net fallback: ${fallback}`)
       const fallbackIsAboutBrand = needBrand && !askingBrand
+      await delay(REPLY_GAP_MS)
       await reply(psid, sessionId, fallback, fallbackIsAboutBrand ? V3_BRAND_QRS() : undefined)
     }
   }
@@ -1200,6 +1209,7 @@ async function showSpGaraResults(
         }
       })
       await reply(psid, sessionId, msg1)
+      await delay(REPLY_GAP_MS)
       await reply(
         psid,
         sessionId,
@@ -1212,6 +1222,7 @@ async function showSpGaraResults(
     // ("😊 205/55R17 Michelin ở Hà Nội phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.")
     const msgFound = buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
+    await delay(REPLY_GAP_MS)
     const displayLabel = usedFallbackProvince
       ? state.province_name ?? locationLabel
       : locationLabel
@@ -1413,6 +1424,7 @@ async function cskhHandoff(
       : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
 
   await reply(psid, sessionId, msg1)
+  await delay(REPLY_GAP_MS)
   await reply(
     psid,
     sessionId,
@@ -1574,6 +1586,7 @@ async function handleMessengerEventV3Inner(
       const fresh = await createSession(psid, pageId)
       await updateSession(fresh.id, { step: 'V3_GATHERING' })
       await sendV3Welcome(psid, fresh.id)
+      await delay(REPLY_GAP_MS)
       await reply(
         psid,
         fresh.id,

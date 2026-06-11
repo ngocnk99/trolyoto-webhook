@@ -276,7 +276,7 @@ function nextMissingFieldQuestion(state: SessionState): string | null {
     return BRAND_ASK_TEXT_FULL
   }
   if (!state.province_code && !state.ward_code) {
-    return 'Anh/chị ở khu vực nào (xã/phường + tỉnh/TP) để em tìm gara gần ạ? 😊'
+    return 'Anh/chị ở KHU VỰC THUỘC TỈNH/THÀNH nào để em tìm đại lý gần nhất ạ?\nVí dụ: "Cầu Giấy, Hà Nội" hoặc "TP. Vinh, Nghệ An" 😊'
   }
   return null
 }
@@ -1042,7 +1042,7 @@ async function handleGathering(
       await reply(
         psid,
         sessionId,
-        'Anh/chị giúp em xác nhận khu vực chính xác hơn nhé — xã/phường + tỉnh/TP (vd: "Hai Bà Trưng, Hà Nội") 😊'
+        'Anh/chị giúp em xác nhận KHU VỰC THUỘC TỈNH/THÀNH nào để em tìm đại lý gần nhất ạ?\nVí dụ: "Hai Bà Trưng, Hà Nội" hoặc "TP. Vinh, Nghệ An" 😊'
       )
       return
     }
@@ -1601,8 +1601,22 @@ async function handleMessengerEventV3Inner(
     const messageText = event.message?.text?.trim() ?? ''
     const payload =
       event.message?.quick_reply?.payload ?? event.postback?.payload ?? ''
-    const imageUrl = event.message?.attachments?.find(a => a.type === 'image')
-      ?.payload?.url
+    // Image attachment: BỎ QUA sticker (like 👍, emoji, sticker FB). Đặc điểm:
+    //   - Có attachment type='sticker', HOẶC
+    //   - Type='image' nhưng có field sticker_id trong payload
+    // Chỉ lấy URL khi là ảnh thật khách upload từ điện thoại.
+    const attachments = event.message?.attachments ?? []
+    const hasSticker = attachments.some(
+      a => a.type === 'sticker' || !!a.payload?.sticker_id
+    )
+    const realImage = attachments.find(
+      a => a.type === 'image' && !a.payload?.sticker_id
+    )
+    const imageUrl = hasSticker ? undefined : realImage?.payload?.url
+    /** Khách CHỈ gửi sticker (không có text/payload/image thật). Không bump fail
+     *  counter, không chạy AI gather — re-ask theo field đang chờ là đủ. */
+    const isStickerOnly =
+      hasSticker && !messageText && !payload && !realImage
 
     const latest = session ? null : await getLatestSession(psid, pageId)
     if (!session && latest?.is_paused_by_cskh) return
@@ -1653,6 +1667,30 @@ async function handleMessengerEventV3Inner(
     // ── Image attachment → handleImage ──────────────────────────────────
     if (imageUrl) {
       await handleImage(psid, session, pageId, imageUrl)
+      return
+    }
+
+    // ── Sticker-only (like 👍, emoji) — không phải input thật ───────────
+    //  Re-ask theo field đang chờ; KHÔNG bump fail counter (sticker ≠ "fail hiểu").
+    if (isStickerOnly) {
+      appendConversationLog(session.id, {
+        role: 'user',
+        type: 'text',
+        text: '[sticker]',
+        ts: new Date().toISOString()
+      }).catch(e => console.error('[V3 log sticker]', e))
+      const nextQ = nextMissingFieldQuestion(session.state)
+      console.log(
+        `[V3 flow] sticker-only → re-ask field "${deriveLastAsked(session.state) ?? 'none'}" (no fail bump)`
+      )
+      if (nextQ) {
+        const needBrand =
+          !!session.state.tire_size &&
+          !session.state.brand_tier &&
+          (!session.state.selected_brands || session.state.selected_brands.length === 0)
+        await reply(psid, session.id, nextQ, needBrand ? V3_BRAND_QRS() : undefined)
+      }
+      // Nếu đã đủ 3 field (nextQ=null) thì không làm gì — bot chờ user thực sự nhắn
       return
     }
 

@@ -172,9 +172,18 @@ export interface MessengerEvent {
     is_echo?: boolean
     app_id?: number
     attachments?: Array<{
-      type: 'image' | 'audio' | 'video' | 'file' | 'location' | 'fallback'
+      type:
+        | 'image'
+        | 'audio'
+        | 'video'
+        | 'file'
+        | 'location'
+        | 'fallback'
+        | 'sticker'
       payload?: {
         url?: string
+        /** Có giá trị khi khách gửi sticker (like 👍, emoji thumb...). Type lúc đó
+         *  thường là 'image' (FB đóng gói sticker dưới dạng image) hoặc 'sticker'. */
         sticker_id?: number
         coordinates?: { lat: number; long: number }
       }

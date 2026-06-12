@@ -403,15 +403,19 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
     const contentType = imgRes.headers.get('content-type') ?? 'image/jpeg'
     console.log(`[AI analyzeTireImage] downloaded ${bytes.byteLength} bytes (${contentType})`)
 
-    // 2. Gửi inline cho gpt-4o-mini vision
+    // 2. Gửi inline cho vision model. Model configurable qua env VISION_MODEL
+    //    (default gpt-4o cho accuracy cao; gpt-4o-mini đọc nhầm 145↔175,
+    //    225↔255 khi ảnh xoay/góc nghiêng).
+    const visionModel = process.env.VISION_MODEL ?? 'gpt-4o'
+    console.log(`[AI analyzeTireImage] using model=${visionModel}`)
     const { object } = await generateObject({
-      model: openai('gpt-4o-mini') as any,
+      model: openai(visionModel) as any,
       schema: z.object({
         tire_size: z
           .string()
           .nullable()
           .describe(
-            'Tire size XXX/YYRZZ extracted from sidewall (vd "215/75R16"). Null if not legible.'
+            'Tire size XXX/YYRZZ extracted from sidewall (vd "215/75R16"). Null if not 100% legible.'
           ),
         brand: z
           .string()
@@ -419,18 +423,46 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
           .describe(
             'Brand name UPPERCASE from sidewall (vd "MICHELIN", "BRIDGESTONE", "HANKOOK"). Null if not legible.'
           ),
-        confidence: z.number().min(0).max(1).describe('Confidence 0-1.')
+        confidence: z.number().min(0).max(1).describe('Confidence 0-1.'),
+        raw_text: z
+          .string()
+          .nullable()
+          .describe('Chuỗi text bạn đọc được trên thành lốp, kể cả khi xoay/ngược — để debug khi sai.')
       }),
       messages: [
         {
           role: 'system',
-          content:
-            'You read tire sidewall markings. Extract the size pattern XXX/YYRZZ (3-digit width, 2-digit aspect ratio, R, 2-digit rim diameter — may have suffix like C/T for commercial which you ignore) and the brand name. Return null for any field you cannot read clearly. Be conservative — only return values you can actually see in the image.'
+          content: [
+            'Bạn đọc thành lốp xe (tire sidewall).',
+            '',
+            'NHIỆM VỤ:',
+            '1. Tìm chuỗi kích cỡ định dạng: <3 chữ số width> "/" <2 chữ số aspect> "R" <2 chữ số rim>',
+            '   Ví dụ hợp lệ: "145/70R13", "175/65R14", "215/75R16", "265/65R17".',
+            '   Có thể có hậu tố như "C", "T", "82H", "91V" — BỎ QUA, không đưa vào tire_size.',
+            '',
+            '2. Tìm tên hãng (brand) viết HOA trên lốp: MICHELIN, BRIDGESTONE, HANKOOK, DUNLOP, GOODYEAR, KUMHO, MAXXIS, YOKOHAMA, CONTINENTAL, FALKEN, PIRELLI, NEXEN, TOYO, ADVANCE...',
+            '',
+            'CHÚ Ý QUAN TRỌNG:',
+            '- Ảnh CÓ THỂ BỊ XOAY HOẶC NGƯỢC (text upside-down). Đọc kỹ từng chữ số, không đoán.',
+            '- Chữ số "1" và "7" rất giống nhau khi xoay → kiểm tra kỹ độ cao, độ thẳng.',
+            '- Chữ số "5" và "6" cũng dễ nhầm khi ảnh mờ → phóng to mentally trước khi quyết định.',
+            '- Nếu KHÔNG chắc chắn 100% cả 3 chỉ số (width, aspect, rim) → set tire_size=null và confidence<0.5.',
+            '- Đừng đoán dựa trên kích cỡ phổ biến — chỉ đọc đúng những gì THỰC SỰ THẤY.',
+            '',
+            'OUTPUT:',
+            '- tire_size: chuỗi đúng format "XXX/YYRZZ" (chỉ khi tự tin tuyệt đối)',
+            '- brand: tên hãng HOA (chỉ khi đọc rõ)',
+            '- confidence: 0-1, < 0.7 nếu có nghi ngờ',
+            '- raw_text: chuỗi text bạn ĐỌC được trên thành lốp (kể cả không đúng format) — để dev debug khi bot sai'
+          ].join('\n')
         },
         {
           role: 'user',
           content: [
-            { type: 'text', text: 'Đọc kích cỡ + thương hiệu trên lốp này.' },
+            {
+              type: 'text',
+              text: 'Đọc kích cỡ + thương hiệu trên lốp này. Lưu ý ảnh có thể bị xoay hoặc ngược — đọc kỹ từng chữ số.'
+            },
             { type: 'image', image: bytes, mimeType: contentType }
           ]
         }
@@ -446,8 +478,21 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
     const normalizedBrand = object.brand?.trim().toUpperCase() || null
 
     console.log(
-      `[AI analyzeTireImage] tire_size=${normalizedSize} brand=${normalizedBrand} confidence=${object.confidence}`
+      `[AI analyzeTireImage] tire_size=${normalizedSize} brand=${normalizedBrand} confidence=${object.confidence} raw_text="${object.raw_text ?? ''}"`
     )
+
+    // Áp dụng ngưỡng confidence: nếu <0.7 → coi như đọc không rõ, trả null
+    // để bot retry bằng cách hỏi nhập tay.
+    if (object.confidence !== undefined && object.confidence < 0.7) {
+      console.log(
+        `[AI analyzeTireImage] confidence ${object.confidence} < 0.7 → reject tire_size, ask user nhập tay`
+      )
+      return {
+        tire_size: null,
+        brand: normalizedBrand,
+        confidence: object.confidence
+      }
+    }
 
     return {
       tire_size: normalizedSize,

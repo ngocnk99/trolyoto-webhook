@@ -452,7 +452,7 @@ export async function fetchTireSizesByProductSearch(
 
   const results = await Promise.all(
     cleaned.map(async kw => {
-      const searchKw = `LOP ${kw}`.trim()
+      const searchKw = `${kw}`.trim()
       const { data, error } = await supabaseAmin.rpc('search_products_by_tag', {
         keywords: searchKw,
         category: ['LOP'],
@@ -466,9 +466,15 @@ export async function fetchTireSizesByProductSearch(
           `[FB db] fetchTireSizesByProductSearch("${searchKw}") rpc error:`,
           error.message
         )
-        return [] as Array<{ id: string; SIZE: string | null; quantitysold: number | null }>
+        return [] as Array<{
+          id: string
+          SIZE: string | null
+          quantitysold: number | null
+        }>
       }
-      const first = Array.isArray(data) ? (data as Array<{ products: unknown }>)[0] : null
+      const first = Array.isArray(data)
+        ? (data as Array<{ products: unknown }>)[0]
+        : null
       const products = (first?.products ?? []) as Array<{
         id: string
         SIZE: string | null

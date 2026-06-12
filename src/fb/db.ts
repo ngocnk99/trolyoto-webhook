@@ -511,7 +511,7 @@ export async function fetchTireSizesByProductSearch(
     .sort((a, b) => b.quantitysold - a.quantitysold)
 
   console.log(
-    `[FB db] fetchTireSizesByProductSearch([${cleaned.join('|')}]) → ${sizes} sizes from ${seenProducts.size} products`
+    `[FB db] fetchTireSizesByProductSearch([${cleaned.join('|')}]) → ${sizes.join(',')} sizes from ${seenProducts.size} products`
   )
 
   return { sizes, productCount: seenProducts.size }

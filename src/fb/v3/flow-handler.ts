@@ -70,7 +70,10 @@ const PAGE_ID_PRODUCT = process.env.FACEBOOK_PAGE_ID_PRODUCT
  *  message.app_id KHÁC (263902037430900 cho BS). */
 const FB_APP_ID = process.env.FB_APP_ID
 
-const requestContext = new AsyncLocalStorage<{ token: string; pageId: string }>()
+const requestContext = new AsyncLocalStorage<{
+  token: string
+  pageId: string
+}>()
 
 /** Trả token cho request hiện tại (set bởi handleMessengerEventV3). */
 function currentToken(): string {
@@ -90,8 +93,19 @@ const NUDGE_BOOKING_MS = 45_000
 
 // Brand tiers V2 (giữ để map AI brand_tier → brand list lúc query DB)
 const BRAND_TIERS = {
-  premium: { brands: ['MICHELIN', 'BRIDGESTONE', 'PIRELLI', 'CONTINENTAL', 'TOYO', 'GOODYEAR'] as string[] },
-  balanced: { brands: ['HANKOOK', 'YOKOHAMA', 'DUNLOP', 'LAUFENN'] as string[] },
+  premium: {
+    brands: [
+      'MICHELIN',
+      'BRIDGESTONE',
+      'PIRELLI',
+      'CONTINENTAL',
+      'TOYO',
+      'GOODYEAR'
+    ] as string[]
+  },
+  balanced: {
+    brands: ['HANKOOK', 'YOKOHAMA', 'DUNLOP', 'LAUFENN'] as string[]
+  },
   budget: { brands: ['KUMHO', 'ROADX', 'SAILUN', 'TBB', 'OTANI'] as string[] },
   all: { brands: [] as string[] }
 } as const
@@ -139,9 +153,7 @@ const BRAND_TIER_BLOCK =
   '• Cân bằng: Goodyear, Hankook, Yokohama\n' +
   '• Tiết kiệm: Kumho, Sailun, Laufenn'
 
-const BRAND_ASK_TEXT_FULL =
-  `Anh/chị muốn thương hiệu nào ạ? 😊\n\n${BRAND_TIER_BLOCK}`
-
+const BRAND_ASK_TEXT_FULL = `Anh/chị muốn thương hiệu nào ạ? 😊\n\n${BRAND_TIER_BLOCK}`
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -176,12 +188,13 @@ function brandFilterFromState(state: SessionState): string {
   return '__skip_brand__'
 }
 
-const TIER_LABEL_VN: Record<'premium' | 'balanced' | 'budget' | 'all', string> = {
-  premium: 'Cao cấp',
-  balanced: 'Cân bằng',
-  budget: 'Tiết kiệm',
-  all: 'Tất cả'
-}
+const TIER_LABEL_VN: Record<'premium' | 'balanced' | 'budget' | 'all', string> =
+  {
+    premium: 'Cao cấp',
+    balanced: 'Cân bằng',
+    budget: 'Tiết kiệm',
+    all: 'Tất cả'
+  }
 
 /** Tóm tắt brand cho summary message — ưu tiên tên tier nếu khớp full list. */
 function summarizeBrand(state: SessionState): string {
@@ -213,7 +226,7 @@ function buildSearchIntro(state: SessionState): string {
   if (brand && brand !== 'Tất cả') parts.push(brand)
   const location = state.ward_name
     ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
-    : state.province_name ?? ''
+    : (state.province_name ?? '')
   const infoStr = parts.join(' ')
   let prefix: string
   if (infoStr && location) prefix = `${infoStr} ở ${location}`
@@ -242,16 +255,21 @@ function buildSummaryHead(state: SessionState, updated: FieldKey[]): string {
   } else if (field === 'location') {
     const loc = state.ward_name
       ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
-      : state.province_name ?? '?'
+      : (state.province_name ?? '?')
     infoLine = `khu vực: ${loc}`
   }
   return infoLine ? `Em đã nhận ${infoLine}` : ''
 }
 
 /** Suy ra bot đang hỏi field nào dựa trên state CŨ (size → brand → location). */
-function deriveLastAsked(state: SessionState): 'size' | 'brand' | 'location' | null {
+function deriveLastAsked(
+  state: SessionState
+): 'size' | 'brand' | 'location' | null {
   if (!state.tire_size) return 'size'
-  if (!state.brand_tier && (!state.selected_brands || state.selected_brands.length === 0)) {
+  if (
+    !state.brand_tier &&
+    (!state.selected_brands || state.selected_brands.length === 0)
+  ) {
     return 'brand'
   }
   if (!state.province_code && !state.ward_code) return 'location'
@@ -272,7 +290,10 @@ function nextMissingFieldQuestion(state: SessionState): string | null {
   if (!state.tire_size) {
     return 'Anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
   }
-  if (!state.brand_tier && (!state.selected_brands || state.selected_brands.length === 0)) {
+  if (
+    !state.brand_tier &&
+    (!state.selected_brands || state.selected_brands.length === 0)
+  ) {
     return BRAND_ASK_TEXT_FULL
   }
   if (!state.province_code && !state.ward_code) {
@@ -353,7 +374,11 @@ async function reply(
 ): Promise<void> {
   const tok = currentToken()
   sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
-  const result = await sendMessage(psid, { text, quick_replies: quickReplies }, tok)
+  const result = await sendMessage(
+    psid,
+    { text, quick_replies: quickReplies },
+    tok
+  )
   if (!result.ok) {
     await logSendError(sessionId, result)
     return
@@ -364,7 +389,10 @@ async function reply(
     type: quickReplies && quickReplies.length > 0 ? 'quick_replies' : 'text',
     text,
     ts: new Date().toISOString(),
-    quick_replies: quickReplies?.map(q => ({ title: q.title, payload: q.payload }))
+    quick_replies: quickReplies?.map(q => ({
+      title: q.title,
+      payload: q.payload
+    }))
   }).catch(e => console.error('[V3 log bot]', e))
 }
 
@@ -380,7 +408,10 @@ async function sendButtonTemplate(
   const result = await sendMessage(
     psid,
     {
-      attachment: { type: 'template', payload: { template_type: 'button', text, buttons } }
+      attachment: {
+        type: 'template',
+        payload: { template_type: 'button', text, buttons }
+      }
     },
     tok
   )
@@ -393,7 +424,10 @@ async function sendButtonTemplate(
     type: 'quick_replies',
     text: context ? `${context}: ${text}` : text,
     ts: new Date().toISOString(),
-    quick_replies: buttons.map(b => ({ title: b.title, payload: b.payload ?? b.url ?? '' }))
+    quick_replies: buttons.map(b => ({
+      title: b.title,
+      payload: b.payload ?? b.url ?? ''
+    }))
   }).catch(e => console.error('[V3 log button]', e))
 }
 
@@ -405,7 +439,12 @@ async function sendCards(
 ): Promise<void> {
   const result = await sendMessage(
     psid,
-    { attachment: { type: 'template', payload: { template_type: 'generic', elements } } },
+    {
+      attachment: {
+        type: 'template',
+        payload: { template_type: 'generic', elements }
+      }
+    },
     currentToken()
   )
   if (!result.ok) {
@@ -417,7 +456,11 @@ async function sendCards(
     subtitle: el.subtitle,
     image_url: el.image_url,
     url: el.default_action?.url,
-    buttons: el.buttons?.map(b => ({ title: b.title, url: b.url, payload: b.payload }))
+    buttons: el.buttons?.map(b => ({
+      title: b.title,
+      url: b.url,
+      payload: b.payload
+    }))
   }))
   appendConversationLog(sessionId, {
     role: 'bot',
@@ -430,7 +473,9 @@ async function sendCards(
 
 // Card SP+gara (GIỮ Y V2 — wording không đổi)
 function buildSpGaraCard(card: SpGaraCard): GenericElement {
-  const productPageUrl = card.productSlug ? `${TROLYOTO_URL}/lop/${card.productSlug}` : undefined
+  const productPageUrl = card.productSlug
+    ? `${TROLYOTO_URL}/lop/${card.productSlug}`
+    : undefined
   const listingUrl = `${TROLYOTO_URL}/lop?size=${encodeURIComponent(card.size)}`
   const subtitle = [
     `🏪 ${card.garageName}`,
@@ -445,9 +490,17 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
     { type: 'web_url', title: QR_TITLE.VIEW_PROMO, url: card.detailUrl }
   ]
   if (productPageUrl) {
-    buttons.push({ type: 'web_url', title: QR_TITLE.VIEW_OTHER_GARAGE, url: productPageUrl })
+    buttons.push({
+      type: 'web_url',
+      title: QR_TITLE.VIEW_OTHER_GARAGE,
+      url: productPageUrl
+    })
   }
-  buttons.push({ type: 'web_url', title: QR_TITLE.VIEW_OTHER_PRODUCT, url: listingUrl })
+  buttons.push({
+    type: 'web_url',
+    title: QR_TITLE.VIEW_OTHER_PRODUCT,
+    url: listingUrl
+  })
 
   return {
     title: `${card.brand} ${card.size}`,
@@ -531,22 +584,13 @@ async function lookupCarSizes(carModel: string): Promise<string[]> {
   // Ví dụ: ['VINFAST VF8 PLUS', 'VINFASTVF8PLUS'] (3 variants gốc dedupe còn 2)
   const cartypeCodes = toCartypeCodes(carModel)
   const searchKeywords = Array.from(
-    new Set(cartypeCodes.map(c => c.replace(/[_-]+/g, ' ').trim()).filter(Boolean))
+    new Set(
+      cartypeCodes.map(c => c.replace(/[_-]+/g, ' ').trim()).filter(Boolean)
+    )
   )
 
   // Song song: tag-based + product-search-based (RPC search_products_by_tag)
-  const [tagResult, searchResult] = await Promise.all([
-    (async () => {
-      try {
-        const variants = await getCarNameVariants(carModel)
-        if (variants.exact.length === 0) return [] as string[]
-        const r = await fetchTireSizesByCarTags(variants.exact)
-        return r.sizes.map(s => s.size)
-      } catch (e) {
-        console.error('[V3 lookupCarSizes] tag query:', e)
-        return [] as string[]
-      }
-    })(),
+  const [searchResult] = await Promise.all([
     (async () => {
       if (searchKeywords.length === 0) return [] as string[]
       try {
@@ -560,13 +604,13 @@ async function lookupCarSizes(carModel: string): Promise<string[]> {
   ])
 
   console.log(
-    `[V3 lookupCarSizes] "${carModel}" tag=${tagResult.length} search([${searchKeywords.join('|')}])=${searchResult.length}`
+    `[V3 lookupCarSizes] "${carModel}"  search([${searchKeywords.join('|')}])=${searchResult.length}`
   )
 
   // Merge + dedup case-insensitive + cap 4
   const seen = new Set<string>()
   const sizes: string[] = []
-  for (const s of [...tagResult, ...searchResult]) {
+  for (const s of [...searchResult]) {
     if (!s) continue
     const key = s.toUpperCase()
     if (seen.has(key)) continue
@@ -604,12 +648,13 @@ async function showCarSizeOptions(
 //  V3 — Handlers cho các QR payloads (brand tier, ward confirm, restart)
 // ════════════════════════════════════════════════════════════════════════════
 
-const TIER_LABEL_VI: Record<'premium' | 'balanced' | 'budget' | 'all', string> = {
-  premium: 'cao cấp',
-  balanced: 'cân bằng',
-  budget: 'tiết kiệm',
-  all: 'xem tất cả'
-}
+const TIER_LABEL_VI: Record<'premium' | 'balanced' | 'budget' | 'all', string> =
+  {
+    premium: 'cao cấp',
+    balanced: 'cân bằng',
+    budget: 'tiết kiệm',
+    all: 'xem tất cả'
+  }
 
 async function handleBrandNameChoice(
   psid: string,
@@ -687,7 +732,8 @@ async function handleWardChoice(
     ...session.state,
     ward_code: wardCode,
     // Giữ ward_name từ trước nếu có; nếu chưa có, dùng province_name làm placeholder
-    ward_name: session.state.ward_name ?? session.state.province_name ?? wardCode
+    ward_name:
+      session.state.ward_name ?? session.state.province_name ?? wardCode
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -696,7 +742,8 @@ async function handleWardChoice(
   const hasSize = !!newState.tire_size
   const hasBrand =
     !!newState.brand_tier ||
-    (newState.selected_brands !== undefined && newState.selected_brands.length > 0)
+    (newState.selected_brands !== undefined &&
+      newState.selected_brands.length > 0)
   if (hasSize && hasBrand) {
     await showSpGaraResults(psid, session.id, pageId, newState, ['location'])
     return
@@ -726,7 +773,9 @@ async function handleImage(
 ): Promise<void> {
   cancelTimer(session.id, 'v3-image-restart')
 
-  console.log(`[V3 image] session=${session.id} url=${imageUrl.slice(0, 80)}...`)
+  console.log(
+    `[V3 image] session=${session.id} url=${imageUrl.slice(0, 80)}...`
+  )
   const analysis = await analyzeTireImage(imageUrl)
 
   const state = session.state
@@ -753,7 +802,12 @@ async function handleImage(
     await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
     console.log(`[V3 image] không đọc được → fail_size=${failCount}`)
     if (failCount >= MAX_FAIL_PER_STEP) {
-      await cskhHandoff(psid, session.id, newState, `Ảnh không đọc được sau ${failCount} lần`)
+      await cskhHandoff(
+        psid,
+        session.id,
+        newState,
+        `Ảnh không đọc được sau ${failCount} lần`
+      )
       return
     }
     await reply(
@@ -774,14 +828,17 @@ async function handleImage(
   const hasSize = !!newState.tire_size
   const hasBrand =
     !!newState.brand_tier ||
-    (newState.selected_brands !== undefined && newState.selected_brands.length > 0)
+    (newState.selected_brands !== undefined &&
+      newState.selected_brands.length > 0)
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   if (hasSize && hasBrand && hasLocation) {
     // Đủ 3 trường → showSpGaraResults sẽ tự compose summary theo result
     const updatedFields: FieldKey[] = []
-    if (analysis.tire_size && analysis.confidence >= 0.5) updatedFields.push('size')
-    if (analysis.brand && analysis.confidence >= 0.5) updatedFields.push('brand')
+    if (analysis.tire_size && analysis.confidence >= 0.5)
+      updatedFields.push('size')
+    if (analysis.brand && analysis.confidence >= 0.5)
+      updatedFields.push('brand')
     await showSpGaraResults(psid, session.id, pageId, newState, updatedFields)
     return
   }
@@ -821,7 +878,12 @@ async function handleGathering(
   const decision = await v3GatherTurn({
     collected: {
       tire_size: state.tire_size,
-      brand_tier: state.brand_tier as 'premium' | 'balanced' | 'budget' | 'all' | undefined,
+      brand_tier: state.brand_tier as
+        | 'premium'
+        | 'balanced'
+        | 'budget'
+        | 'all'
+        | undefined,
       selected_brands: state.selected_brands,
       province_name: state.province_name ?? undefined
     },
@@ -835,15 +897,27 @@ async function handleGathering(
 
   // 2. Apply updates
   const newState: SessionState = { ...state }
-  if (decision.updates.tire_size) newState.tire_size = decision.updates.tire_size
-  if (decision.updates.brand_tier !== undefined && decision.updates.brand_tier !== null) {
+  if (decision.updates.tire_size)
+    newState.tire_size = decision.updates.tire_size
+  if (
+    decision.updates.brand_tier !== undefined &&
+    decision.updates.brand_tier !== null
+  ) {
     newState.brand_tier = decision.updates.brand_tier
     // Map tier → selected_brands (cho fetchSpGaraCards). Nếu AI cũng nêu brands cụ thể, ưu tiên brands.
-    if (!decision.updates.selected_brands || decision.updates.selected_brands.length === 0) {
-      newState.selected_brands = [...BRAND_TIERS[decision.updates.brand_tier].brands]
+    if (
+      !decision.updates.selected_brands ||
+      decision.updates.selected_brands.length === 0
+    ) {
+      newState.selected_brands = [
+        ...BRAND_TIERS[decision.updates.brand_tier].brands
+      ]
     }
   }
-  if (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) {
+  if (
+    decision.updates.selected_brands &&
+    decision.updates.selected_brands.length > 0
+  ) {
     newState.selected_brands = decision.updates.selected_brands
     // Nếu AI cung cấp brands cụ thể mà chưa có tier → đoán tier hoặc set 'all' để query nhận brand filter
     if (!newState.brand_tier) newState.brand_tier = 'all'
@@ -866,7 +940,9 @@ async function handleGathering(
       if (r.code) {
         newState.province_code = r.code
         newState.province_name = r.name ?? text
-        console.log(`[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`)
+        console.log(
+          `[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`
+        )
 
         // Cũng quét ward trong text — nếu khớp đúng 1 ward thuộc province → auto-pick.
         const wardsInText = findWardsByText(text, 5).filter(
@@ -887,7 +963,9 @@ async function handleGathering(
       } else {
         // Province không match → fallback ward.json search rộng
         const wards = findWardsByText(text, 11)
-        console.log(`[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`)
+        console.log(
+          `[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`
+        )
         if (wards.length === 1) {
           newState.ward_code = wards[0].code
           newState.ward_name = wards[0].name
@@ -911,7 +989,8 @@ async function handleGathering(
     decision.updates.tire_size ||
     decision.updates.car_model ||
     decision.updates.brand_tier ||
-    (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
+    (decision.updates.selected_brands &&
+      decision.updates.selected_brands.length > 0) ||
     decision.updates.province_name
   )
 
@@ -936,14 +1015,25 @@ async function handleGathering(
 
   if (decision.action === 'handoff_cskh') {
     await reply(psid, sessionId, decision.reply)
-    await cskhHandoff(psid, sessionId, newState, decision.cskh_reason ?? 'AI v3GatherTurn')
+    await cskhHandoff(
+      psid,
+      sessionId,
+      newState,
+      decision.cskh_reason ?? 'AI v3GatherTurn'
+    )
     return
   }
 
   // Ward confirm có priority cao hơn fetch_results
   if (needWardConfirm) {
     await reply(psid, sessionId, decision.reply)
-    await showWardConfirmOptions(psid, sessionId, decision.updates.province_name ?? '', needWardConfirm, newState)
+    await showWardConfirmOptions(
+      psid,
+      sessionId,
+      decision.updates.province_name ?? '',
+      needWardConfirm,
+      newState
+    )
     return
   }
 
@@ -953,7 +1043,8 @@ async function handleGathering(
   const hasSize = !!newState.tire_size
   const hasBrand =
     !!newState.brand_tier ||
-    (newState.selected_brands !== undefined && (newState.selected_brands?.length ?? 0) > 0)
+    (newState.selected_brands !== undefined &&
+      (newState.selected_brands?.length ?? 0) > 0)
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   // Đủ 3 trường → fetch. Nhưng CHỈ fetch khi AI thực sự cập nhật field
@@ -962,7 +1053,8 @@ async function handleGathering(
   const relevantFieldUpdated = !!(
     decision.updates.tire_size ||
     decision.updates.brand_tier ||
-    (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
+    (decision.updates.selected_brands &&
+      decision.updates.selected_brands.length > 0) ||
     decision.updates.province_name
   )
 
@@ -972,12 +1064,19 @@ async function handleGathering(
   const userExplicitSize = /\d{3}\s*\/?\s*\d{2}\s*[Rr]\s*\d{2}/.test(userInput)
   const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
 
-  if (hasSize && hasBrand && hasLocation && relevantFieldUpdated && !carWantsOptions) {
+  if (
+    hasSize &&
+    hasBrand &&
+    hasLocation &&
+    relevantFieldUpdated &&
+    !carWantsOptions
+  ) {
     const updatedFields: FieldKey[] = []
     if (decision.updates.tire_size) updatedFields.push('size')
     if (
       decision.updates.brand_tier ||
-      (decision.updates.selected_brands && decision.updates.selected_brands.length > 0)
+      (decision.updates.selected_brands &&
+        decision.updates.selected_brands.length > 0)
     ) {
       updatedFields.push('brand')
     }
@@ -1004,8 +1103,8 @@ async function handleGathering(
       wasAsking === 'size'
         ? 'fail_size'
         : wasAsking === 'brand'
-        ? 'fail_brand'
-        : 'fail_location'
+          ? 'fail_brand'
+          : 'fail_location'
     const count = ((newState[failKey] as number | undefined) ?? 0) + 1
     newState[failKey] = count
     await updateSession(sessionId, { state: newState })
@@ -1022,7 +1121,9 @@ async function handleGathering(
     }
 
     // Detect tin bot đầu tiên trong session → chèn welcome intro lên trước retry
-    const noPriorBotReply = !session.conversation_log.some(m => m.role === 'bot')
+    const noPriorBotReply = !session.conversation_log.some(
+      m => m.role === 'bot'
+    )
     const WELCOME_INTRO =
       '🤝 TRỢ LÝ Ô TÔ – nền tảng kết nối DV ô tô tiện lợi, uy tín – rất vui được hỗ trợ anh/chị 😊'
 
@@ -1066,12 +1167,14 @@ async function handleGathering(
     console.log(`[V3 gather] car_model="${carName}" → lookupCarSizes (DB only)`)
 
     const justGotBrand =
-      (decision.updates.selected_brands && decision.updates.selected_brands.length > 0) ||
+      (decision.updates.selected_brands &&
+        decision.updates.selected_brands.length > 0) ||
       decision.updates.brand_tier
     let ackText: string
     if (justGotBrand) {
       const brandLabel =
-        decision.updates.selected_brands && decision.updates.selected_brands.length > 0
+        decision.updates.selected_brands &&
+        decision.updates.selected_brands.length > 0
           ? decision.updates.selected_brands.join(', ')
           : `phân khúc ${decision.updates.brand_tier}`
       ackText = `Dạ ghi nhận ${brandLabel} ạ 👍\n\nEm tra cứu kích cỡ cho xe ${carName} ngay ạ 😊`
@@ -1088,7 +1191,9 @@ async function handleGathering(
       const failCount = (newState.fail_size ?? 0) + 1
       newState.fail_size = failCount
       await updateSession(sessionId, { state: newState })
-      console.log(`[V3 gather] car "${carName}" no DB sizes → fail_size=${failCount}`)
+      console.log(
+        `[V3 gather] car "${carName}" no DB sizes → fail_size=${failCount}`
+      )
 
       if (failCount >= MAX_FAIL_PER_STEP) {
         await cskhHandoff(
@@ -1128,7 +1233,12 @@ async function handleGathering(
       console.log(`[V3 gather] safety-net fallback: ${fallback}`)
       const fallbackIsAboutBrand = needBrand && !askingBrand
       await delay(REPLY_GAP_MS)
-      await reply(psid, sessionId, fallback, fallbackIsAboutBrand ? V3_BRAND_QRS() : undefined)
+      await reply(
+        psid,
+        sessionId,
+        fallback,
+        fallbackIsAboutBrand ? V3_BRAND_QRS() : undefined
+      )
     }
   }
 }
@@ -1146,7 +1256,11 @@ async function showSpGaraResults(
 ): Promise<void> {
   const tireSize = state.tire_size ?? ''
   if (!tireSize) {
-    await reply(psid, sessionId, 'Thiếu thông tin kích cỡ lốp, vui lòng bắt đầu lại 😊')
+    await reply(
+      psid,
+      sessionId,
+      'Thiếu thông tin kích cỡ lốp, vui lòng bắt đầu lại 😊'
+    )
     return
   }
   const brandFilter = brandFilterFromState(state)
@@ -1154,12 +1268,17 @@ async function showSpGaraResults(
   const provinceCode = state.province_code ?? null
   const locationLabel = state.ward_name
     ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
-    : state.province_name ?? ''
+    : (state.province_name ?? '')
 
   // V3 yêu cầu: BẮT BUỘC có ward_code hoặc province_code mới query
   if (!wardCode && !provinceCode) {
     console.warn(`[V3 showSpGara] no ward/province → cskhHandoff`)
-    await cskhHandoff(psid, sessionId, state, 'State thiếu ward/province khi fetch')
+    await cskhHandoff(
+      psid,
+      sessionId,
+      state,
+      'State thiếu ward/province khi fetch'
+    )
     return
   }
 
@@ -1181,7 +1300,9 @@ async function showSpGaraResults(
         limit: 3,
         sortBy: 'quantitysold'
       })
-      console.log(`[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`)
+      console.log(
+        `[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`
+      )
     }
 
     // 2. Nếu ward không có gara → fallback province (chỉ khi cả 2 đều có)
@@ -1230,7 +1351,7 @@ async function showSpGaraResults(
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
     const displayLabel = usedFallbackProvince
-      ? state.province_name ?? locationLabel
+      ? (state.province_name ?? locationLabel)
       : locationLabel
     await sendCards(
       psid,
@@ -1239,7 +1360,9 @@ async function showSpGaraResults(
       `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}`
     )
 
-    const shownCodes = cards.map(c => c.garageCode).filter((c): c is string => !!c)
+    const shownCodes = cards
+      .map(c => c.garageCode)
+      .filter((c): c is string => !!c)
     const minPrice = Math.min(...cards.map(c => c.finalPrice))
 
     await updateSession(sessionId, {
@@ -1261,7 +1384,11 @@ async function showSpGaraResults(
     )
   } catch (err) {
     console.error('[V3 flow] showSpGaraResults:', err)
-    await reply(psid, sessionId, 'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊')
+    await reply(
+      psid,
+      sessionId,
+      'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊'
+    )
   }
 }
 
@@ -1335,7 +1462,13 @@ async function handleBookingState(
         psid,
         sessionId,
         'Cảm ơn anh chị đã tin tưởng TROLYoto! 🙏\n\nGara sẽ chủ động liên hệ để xác nhận lịch ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ để chủ động các khuyến mại tốt nhất trong ngành DV ô tô khi cần ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_SUBSIDY,
+            url: COMMUNITY_URL
+          }
+        ],
         'Đã đặt lịch'
       ),
       completeSession(sessionId)
@@ -1348,7 +1481,13 @@ async function handleBookingState(
         psid,
         sessionId,
         'TROLYoto đã hiểu nhu cầu của anh chị rồi ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ - nơi chia sẻ các khuyến mại tốt nhất trong ngành DV ô tô để có sẵn trợ giá khi cần ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_SUBSIDY,
+            url: COMMUNITY_URL
+          }
+        ],
         'Chưa cần thay'
       ),
       completeSession(sessionId)
@@ -1387,7 +1526,13 @@ async function handleConcern(
         psid,
         sessionId,
         'TROLYoto đã hiểu nhu cầu của anh chị rồi ạ 😊\n\nTham gia Cộng đồng CHĂM XE KHÔNG HỚ - để nhận thêm voucher giảm giá tới 200k ạ 😊',
-        [{ type: 'web_url', title: QR_TITLE.COMMUNITY_VOUCHER, url: COMMUNITY_URL }],
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.COMMUNITY_VOUCHER,
+            url: COMMUNITY_URL
+          }
+        ],
         'Giá tốt hơn'
       ),
       completeSession(sessionId)
@@ -1414,7 +1559,9 @@ async function cskhHandoff(
   reason: string,
   mode: 'default' | 'no_product' = 'default'
 ): Promise<void> {
-  console.log(`[V3] cskhHandoff session=${sessionId} mode=${mode} reason=${reason}`)
+  console.log(
+    `[V3] cskhHandoff session=${sessionId} mode=${mode} reason=${reason}`
+  )
   cancelTimer(sessionId, 'v3-cskh-handoff')
   await updateSession(sessionId, {
     step: 'AWAITING_PHONE',
@@ -1426,8 +1573,8 @@ async function cskhHandoff(
     mode === 'no_product'
       ? 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
       : workHours
-      ? 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ anh/chị sớm nhất có thể ạ 😊'
-      : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
+        ? 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ anh/chị sớm nhất có thể ạ 😊'
+        : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ hỗ trợ mình ngay vào buổi làm việc kế tiếp 😊\n(9h–18h từ T2–T6)'
 
   await reply(psid, sessionId, msg1)
   await delay(REPLY_GAP_MS)
@@ -1542,9 +1689,7 @@ async function handleMessengerEventV3Inner(
       }
       // Bot tự gửi → ignore
       if (echoAppId && String(echoAppId) === FB_APP_ID) {
-        console.log(
-          `[V3] echo from bot self (app_id=${echoAppId}) → ignore`
-        )
+        console.log(`[V3] echo from bot self (app_id=${echoAppId}) → ignore`)
         return
       }
       // Admin reply (app_id khác hoặc không có) → pause
@@ -1581,7 +1726,9 @@ async function handleMessengerEventV3Inner(
     if (!isActionable) return
 
     // Typing + seen sớm
-    sendTypingOn(psid, currentToken()).catch(e => console.error('[V3 typing-early]', e))
+    sendTypingOn(psid, currentToken()).catch(e =>
+      console.error('[V3 typing-early]', e)
+    )
     markSeen(psid, currentToken()).catch(e => console.error('[V3 markSeen]', e))
 
     // /reset — bypass MỌI guard (kể cả paused-by-cskh) để dễ test.
@@ -1621,8 +1768,7 @@ async function handleMessengerEventV3Inner(
     const imageUrl = hasSticker ? undefined : realImage?.payload?.url
     /** Khách CHỈ gửi sticker (không có text/payload/image thật). Không bump fail
      *  counter, không chạy AI gather — re-ask theo field đang chờ là đủ. */
-    const isStickerOnly =
-      hasSticker && !messageText && !payload && !realImage
+    const isStickerOnly = hasSticker && !messageText && !payload && !realImage
 
     const latest = session ? null : await getLatestSession(psid, pageId)
     if (!session && latest?.is_paused_by_cskh) return
@@ -1639,9 +1785,13 @@ async function handleMessengerEventV3Inner(
       if (!session) {
         session = await createSession(psid, pageId)
         await updateSession(session.id, { step: 'V3_GATHERING' })
-        console.log(`[V3 entry] ${entryKind} → NEW session ${session.id} (silent, chờ khách nhắn)`)
+        console.log(
+          `[V3 entry] ${entryKind} → NEW session ${session.id} (silent, chờ khách nhắn)`
+        )
       } else {
-        console.log(`[V3 entry] ${entryKind} → EXISTING session ${session.id} (silent)`)
+        console.log(
+          `[V3 entry] ${entryKind} → EXISTING session ${session.id} (silent)`
+        )
       }
       return
     }
@@ -1664,7 +1814,9 @@ async function handleMessengerEventV3Inner(
         type: payload ? 'qr_click' : 'text',
         text:
           messageText ||
-          (imageUrl ? `[image: ${imageUrl.slice(0, 60)}...]` : `[click: ${payload}]`),
+          (imageUrl
+            ? `[image: ${imageUrl.slice(0, 60)}...]`
+            : `[click: ${payload}]`),
         ts: new Date().toISOString(),
         ...(payload ? { payload } : {})
       }).catch(e => console.error('[V3 log user]', e))
@@ -1693,8 +1845,14 @@ async function handleMessengerEventV3Inner(
         const needBrand =
           !!session.state.tire_size &&
           !session.state.brand_tier &&
-          (!session.state.selected_brands || session.state.selected_brands.length === 0)
-        await reply(psid, session.id, nextQ, needBrand ? V3_BRAND_QRS() : undefined)
+          (!session.state.selected_brands ||
+            session.state.selected_brands.length === 0)
+        await reply(
+          psid,
+          session.id,
+          nextQ,
+          needBrand ? V3_BRAND_QRS() : undefined
+        )
       }
       // Nếu đã đủ 3 field (nextQ=null) thì không làm gì — bot chờ user thực sự nhắn
       return
@@ -1707,7 +1865,10 @@ async function handleMessengerEventV3Inner(
         const size = payload.replace('V3_TIRE_SIZE:', '').toUpperCase()
         console.log(`[V3 flow] V3_TIRE_SIZE click → tire_size=${size}`)
         const newState: SessionState = { ...state, tire_size: size }
-        await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+        await updateSession(session.id, {
+          step: 'V3_GATHERING',
+          state: newState
+        })
         await handleGathering(
           psid,
           { ...session, state: newState, step: 'V3_GATHERING' },
@@ -1749,7 +1910,11 @@ async function handleMessengerEventV3Inner(
       }
       // V3: bỏ QR_CSKH_HERE/QR_LEAVE_PHONE (cskhHandoff giờ không có QR).
       // Nếu tin cũ vẫn còn → bỏ qua silently.
-      if (payload === 'QR_BOOK_DONE' || payload === 'QR_NOT_YET' || payload === 'QR_CONCERN') {
+      if (
+        payload === 'QR_BOOK_DONE' ||
+        payload === 'QR_NOT_YET' ||
+        payload === 'QR_CONCERN'
+      ) {
         console.log(`[V3 flow] booking-global payload=${payload} step=${step}`)
         await handleBookingState(psid, session.id, payload, state)
         return
@@ -1783,7 +1948,9 @@ async function handleMessengerEventV3Inner(
 
         case 'SHOWING_RESULTS_LOCAL':
           // Đang chờ timer 15s → im lặng
-          console.log(`[V3 flow] SHOWING_RESULTS_LOCAL silent session=${session.id}`)
+          console.log(
+            `[V3 flow] SHOWING_RESULTS_LOCAL silent session=${session.id}`
+          )
           break
 
         case 'WELCOME':

@@ -427,6 +427,90 @@ export async function fetchTireSizesByCartype(
   return { sizes, productCount: seenProducts.size }
 }
 
+// ── 1f. fetchTireSizesByProductSearch (V3 — qua RPC search_products_by_tag) ────
+/**
+ * Tìm sản phẩm lốp qua Postgres RPC `search_products_by_tag` (giống như cách
+ * web buyer search). Mỗi keyword được prefix `"LOP "` để filter chỉ lấy lốp.
+ *
+ * Caller truyền nhiều keyword variants → chạy song song mỗi keyword 1 RPC call
+ * → gộp SIZE từ tất cả results, dedupe theo product id.
+ *
+ * Ví dụ: keywords = ["VINFAST VF8 PLUS", "VINFASTVF8PLUS"]
+ *  → 2 RPC calls: keywords="LOP VINFAST VF8 PLUS" + keywords="LOP VINFASTVF8PLUS"
+ *  → gộp SIZE từ products tìm thấy.
+ */
+export async function fetchTireSizesByProductSearch(
+  keywords: string[]
+): Promise<{
+  sizes: TireSizeWithStock[]
+  productCount: number
+}> {
+  const cleaned = Array.from(
+    new Set(keywords.map(k => k.trim()).filter(k => !!k))
+  )
+  if (cleaned.length === 0) return { sizes: [], productCount: 0 }
+
+  const results = await Promise.all(
+    cleaned.map(async kw => {
+      const searchKw = `LOP ${kw}`.trim()
+      const { data, error } = await supabaseAmin.rpc('search_products_by_tag', {
+        keywords: searchKw,
+        category: ['LOP'],
+        sort_by: 'quantitysold',
+        sort_direction: 'desc',
+        page_number: 1,
+        page_size: 50
+      })
+      if (error) {
+        console.error(
+          `[FB db] fetchTireSizesByProductSearch("${searchKw}") rpc error:`,
+          error.message
+        )
+        return [] as Array<{ id: string; SIZE: string | null; quantitysold: number | null }>
+      }
+      const first = Array.isArray(data) ? (data as Array<{ products: unknown }>)[0] : null
+      const products = (first?.products ?? []) as Array<{
+        id: string
+        SIZE: string | null
+        quantitysold: number | null
+      }>
+      console.log(
+        `[FB db] fetchTireSizesByProductSearch("${searchKw}") → ${products.length} products`
+      )
+      return products
+    })
+  )
+
+  // Dedupe theo product id, group theo SIZE
+  const seenProducts = new Map<string, { size: string; qty: number }>()
+  for (const products of results) {
+    for (const p of products) {
+      if (!p.SIZE) continue
+      if (seenProducts.has(p.id)) continue
+      seenProducts.set(p.id, {
+        size: fromSizeKey(p.SIZE),
+        qty: num(p.quantitysold)
+      })
+    }
+  }
+
+  const sizeMap = new Map<string, number>()
+  for (const [, v] of Array.from(seenProducts.entries())) {
+    if (!v.size) continue
+    sizeMap.set(v.size, (sizeMap.get(v.size) ?? 0) + v.qty)
+  }
+
+  const sizes: TireSizeWithStock[] = Array.from(sizeMap.entries())
+    .map(([size, quantitysold]) => ({ size, quantitysold }))
+    .sort((a, b) => b.quantitysold - a.quantitysold)
+
+  console.log(
+    `[FB db] fetchTireSizesByProductSearch([${cleaned.join('|')}]) → ${sizes.length} sizes from ${seenProducts.size} products`
+  )
+
+  return { sizes, productCount: seenProducts.size }
+}
+
 // ── 2. fetchGarageOffers ──────────────────────────────────────────────────────
 
 /**

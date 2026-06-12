@@ -14,13 +14,27 @@ import * as crypto from 'crypto'
 import { handleMessengerEvent } from './flow-handler'
 import { handleMessengerEventV3 } from './v3/flow-handler'
 import { handleMessengerEventProduction } from './production/flow-handler'
-import type { MessengerWebhookBody } from './types'
+import { runWithPsidLock } from './psid-mutex'
+import type { MessengerWebhookBody, MessengerEvent } from './types'
 
 const VERIFY_TOKEN = process.env.FB_WEBHOOK_VERIFY_TOKEN!
 const APP_SECRET = process.env.FB_APP_SECRET!
 const PAGE_ID_V2 = process.env.FACEBOOK_PAGE_ID
 const PAGE_ID_V3 = process.env.FACEBOOK_PAGE_ID_V3
 const PAGE_ID_PRODUCT = process.env.FACEBOOK_PAGE_ID_PRODUCT
+
+/**
+ * Lấy PSID của KHÁCH HÀNG từ event.
+ *  - Event thường (khách gửi): sender.id = customer
+ *  - Echo event (page gửi, FB echo về): sender.id = pageId, recipient.id = customer
+ *
+ * Dùng để khóa mutex theo từng khách → tránh race condition khi 2 event cùng PSID
+ * đến gần nhau.
+ */
+function customerPsid(event: MessengerEvent): string {
+  const isEcho = event.message?.is_echo === true
+  return (isEcho ? event.recipient?.id : event.sender?.id) ?? ''
+}
 
 function verifySignature(rawBody: Buffer, signature?: string): boolean {
   if (!signature || !APP_SECRET) return !APP_SECRET // skip if no secret configured
@@ -132,7 +146,10 @@ export class WebhookController {
         )
       }
 
-      // PRIMARY events (entry.messaging) — bot có thread control → xử lý đầy đủ
+      // PRIMARY events (entry.messaging) — bot có thread control → xử lý đầy đủ.
+      // MỖI event được wrap trong runWithPsidLock để tránh race condition khi
+      // 2 webhook cùng PSID đến đồng thời (vd khách spam tin) → tránh tạo
+      // duplicate session.
       const messaging = entry.messaging ?? []
       for (const event of messaging) {
         if (
@@ -142,20 +159,21 @@ export class WebhookController {
         ) {
           console.log('body', JSON.stringify(body, null, 2))
         }
-        if (isProduct) {
-          await handleMessengerEventProduction(event, entry.id, false, hopContext)
-        } else if (isV3) {
-          await handleMessengerEventV3(event, entry.id)
-        } else {
-          await handleMessengerEvent(event, entry.id)
-        }
+        const psid = customerPsid(event)
+        if (!psid) continue
+        await runWithPsidLock(psid, async () => {
+          if (isProduct) {
+            await handleMessengerEventProduction(event, entry.id, false, hopContext)
+          } else if (isV3) {
+            await handleMessengerEventV3(event, entry.id)
+          } else {
+            await handleMessengerEvent(event, entry.id)
+          }
+        })
       }
 
-      // STANDBY events — bot KHÔNG giữ thread control.
-      //   - PROD: handler vẫn được gọi với isStandby=true. Trong giờ làm việc
-      //     → chỉ log/CSKH echo detection. Ngoài giờ + chưa pause_by_cskh →
-      //     bot tự take_thread_control rồi reply.
-      //   - V2/V3 dev pages: chỉ log (không có time gate, không cần handover).
+      // STANDBY events — bot KHÔNG giữ thread control. PROD vẫn xử lý (qua
+      // mutex) để log + detect CSKH echo. V2/V3 dev pages chỉ log.
       const standby = entry.standby ?? []
       for (const event of standby) {
         const summary = {
@@ -172,7 +190,11 @@ export class WebhookController {
           `[FB STANDBY] page=${entry.id} tag=${tag} → ${JSON.stringify(summary)}`
         )
         if (isProduct) {
-          await handleMessengerEventProduction(event, entry.id, true)
+          const psid = customerPsid(event)
+          if (!psid) continue
+          await runWithPsidLock(psid, () =>
+            handleMessengerEventProduction(event, entry.id, true)
+          )
         }
       }
     }

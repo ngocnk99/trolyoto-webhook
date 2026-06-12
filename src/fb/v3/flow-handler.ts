@@ -36,7 +36,7 @@ import {
   resolveProvince,
   getMinPriceForTireSize,
   fetchTireSizesByCarTags,
-  fetchTireSizesByCartype,
+  fetchTireSizesByProductSearch,
   findWardsByText,
   type SpGaraCard,
   type WardMatch
@@ -526,10 +526,16 @@ function toCartypeCodes(carName: string): string[] {
  * Merge dedup case-insensitive, sort theo quantitysold (qua thứ tự DB), cap 4.
  */
 async function lookupCarSizes(carModel: string): Promise<string[]> {
+  // Lấy cartype codes (vd ['VINFAST_VF8_PLUS','VINFASTVF8PLUS','VINFAST-VF8-PLUS'])
+  // Thay '_' và '-' bằng space rồi dedupe → keywords cho search_products_by_tag.
+  // Ví dụ: ['VINFAST VF8 PLUS', 'VINFASTVF8PLUS'] (3 variants gốc dedupe còn 2)
   const cartypeCodes = toCartypeCodes(carModel)
+  const searchKeywords = Array.from(
+    new Set(cartypeCodes.map(c => c.replace(/[_-]+/g, ' ').trim()).filter(Boolean))
+  )
 
-  // Song song: tag-based + cartype-based (cartype với nhiều format variants)
-  const [tagResult, cartypeResult] = await Promise.all([
+  // Song song: tag-based + product-search-based (RPC search_products_by_tag)
+  const [tagResult, searchResult] = await Promise.all([
     (async () => {
       try {
         const variants = await getCarNameVariants(carModel)
@@ -542,25 +548,25 @@ async function lookupCarSizes(carModel: string): Promise<string[]> {
       }
     })(),
     (async () => {
-      if (cartypeCodes.length === 0) return [] as string[]
+      if (searchKeywords.length === 0) return [] as string[]
       try {
-        const r = await fetchTireSizesByCartype(cartypeCodes)
+        const r = await fetchTireSizesByProductSearch(searchKeywords)
         return r.sizes.map(s => s.size)
       } catch (e) {
-        console.error('[V3 lookupCarSizes] cartype query:', e)
+        console.error('[V3 lookupCarSizes] product-search query:', e)
         return [] as string[]
       }
     })()
   ])
 
   console.log(
-    `[V3 lookupCarSizes] "${carModel}" tag=${tagResult.length} cartype([${cartypeCodes.join(',')}])=${cartypeResult.length}`
+    `[V3 lookupCarSizes] "${carModel}" tag=${tagResult.length} search([${searchKeywords.join('|')}])=${searchResult.length}`
   )
 
   // Merge + dedup case-insensitive + cap 4
   const seen = new Set<string>()
   const sizes: string[] = []
-  for (const s of [...tagResult, ...cartypeResult]) {
+  for (const s of [...tagResult, ...searchResult]) {
     if (!s) continue
     const key = s.toUpperCase()
     if (seen.has(key)) continue

@@ -632,10 +632,13 @@ async function showCarSizeOptions(
   sizes: string[]
 ): Promise<void> {
   const capped = sizes.slice(0, 11)
-  const text =
-    capped.length === 1
-      ? `Dạ xe ${carName} có kích cỡ sau, anh/chị xác nhận có phù hợp không ạ? 😊`
-      : `Dạ xe ${carName} thường dùng các kích cỡ sau, anh/chị chọn giúp em nhé 😊`
+  // Hiển thị tối đa 3 sizes trong text; thêm ", ..." khi > 3.
+  // "các" chỉ xuất hiện khi có nhiều hơn 1 size.
+  const hasMultiple = capped.length > 1
+  const displaySizes = capped.slice(0, 3)
+  const sizeList =
+    displaySizes.join(', ') + (capped.length > 3 ? ', ...' : '')
+  const text = `Dạ xe ${carName} có ${hasMultiple ? 'các ' : ''}kích cỡ sau: ${sizeList}\n\nAnh/chị xác nhận có phù hợp không ạ? 😊`
   await reply(
     psid,
     sessionId,

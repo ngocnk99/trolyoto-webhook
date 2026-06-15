@@ -452,7 +452,10 @@ export async function fetchTireSizesByProductSearch(
 
   const results = await Promise.all(
     cleaned.map(async kw => {
-      const searchKw = `${kw}`.trim()
+      let searchKw = `${kw}`.toLocaleUpperCase().trim()
+      if (searchKw.includes('VINFAST') && searchKw.includes('VF')) {
+        searchKw = searchKw.replace('VINFAST', '').trim()
+      }
       const { data, error } = await supabaseAmin.rpc('search_products_by_tag', {
         keywords: searchKw,
         category: ['LOP'],

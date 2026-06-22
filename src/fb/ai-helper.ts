@@ -681,14 +681,67 @@ QUY TẮC TRÍCH XUẤT:
 - Trích CONSERVATIVE — chỉ điền updates khi CHẮC. Không đoán bừa.
 
 - NHẬN DIỆN TÊN XE (rất quan trọng — set updates.car_model khi CHƯA có tire_size):
-  * Tên đầy đủ: "Toyota Vios", "VinFast VF3", "Honda CR-V", "Mazda CX-5", "Ford Ranger"...
-  * Viết tắt phổ biến: "vios", "fortuner", "civic", "altis", "innova", "ranger", "everest"
-  * VinFast: "vf3", "vf5", "vf6", "vf7", "vf8", "vf9", "lux a", "lux sa", "fadil"
-  * Honda: "crv", "cr-v", "hrv", "hr-v", "city"
-  * Mazda: "cx3", "cx5", "cx8", "mazda3"
-  * Cụm "lốp xe X" / "xe X" → X là car_model
-  * Trả về tên CHUẨN (vd "vf6" → car_model='VinFast VF6'; "crv" → 'Honda CR-V').
+  * Cụm "lốp xe X" / "xe X" / "X đời YYYY" → X là car_model (BỎ năm "đời 2021", "model 2020")
+  * Trả về tên CHUẨN dạng "<Hãng> <Model>" (KHÔNG kèm năm/đời).
+
+  ── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM ──
+  * TOYOTA:    Vios, Innova, Fortuner, Camry, Altis, Wigo, Yaris, Corolla Cross, Veloz, Avanza, Hilux, Land Cruiser, Raize, Rush
+  * HYUNDAI:   Accent, Grand i10, Tucson, Santa Fe, Elantra, Kona, Creta, Stargazer, Custin, Palisade
+  * KIA:       Seltos, Morning, Sonet, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
+  * MAZDA:     CX-3, CX-5, CX-8, CX-30, Mazda 2, Mazda 3, Mazda 6, BT-50
+  * HONDA:     City, Civic, CR-V, HR-V, Accord, Brio, Jazz, BR-V
+  * FORD:      Ranger, Everest, EcoSport, Focus, Territory, Explorer, Transit
+  * MITSUBISHI: Xpander, Outlander, Pajero, Triton, Attrage, Mirage, Xforce
+  * SUZUKI:    Swift, Ertiga, XL7, Ciaz, Carry, Jimny
+  * NISSAN:    Almera, Navara, X-Trail, Sunny, Terra, Kicks
+  * CHEVROLET: Spark, Trailblazer, Colorado, Captiva, Cruze, Aveo
+  * VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President
+  * MG:        ZS, HS, MG5, RX5, MG3
+  * SUBARU:    Forester, Outback, XV, Impreza
+  * LEXUS:     RX, NX, LX, ES, GX, IS
+  * BMW:       X1, X3, X5, X7, Series 3, Series 5, Series 7
+  * MERCEDES:  C-Class, E-Class, S-Class, GLC, GLE, GLB, A-Class
+  * AUDI:      A4, A6, A8, Q3, Q5, Q7, Q8
+  * PEUGEOT:   3008, 5008, 2008
+  * ISUZU:     D-Max, mu-X
+  * WULING:    Mini EV, Hongguang
+
+  ── VIẾT TẮT/TYPO PHỔ BIẾN ──
+  * "vios" → Toyota Vios       "altis"/"corolla" → Toyota Corolla Altis
+  * "fortuner" → Toyota Fortuner    "innova" → Toyota Innova
+  * "wigo" → Toyota Wigo           "raize" → Toyota Raize
+  * "civic" → Honda Civic          "crv"/"cr-v" → Honda CR-V
+  * "city" → Honda City            "hrv"/"hr-v" → Honda HR-V
+  * "cx3"/"cx5"/"cx8" → Mazda CX-3/5/8    "mazda3" → Mazda 3
+  * "vf3"-"vf9" → VinFast VF3-VF9    "fadil" → VinFast Fadil
+  * "acent"/"accent" → Hyundai Accent    "i10"/"grand i10" → Hyundai Grand i10
+  * "tucson"/"tucs" → Hyundai Tucson    "santafe"/"santa fe" → Hyundai Santa Fe
+  * "elantra" → Hyundai Elantra
+  * "seltos"/"seltot"/"selto" → Kia Seltos    "morning" → Kia Morning
+  * "sonet" → Kia Sonet           "carnival" → Kia Carnival
+  * "sorento" → Kia Sorento       "k3"/"k5" → Kia K3/K5
+  * "cerato" → Kia Cerato         "sportage" → Kia Sportage
+  * "xpander" → Mitsubishi Xpander    "outlander" → Mitsubishi Outlander
+  * "triton" → Mitsubishi Triton    "xforce" → Mitsubishi Xforce
+  * "swift" → Suzuki Swift        "ertiga" → Suzuki Ertiga
+  * "xl7" → Suzuki XL7            "almera" → Nissan Almera
+  * "navara" → Nissan Navara      "xtrail"/"x-trail" → Nissan X-Trail
+  * "ranger" → Ford Ranger        "everest" → Ford Everest
+  * "ecosport" → Ford EcoSport    "territory" → Ford Territory
+  * "spark" → Chevrolet Spark     "trailblazer" → Chevrolet Trailblazer
+  * "forester" → Subaru Forester
+  * "glc"/"gle" → Mercedes-Benz GLC/GLE    "x5"/"x3" → BMW X5/X3
+  * "q5"/"q7" → Audi Q5/Q7         "rx"/"nx"/"lx" → Lexus RX/NX/LX
+  * "d-max"/"dmax" → Isuzu D-Max   "mu-x"/"mux" → Isuzu mu-X
+  * "3008"/"5008" → Peugeot 3008/5008
+
+  ── TUYỆT ĐỐI TRÁNH ──
+  * KHÔNG đoán brand khi model không match danh sách trên.
+    Vd: "seltot" → match "Seltos" (Kia) — KHÔNG đoán VinFast/Toyota.
+    Vd: "tucs" → match "Tucson" (Hyundai) — KHÔNG đoán random.
+  * Nếu KHÔNG chắc model thuộc hãng nào → set car_model=null, để bot hỏi rõ.
   * KHÔNG tự điền tire_size khi chỉ có tên xe. Hệ thống sẽ tự đưa list size để khách chọn.
+  * BỎ năm/đời ra khỏi car_model (vd "Seltos đời 2021" → car_model='Kia Seltos', KHÔNG kèm 2021).
 
 - KẾT HỢP BRAND + CAR (vd "michelin vf6"): set CẢ HAI — selected_brands=['MICHELIN'] VÀ car_model='VinFast VF6'.
 

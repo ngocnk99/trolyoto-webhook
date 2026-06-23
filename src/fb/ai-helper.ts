@@ -335,7 +335,9 @@ export async function extractBrandNeed(
           .describe('Whether the need is clear enough to act on.'),
         brands: z
           .array(z.string())
-          .describe('Specific tire brands mentioned, UPPERCASE. Empty if none.'),
+          .describe(
+            'Specific tire brands mentioned, UPPERCASE. Empty if none.'
+          ),
         tier: z
           .enum(['premium', 'balanced', 'budget'])
           .nullable()
@@ -344,9 +346,17 @@ export async function extractBrandNeed(
           ),
         seeAll: z
           .boolean()
-          .describe('True if user wants to see all / has no specific criteria.'),
-        priceMin: z.number().nullable().describe('Min price VND if a range given.'),
-        priceMax: z.number().nullable().describe('Max price VND if a range given.'),
+          .describe(
+            'True if user wants to see all / has no specific criteria.'
+          ),
+        priceMin: z
+          .number()
+          .nullable()
+          .describe('Min price VND if a range given.'),
+        priceMax: z
+          .number()
+          .nullable()
+          .describe('Max price VND if a range given.'),
         confidence: z.number().min(0).max(1)
       }),
       system:
@@ -388,7 +398,9 @@ export interface TireImageAnalysis {
  * trực tiếp URL FB CDN (status 400 "invalid_image_url" vì FB CDN block các UA lạ
  * hoặc URL có query signed). Tải qua fetch của Node thì OK.
  */
-export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnalysis> {
+export async function analyzeTireImage(
+  imageUrl: string
+): Promise<TireImageAnalysis> {
   try {
     // 1. Tải ảnh từ FB CDN
     const imgRes = await fetch(imageUrl, {
@@ -396,12 +408,16 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
       headers: { 'User-Agent': 'Mozilla/5.0' }
     })
     if (!imgRes.ok) {
-      throw new Error(`Fetch FB image failed: ${imgRes.status} ${imgRes.statusText}`)
+      throw new Error(
+        `Fetch FB image failed: ${imgRes.status} ${imgRes.statusText}`
+      )
     }
     const buf = await imgRes.arrayBuffer()
     const bytes = new Uint8Array(buf)
     const contentType = imgRes.headers.get('content-type') ?? 'image/jpeg'
-    console.log(`[AI analyzeTireImage] downloaded ${bytes.byteLength} bytes (${contentType})`)
+    console.log(
+      `[AI analyzeTireImage] downloaded ${bytes.byteLength} bytes (${contentType})`
+    )
 
     // 2. Gửi inline cho vision model. Model configurable qua env VISION_MODEL
     //    (default gpt-4o cho accuracy cao; gpt-4o-mini đọc nhầm 145↔175,
@@ -427,7 +443,9 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
         raw_text: z
           .string()
           .nullable()
-          .describe('Chuỗi text bạn đọc được trên thành lốp, kể cả khi xoay/ngược — để debug khi sai.')
+          .describe(
+            'Chuỗi text bạn đọc được trên thành lốp, kể cả khi xoay/ngược — để debug khi sai.'
+          )
       }),
       messages: [
         {
@@ -472,7 +490,9 @@ export async function analyzeTireImage(imageUrl: string): Promise<TireImageAnaly
     // Normalize size: 215 75 R 16 → 215/75R16
     let normalizedSize: string | null = null
     if (object.tire_size) {
-      const m = object.tire_size.match(/(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i)
+      const m = object.tire_size.match(
+        /(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i
+      )
       normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
     }
     const normalizedBrand = object.brand?.trim().toUpperCase() || null
@@ -573,7 +593,10 @@ const V3_BRAND_TIER_INFO = {
  * KHÔNG cho AI sinh ra phần community CTA / wording cards — phần đó deterministic
  * trong code (giữ y nguyên V2). AI chỉ làm phần gathering.
  */
-export async function v3GatherTurn(input: V3GatherInput): Promise<V3GatherDecision> {
+export async function v3GatherTurn(
+  input: V3GatherInput
+): Promise<V3GatherDecision> {
+  console.log('v3GatherTurn', input)
   const collected = input.collected || {}
   const historyText = (input.recentHistory ?? [])
     .slice(-6)
@@ -595,7 +618,9 @@ export async function v3GatherTurn(input: V3GatherInput): Promise<V3GatherDecisi
         tire_size: z
           .string()
           .nullish()
-          .describe('Tire size XXX/YYRZZ (e.g. 185/65R15) nếu khách CHỐT. Null/omit nếu không có/không chắc.'),
+          .describe(
+            'Tire size XXX/YYRZZ (e.g. 185/65R15) nếu khách CHỐT. Null/omit nếu không có/không chắc.'
+          ),
         brand_tier: z
           .enum(['premium', 'balanced', 'budget', 'all'])
           .nullish()
@@ -605,11 +630,15 @@ export async function v3GatherTurn(input: V3GatherInput): Promise<V3GatherDecisi
         selected_brands: z
           .array(z.string())
           .nullish()
-          .describe('Brand cụ thể UPPERCASE khách nhắc (vd ["MICHELIN","BRIDGESTONE"]). Null/omit hoặc [] nếu chưa có.'),
+          .describe(
+            'Brand cụ thể UPPERCASE khách nhắc (vd ["MICHELIN","BRIDGESTONE"]). Null/omit hoặc [] nếu chưa có.'
+          ),
         province_name: z
           .string()
           .nullish()
-          .describe('Tên tỉnh/TP chuẩn tiếng Việt (vd "Hà Nội", "Hồ Chí Minh"). Null/omit nếu chưa có/chưa rõ.'),
+          .describe(
+            'Tên tỉnh/TP chuẩn tiếng Việt (vd "Hà Nội", "Hồ Chí Minh"). Null/omit nếu chưa có/chưa rõ.'
+          ),
         car_model: z
           .string()
           .nullish()
@@ -624,12 +653,14 @@ export async function v3GatherTurn(input: V3GatherInput): Promise<V3GatherDecisi
         action: z
           .enum(['continue', 'fetch_results', 'handoff_cskh'])
           .describe(
-            "continue=còn thiếu info, fetch_results=đủ 3 trường, handoff_cskh=khách yêu cầu chuyên viên/khó chịu/ngoài phạm vi"
+            'continue=còn thiếu info, fetch_results=đủ 3 trường, handoff_cskh=khách yêu cầu chuyên viên/khó chịu/ngoài phạm vi'
           ),
         cskh_reason: z
           .string()
           .nullish()
-          .describe('Lý do handoff (nếu action=handoff_cskh). Null/omit cho continue/fetch_results.'),
+          .describe(
+            'Lý do handoff (nếu action=handoff_cskh). Null/omit cho continue/fetch_results.'
+          ),
         is_off_topic: z
           .boolean()
           .nullish()
@@ -745,6 +776,26 @@ QUY TẮC TRÍCH XUẤT:
 
 - KẾT HỢP BRAND + CAR (vd "michelin vf6"): set CẢ HAI — selected_brands=['MICHELIN'] VÀ car_model='VinFast VF6'.
 
+- VIẾT TẮT/CÁCH GỌI TÊN HÃNG LỐP — chuyển về tên CHUẨN HOA:
+  * MICHELIN: "michelin", "michellin", "mít", "míc", "mit", "mic", "mix", "ma sờ lin", "mi sờ lin", "mì sờ lăng"
+  * BRIDGESTONE: "bridgestone", "bri", "bri đờ", "bri đờ stôn", "bê rít gì tôn", "bri sờ tôn"
+  * HANKOOK: "hankook", "han cốc", "han cook", "hăn cốc", "han kook"
+  * DUNLOP: "dunlop", "đăn lốp", "đăn lóp", "đăn lop", "dăn lốp"
+  * GOODYEAR: "goodyear", "good year", "gút diê", "gút năm", "good iya"
+  * KUMHO: "kumho", "kum hô", "kum hồ", "kum ho", "cum hô"
+  * MAXXIS: "maxxis", "mắc xít", "max xít", "mác xít", "max sit"
+  * YOKOHAMA: "yokohama", "yô cô ha ma", "yo ko ha ma", "yô hama"
+  * CONTINENTAL: "continental", "conti", "côn ti", "công ty nen tan"
+  * PIRELLI: "pirelli", "pi reo li", "pi rê li"
+  * TOYO: "toyo", "tô yô", "to yo"
+  * FALKEN: "falken", "phan ken", "phai ken"
+  * NEXEN: "nexen", "nếch sen", "nech xen"
+  * ADVANCE: "advance", "át văn", "ad van"
+  → Khi khách gõ alias trên (kể cả viết tắt 2-3 ký tự) → selected_brands = [TÊN CHUẨN HOA].
+  → Vd: "lốp mít cho vios" → selected_brands=['MICHELIN'], car_model='Toyota Vios'.
+  → Vd: "han cốc" → selected_brands=['HANKOOK'].
+  → Vd: "tôi muốn đăn lốp" → selected_brands=['DUNLOP'].
+
 - QUY TẮC selected_brands — CỰC QUAN TRỌNG:
   selected_brands chỉ chứa brand được nhắc trong TIN NHẮN HIỆN TẠI của khách. KHÔNG bao giờ thêm brand đã có sẵn trong state cũ.
   STATE chỉ để bạn biết CONTEXT, không phải để gộp.
@@ -837,7 +888,9 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
     // Normalize tire_size (uppercase + clean format)
     let normalizedSize: string | null = null
     if (object.tire_size) {
-      const m = object.tire_size.match(/(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i)
+      const m = object.tire_size.match(
+        /(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i
+      )
       normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
     }
     const brandsRaw = object.selected_brands ?? []

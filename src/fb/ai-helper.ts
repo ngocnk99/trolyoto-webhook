@@ -579,9 +579,9 @@ export interface V3GatherDecision {
 }
 
 const V3_BRAND_TIER_INFO = {
-  premium: 'Michelin, Bridgestone, Pirelli, Continental, Toyo, Goodyear',
-  balanced: 'Hankook, Yokohama, Dunlop, Laufenn',
-  budget: 'Kumho, RoadX, Sailun, TBB, Otani'
+  premium: 'Michelin, Bridgestone, Toyo, Continental, Pirelli',
+  balanced: 'Hankook, Goodyear, Dunlop, Yokohama',
+  budget: 'Sailun, Kumho, RoadX, Laufenn, Nexen, TBB, Westlake, Maxxis, Otani'
 } as const
 
 /**
@@ -673,6 +673,10 @@ Nhiệm vụ: thu thập 3 thông tin để báo giá lốp:
 1. tire_size (định dạng XXX/YYRZZ)
 2. brand preference: brand cụ thể HOẶC phân khúc HOẶC xem hết
 3. province (tỉnh/TP ở Việt Nam) — HỎI SAU CÙNG, sau khi đã có size + brand
+
+TỪ ĐỒNG NGHĨA "LỐP" (CỰC QUAN TRỌNG): khách gọi lốp xe bằng nhiều cách —
+"lốp", "nốp", "vỏ", "vỏ xe", "bánh xe". TẤT CẢ đều hiểu là "lốp xe".
+Vd "vỏ xe vios" → car_model='Toyota Vios'. Vd "nốp 185/60R15" → tire_size='185/60R15'.
 
 Phân khúc thương hiệu:
 - premium: ${V3_BRAND_TIER_INFO.premium}
@@ -791,6 +795,12 @@ QUY TẮC TRÍCH XUẤT:
   * FALKEN: "falken", "phan ken", "phai ken"
   * NEXEN: "nexen", "nếch sen", "nech xen"
   * ADVANCE: "advance", "át văn", "ad van"
+  * SAILUN: "sailun", "sai lun", "sây lun"
+  * ROADX: "roadx", "road x", "rốt ích"
+  * LAUFENN: "laufenn", "lau fen", "lau phần"
+  * TBB: "tbb", "ti bi bi"
+  * WESTLAKE: "westlake", "goét lếch", "oét lếch"
+  * OTANI: "otani", "ô ta ni", "o ta ni"
   → Khi khách gõ alias trên (kể cả viết tắt 2-3 ký tự) → selected_brands = [TÊN CHUẨN HOA].
   → Vd: "lốp mít cho vios" → selected_brands=['MICHELIN'], car_model='Toyota Vios'.
   → Vd: "han cốc" → selected_brands=['HANKOOK'].
@@ -839,6 +849,16 @@ VÍ DỤ OFF-TOPIC REPLY (chọn template đúng theo loại câu hỏi):
 
 [Loại 5] Câu hỏi quá xa chủ đề ô tô (thời tiết, tin tức, v.v.)
   Reply: "Dạ em chuyên hỗ trợ tìm lốp xe ạ 😊\\n\\nAnh/chị cho em biết kích cỡ lốp mình nhé?"
+
+[Loại 6] Giờ làm việc của GARA: "gara mở cửa lúc nào", "mấy giờ gara đóng cửa", "giờ làm việc gara"
+  Reply: "Dạ phần lớn gara mở cửa từ 8h-18h, Thứ 2 đến Thứ 7 ạ 😊 Tùy từng gara có thể khác giờ một chút.\\n\\nAnh/chị cho em biết kích cỡ lốp + thương hiệu để em tìm gara phù hợp nhé?"
+
+[Loại 7] "Loại nào tốt" — khách CHƯA xác định thương hiệu/SP, hỏi chung "loại nào tốt", "nên mua hãng nào", "tư vấn hãng giúp em"
+  Reply: "Dạ tùy vào nhu cầu và ngân sách, TROLYoto gợi ý theo tiêu chí chất lượng + giá thành ạ:\\n• Cao cấp: Michelin, Bridgestone, Continental\\n• Cân bằng: Goodyear, Hankook, Yokohama\\n• Tiết kiệm: Kumho, Sailun, Laufenn\\n\\nAnh/chị đang quan tâm thương hiệu nào ạ?"
+
+[Loại 8] Hỏi tên CHƯƠNG TRÌNH KHUYẾN MẠI cụ thể: "có khuyến mại gì", "chương trình X còn không", "đang sale gì"
+  Reply: "Dạ tùy vào kích cỡ + thương hiệu + gara khác nhau sẽ có các chương trình khác nhau ạ 😊\\n\\nAnh/chị cho em biết kích cỡ lốp + thương hiệu mong muốn để em tìm chương trình phù hợp nhé?"
+  → Tiếp tục flow tìm 3 dữ liệu: kích cỡ + thương hiệu + khu vực.
 
 LUÔN set is_off_topic=true, action=continue cho các turn off-topic này.
 

@@ -97,16 +97,27 @@ const BRAND_TIERS = {
     brands: [
       'MICHELIN',
       'BRIDGESTONE',
-      'PIRELLI',
-      'CONTINENTAL',
       'TOYO',
-      'GOODYEAR'
+      'CONTINENTAL',
+      'PIRELLI'
     ] as string[]
   },
   balanced: {
-    brands: ['HANKOOK', 'YOKOHAMA', 'DUNLOP', 'LAUFENN'] as string[]
+    brands: ['HANKOOK', 'GOODYEAR', 'DUNLOP', 'YOKOHAMA'] as string[]
   },
-  budget: { brands: ['KUMHO', 'ROADX', 'SAILUN', 'TBB', 'OTANI'] as string[] },
+  budget: {
+    brands: [
+      'SAILUN',
+      'KUMHO',
+      'ROADX',
+      'LAUFENN',
+      'NEXEN',
+      'TBB',
+      'WESTLAKE',
+      'MAXXIS',
+      'OTANI'
+    ] as string[]
+  },
   all: { brands: [] as string[] }
 } as const
 
@@ -127,7 +138,8 @@ const QR_TITLE = {
   CHAT_TVV: '💬 Chat tư vấn viên'
 } as const
 
-/** Brand list hiển thị làm QR — chọn các brand phổ biến nhất (FB max 13 QR). */
+/** Brand list hiển thị làm QR — chọn các brand phổ biến nhất (FB max 13 QR;
+ *  V3_BRAND_QRS thêm 1 nút "Xem tất cả" nên giữ ≤ 12 hãng). */
 const V3_POPULAR_BRANDS = [
   'MICHELIN',
   'BRIDGESTONE',
@@ -136,9 +148,10 @@ const V3_POPULAR_BRANDS = [
   'HANKOOK',
   'YOKOHAMA',
   'DUNLOP',
-  'PIRELLI',
   'KUMHO',
   'SAILUN',
+  'MAXXIS',
+  'NEXEN',
   'TOYO'
 ] as const
 

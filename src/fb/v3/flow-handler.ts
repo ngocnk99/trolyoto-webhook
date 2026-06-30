@@ -228,25 +228,14 @@ function summarizeBrand(state: SessionState): string {
 type FieldKey = 'size' | 'brand' | 'location'
 
 /**
- * Build intro "Em đã hiểu ý anh/chị" KHI có sản phẩm — verification format:
- *   "😊 {size} {brand} ở {location} phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ."
- * Bỏ qua field 'Tất cả' brand để intro gọn.
+ * Build intro KHI có sản phẩm — hướng dẫn khách bấm vào card.
+ * (Không còn dạng xác nhận "{size} {brand} ở {location} phải không...".)
  */
-function buildSearchIntro(state: SessionState): string {
-  const parts: string[] = []
-  if (state.tire_size) parts.push(state.tire_size)
-  const brand = summarizeBrand(state)
-  if (brand && brand !== 'Tất cả') parts.push(brand)
-  const location = state.ward_name
-    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
-    : (state.province_name ?? '')
-  const infoStr = parts.join(' ')
-  let prefix: string
-  if (infoStr && location) prefix = `${infoStr} ở ${location}`
-  else if (infoStr) prefix = infoStr
-  else if (location) prefix = location
-  else return 'Dạ TROLYoto tìm giúp mình ngay đây ạ 😊'
-  return `😊 ${prefix} phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.`
+function buildSearchIntro(_state: SessionState): string {
+  return (
+    'Dạ TROLYoto đã tìm được sản phẩm phù hợp 😊\n' +
+    '👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!'
+  )
 }
 
 /**
@@ -1064,15 +1053,20 @@ async function handleGathering(
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   // Đủ 3 trường → fetch. Nhưng CHỈ fetch khi AI thực sự cập nhật field
-  // relevant (size/brand/location). Tránh refetch loop khi state đã complete +
-  // khách chỉ off-topic ở AWAITING_PHONE (sau no-product).
-  const relevantFieldUpdated = !!(
-    decision.updates.tire_size ||
+  // relevant (size/brand/location) VÀ giá trị KHÁC state cũ. Tránh refetch loop
+  // khi AI echo lại field đã có (vd khách hỏi off-topic "gara làm việc khi nào"
+  // ở SHOWING_RESULTS → AI emit lại province_name='Hà Nội' → KHÔNG nên re-fetch).
+  const sizeChanged =
+    !!decision.updates.tire_size && decision.updates.tire_size !== state.tire_size
+  const brandChanged = !!(
     decision.updates.brand_tier ||
     (decision.updates.selected_brands &&
-      decision.updates.selected_brands.length > 0) ||
-    decision.updates.province_name
+      decision.updates.selected_brands.length > 0)
   )
+  const provinceChanged =
+    !!decision.updates.province_name &&
+    decision.updates.province_name !== state.province_name
+  const relevantFieldUpdated = sizeChanged || brandChanged || provinceChanged
 
   // Detect: khách EXPLICIT nêu size (vd "vf3 205/55r17") qua regex trong tin gốc.
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size

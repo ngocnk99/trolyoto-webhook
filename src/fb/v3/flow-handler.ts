@@ -1071,7 +1071,8 @@ async function handleGathering(
   // Detect: khách EXPLICIT nêu size (vd "vf3 205/55r17") qua regex trong tin gốc.
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
   // do AI auto-fill (có thể hallucinate); ưu tiên show car size options.
-  const userExplicitSize = /\d{3}\s*\/?\s*\d{2}\s*[Rr]\s*\d{2}/.test(userInput)
+  // Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
+  const userExplicitSize = /\d{3}\s*[/\s]?\s*\d{2}\s*[R/]\s*\d{2}/i.test(userInput)
   const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
 
   if (

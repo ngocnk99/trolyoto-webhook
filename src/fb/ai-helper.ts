@@ -715,6 +715,34 @@ QUY TẮC ƯU TIÊN HỎI:
 QUY TẮC TRÍCH XUẤT:
 - Trích CONSERVATIVE — chỉ điền updates khi CHẮC. Không đoán bừa.
 
+- NHẬN DIỆN KÍCH CỠ LỐP — chuẩn hoá MỌI biến thể về "XXX/YYRZZ":
+  * "205/60R16" → "205/60R16" (chuẩn)
+  * "205/60/16" → "205/60R16" (dấu "/" thứ 2 = R)
+  * "205 60 16" / "205-60-16" / "205.60.16" → "205/60R16"
+  * "20560R16" / "2056016" (dính liền) → "205/60R16"
+  * Có hậu tố tải/tốc độ (vd "205/60R16 92V", "215/75R16C") → BỎ hậu tố, chỉ lấy "205/60R16".
+  * LUÔN output tire_size dạng chuẩn "XXX/YYRZZ" (3 số / 2 số R 2 số), dù khách gõ kiểu gì.
+
+- NHẬN DIỆN VIẾT TẮT HÃNG LỐP (2-3 ký tự, ngữ cảnh lốp) — map về tên CHUẨN HOA:
+  * MC / MI / MCL → MICHELIN
+  * BS / BRI → BRIDGESTONE
+  * HK / HAN → HANKOOK
+  * DL / DUN → DUNLOP
+  * GY / GDY → GOODYEAR
+  * YK / YH / YOKO → YOKOHAMA
+  * KM / KH → KUMHO
+  * CT / CON / CONTI → CONTINENTAL
+  * MX / MAX → MAXXIS
+  * PL / PIR → PIRELLI
+  * → Vd "MC" → selected_brands=['MICHELIN']. "BS 2 lốp" → ['BRIDGESTONE'].
+
+- BỎ QUA tên DÒNG SẢN PHẨM + NĂM khi trích (chúng KHÔNG phải kích cỡ/xe):
+  * Dòng lốp: "sp05", "primacy", "energy", "pilot", "sport", "turanza", "alenza",
+    "advan", "ecopia", "assurance", "kinergy"... → KHÔNG đưa vào car_model.
+  * Năm "2026", "đời 2024" → bỏ.
+  * Vd "cần tư vấn MC sp05 2026 cho 205/60/16" → selected_brands=['MICHELIN'],
+    tire_size='205/60R16', car_model=null (sp05 là dòng lốp, KHÔNG phải xe).
+
 - NHẬN DIỆN TÊN XE (rất quan trọng — set updates.car_model khi CHƯA có tire_size):
   * Cụm "lốp xe X" / "xe X" / "X đời YYYY" → X là car_model (BỎ năm "đời 2021", "model 2020")
   * Trả về tên CHUẨN dạng "<Hãng> <Model>" (KHÔNG kèm năm/đời).

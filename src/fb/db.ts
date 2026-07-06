@@ -902,6 +902,15 @@ type WardEntry = {
 const WARD_MAP = wardJson as Record<string, WardEntry>
 
 /**
+ * Lấy mã tỉnh/TP (parent_code) từ mã ward. Dùng khi cần fallback ward → toàn tỉnh.
+ * Vd getWardParentCode('10525') → '31' (Hải Phòng).
+ */
+export function getWardParentCode(wardCode: string): string | null {
+  const w = WARD_MAP[wardCode]
+  return w?.parent_code ?? null
+}
+
+/**
  * V3 fallback: tìm các ward (xã/phường) match với text khách nhập.
  * Dùng khi province.json không khớp (vd "Thái Bình" sau khi reorg địa giới).
  *

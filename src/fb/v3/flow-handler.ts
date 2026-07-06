@@ -38,6 +38,7 @@ import {
   fetchTireSizesByCarTags,
   fetchTireSizesByProductSearch,
   findWardsByText,
+  getWardParentCode,
   type SpGaraCard,
   type WardMatch
 } from '../db'
@@ -1316,20 +1317,25 @@ async function showSpGaraResults(
       )
     }
 
-    // 2. Nếu ward không có gara → fallback province (chỉ khi cả 2 đều có)
-    if (cards.length === 0 && provinceCode) {
-      cards = await fetchSpGaraCards({
-        tireSize,
-        tireBrand: brandFilter,
-        provinceCode,
-        wardCode: null,
-        limit: 3,
-        sortBy: 'quantitysold'
-      })
-      usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
-      console.log(
-        `[V3 showSpGara] province fallback (${provinceCode}) → ${cards.length} cards${usedFallbackProvince ? ' [WARD→PROVINCE fallback]' : ''}`
-      )
+    // 2. Nếu ward không có gara → fallback toàn tỉnh/TP.
+    //    provinceCode có thể null (khách chỉ cho ward) → suy ra từ parent_code của ward.
+    if (cards.length === 0) {
+      const fallbackProvinceCode =
+        provinceCode ?? (wardCode ? getWardParentCode(wardCode) : null)
+      if (fallbackProvinceCode) {
+        cards = await fetchSpGaraCards({
+          tireSize,
+          tireBrand: brandFilter,
+          provinceCode: fallbackProvinceCode,
+          wardCode: null,
+          limit: 3,
+          sortBy: 'quantitysold'
+        })
+        usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
+        console.log(
+          `[V3 showSpGara] province fallback (${fallbackProvinceCode}${provinceCode ? '' : ' ← ward parent'}) → ${cards.length} cards${usedFallbackProvince ? ' [WARD→PROVINCE fallback]' : ''}`
+        )
+      }
     }
 
     const head = buildSummaryHead(state, updatedFields)

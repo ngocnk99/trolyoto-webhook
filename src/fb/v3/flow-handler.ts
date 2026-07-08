@@ -229,6 +229,16 @@ function summarizeBrand(state: SessionState): string {
 type FieldKey = 'size' | 'brand' | 'location'
 
 /**
+ * Parse kích cỡ lốp explicit từ text → chuẩn hoá "XXX/YYRZZ".
+ * Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
+ * Trả null nếu không tìm thấy pattern hợp lệ.
+ */
+function parseExplicitTireSize(text: string): string | null {
+  const m = text.match(/(\d{3})\s*[/\s]?\s*(\d{2})\s*[R/]\s*(\d{2})/i)
+  return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
+}
+
+/**
  * Build intro KHI có sản phẩm — hướng dẫn khách bấm vào card.
  * (Không còn dạng xác nhận "{size} {brand} ở {location} phải không...".)
  */
@@ -903,8 +913,15 @@ async function handleGathering(
 
   // 2. Apply updates
   const newState: SessionState = { ...state }
-  if (decision.updates.tire_size)
+  // Ưu tiên regex parse size từ TIN HIỆN TẠI (deterministic) hơn AI —
+  // tránh case AI echo lại size CŨ khi khách gõ size MỚI (vd đang có 185/70R13,
+  // khách gõ 155/70R13 nhưng AI trả về 185 cũ). Regex luôn lấy đúng size vừa gõ.
+  const parsedSize = parseExplicitTireSize(userInput)
+  if (parsedSize) {
+    newState.tire_size = parsedSize
+  } else if (decision.updates.tire_size) {
     newState.tire_size = decision.updates.tire_size
+  }
   if (
     decision.updates.brand_tier !== undefined &&
     decision.updates.brand_tier !== null
@@ -1057,8 +1074,11 @@ async function handleGathering(
   // relevant (size/brand/location) VÀ giá trị KHÁC state cũ. Tránh refetch loop
   // khi AI echo lại field đã có (vd khách hỏi off-topic "gara làm việc khi nào"
   // ở SHOWING_RESULTS → AI emit lại province_name='Hà Nội' → KHÔNG nên re-fetch).
+  // Size đổi khi: regex parse ra size mới (ưu tiên) HOẶC AI trả size khác state cũ.
   const sizeChanged =
-    !!decision.updates.tire_size && decision.updates.tire_size !== state.tire_size
+    (!!parsedSize && parsedSize !== state.tire_size) ||
+    (!!decision.updates.tire_size &&
+      decision.updates.tire_size !== state.tire_size)
   const brandChanged = !!(
     decision.updates.brand_tier ||
     (decision.updates.selected_brands &&

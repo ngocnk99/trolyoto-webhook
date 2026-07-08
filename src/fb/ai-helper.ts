@@ -722,6 +722,10 @@ QUY TẮC TRÍCH XUẤT:
   * "20560R16" / "2056016" (dính liền) → "205/60R16"
   * Có hậu tố tải/tốc độ (vd "205/60R16 92V", "215/75R16C") → BỎ hậu tố, chỉ lấy "205/60R16".
   * LUÔN output tire_size dạng chuẩn "XXX/YYRZZ" (3 số / 2 số R 2 số), dù khách gõ kiểu gì.
+  * ĐỔI SIZE (CỰC QUAN TRỌNG): nếu khách gõ kích cỡ MỚI khác size đã có trong STATE
+    → tire_size = size MỚI (GHI ĐÈ), reply nhắc ĐÚNG size mới.
+    Vd STATE có "185/70R13", khách gõ "155/70R13" → tire_size='155/70R13',
+    reply "Dạ ghi nhận 155/70R13 ạ..." — TUYỆT ĐỐI KHÔNG giữ/nhắc lại "185/70R13".
 
 - NHẬN DIỆN VIẾT TẮT HÃNG LỐP (2-3 ký tự, ngữ cảnh lốp) — map về tên CHUẨN HOA:
   * MC / MI / MCL → MICHELIN

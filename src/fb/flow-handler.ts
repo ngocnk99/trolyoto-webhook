@@ -834,7 +834,7 @@ async function showSpGaraResults(
       tireBrand: brandFilter,
       provinceCode,
       limit: 3,
-      sortBy: 'quantitysold'
+      sortBy: 'lowest_price'
     })
     let usedNational = false
 
@@ -845,7 +845,7 @@ async function showSpGaraResults(
         tireBrand: brandFilter,
         provinceCode: null,
         limit: 3,
-        sortBy: 'quantitysold'
+        sortBy: 'lowest_price'
       })
       usedNational = true
     }

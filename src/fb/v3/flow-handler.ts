@@ -1378,7 +1378,7 @@ async function showSpGaraResults(
         provinceCode: null,
         wardCode,
         limit: 3,
-        sortBy: 'quantitysold'
+        sortBy: 'lowest_price'
       })
       console.log(
         `[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`
@@ -1397,7 +1397,7 @@ async function showSpGaraResults(
           provinceCode: fallbackProvinceCode,
           wardCode: null,
           limit: 3,
-          sortBy: 'quantitysold'
+          sortBy: 'lowest_price'
         })
         usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
         console.log(
@@ -1420,7 +1420,7 @@ async function showSpGaraResults(
           provinceCode: fallbackWard ? null : fallbackProvince,
           wardCode: fallbackWard,
           limit: 3,
-          sortBy: 'quantitysold'
+          sortBy: 'lowest_price'
         })
         usedFallbackBrand = cards.length > 0
         console.log(
@@ -1462,7 +1462,7 @@ async function showSpGaraResults(
       await reply(
         psid,
         sessionId,
-        `Dạ khu vực mình hiện chưa có đúng hãng đã chọn cho size ${tireSize}, TROLYoto gợi ý các lựa chọn khác cùng size để mình tham khảo nhé 😊`
+        `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊\nAnh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!`
       )
       await delay(REPLY_GAP_MS)
     }

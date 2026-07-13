@@ -151,11 +151,11 @@ export async function fetchTireCatalog(params: {
     query = query.in('BRAND', brands)
   }
 
-  // Sort theo quantitysold DESC, rating DESC, lastprice ASC (nulls last)
+  // Sort theo lastprice ASC (rẻ nhất trước), rating DESC, quantitysold DESC
   query = query
-    .order('quantitysold', { ascending: false, nullsFirst: false })
-    .order('rating', { ascending: false, nullsFirst: false })
     .order('lastprice', { ascending: true, nullsFirst: false })
+    .order('rating', { ascending: false, nullsFirst: false })
+    .order('quantitysold', { ascending: false, nullsFirst: false })
     .range(skip, skip + limit - 1)
 
   const { data, error, count } = await query
@@ -544,7 +544,7 @@ export async function fetchGarageOffers(params: {
     provinceCode,
     wardCode,
     maxGaragesPerTire = 3,
-    sortBy = 'quantitysold',
+    sortBy = 'lowest_price',
     excludeGarageCodes = [],
     maxFinalPriceFloor
   } = params
@@ -747,7 +747,7 @@ export async function fetchSpGaraCards(params: {
     provinceCode,
     wardCode,
     limit = 3,
-    sortBy = 'quantitysold',
+    sortBy = 'lowest_price',
     excludeGarageCodes,
     maxFinalPriceFloor
   } = params
@@ -1108,60 +1108,35 @@ function mapProductadminToCatalogItem(pa: ProductadminRow): TireCatalogItem {
 }
 
 /**
- * Extract address từ garage.information (JSONB).
+ * Extract khu vực hiển thị từ garage.information (JSONB) — CHỈ convert ward/
+ * province code sang tên, KHÔNG dùng field `address` (street) thô vì nó
+ * thường đã tự chứa cả ward/district/province → ghép thêm province riêng
+ * sẽ bị trùng lặp dài dòng (vd "126A15-16 Tam Trinh, Yên Sở, Hoàng Mai,
+ * Hà Nội, Hoàng Mai, Hà Nội").
  *
- * Schema thực tế: `{"ward": "29158", "address": "Số 798 Tôn Đức Thắng 3",
- * "district": "", "province": "86"}` — trong đó:
- *  - `address` = street (chuỗi đã có nhà + đường)
- *  - `province` = mã tỉnh (có thể lookup tên qua province.json)
- *  - `ward` / `district` = mã (không lookup được nếu không có ward.json/district.json)
- *
- * Strategy: ưu tiên `address` field, append tên tỉnh từ province code nếu có.
- * Fallback các key alias (address_full, fullAddress) cho data cũ.
+ * Schema thực tế: `{"ward": "00331", "address": "...", "district": "",
+ * "province": "01"}` — `ward` tra qua ward.json cho path "Phường, Tỉnh/TP"
+ * đã chuẩn (vd "00331" → "Hoàng Mai, Hà Nội"); fallback tên tỉnh nếu
+ * ward không có/không tra được.
  */
 function extractAddressFromGarage(info: unknown): string {
   if (!info || typeof info !== 'object') return ''
   const i = info as Record<string, unknown>
 
-  // Lấy street/address chính
-  let street = ''
-  for (const key of [
-    'address',
-    'address_full',
-    'address_text',
-    'fullAddress',
-    'full_address'
-  ]) {
-    const v = i[key]
-    if (typeof v === 'string' && v.trim()) {
-      street = v.trim()
-      break
-    }
+  const ward = i.ward
+  if (typeof ward === 'string' && ward.trim()) {
+    const w = getWardByCode(ward.trim())
+    if (w?.path) return w.path
   }
 
-  // Lookup tên tỉnh nếu có province code (vd: "86" → "Bến Tre")
-  let provinceName = ''
   const prov = i.province
   if (typeof prov === 'string' && prov.trim()) {
     const entry = PROVINCE_MAP[prov.trim()]
-    if (entry?.name) provinceName = entry.name
-    else if (prov.length > 2) provinceName = prov // đã là tên, không phải code
+    if (entry?.name) return entry.name
+    if (prov.length > 2) return prov // đã là tên, không phải code
   }
 
-  if (street && provinceName) return `${street}, ${provinceName}`
-  if (street) return street
-  if (provinceName) return provinceName
-
-  // Fallback compose từ các field rời (data cũ)
-  const parts: string[] = []
-  for (const key of ['street', 'ward', 'district', 'city']) {
-    const v = i[key]
-    if (typeof v === 'string' && v.trim() && !/^\d+$/.test(v.trim())) {
-      parts.push(v.trim())
-    }
-  }
-  if (provinceName) parts.push(provinceName)
-  return parts.join(', ')
+  return ''
 }
 
 function buildGarageOffer(

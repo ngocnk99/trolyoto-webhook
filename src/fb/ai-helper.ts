@@ -29,7 +29,7 @@ export async function extractTireSize(
       prompt: `User said: "${userInput}"\nExtract tire size. Return null if no tire size mentioned.`
     })
     if (!object.tireSize) return null
-    const m = object.tireSize.match(/(\d{3})\s*\/\s*(\d{2})\s*R\s*(\d{2})/i)
+    const m = object.tireSize.match(/(\d{3})\s*\/\s*(\d{2})\s*[A-Z]?\s*R\s*(\d{2})/i)
     return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
   } catch (e) {
     console.error('[AI extractTireSize]', e)
@@ -65,7 +65,7 @@ export async function getTireSizesForCar(carModel: string): Promise<string[]> {
     })
     return object.sizes
       .map(s => {
-        const m = s.match(/(\d{3})\s*\/\s*(\d{2})\s*R\s*(\d{2})/i)
+        const m = s.match(/(\d{3})\s*\/\s*(\d{2})\s*[A-Z]?\s*R\s*(\d{2})/i)
         return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
       })
       .filter((s): s is string => !!s)
@@ -168,7 +168,7 @@ export async function verifyTireSizesForCar(
     // Normalize back to XXX/YYRZZ format
     const compatibleSizes = object.compatible_sizes
       .map(s => {
-        const m = s.match(/(\d{3})\s*\/\s*(\d{2})\s*R\s*(\d{2})/i)
+        const m = s.match(/(\d{3})\s*\/\s*(\d{2})\s*[A-Z]?\s*R\s*(\d{2})/i)
         return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
       })
       .filter((s): s is string => !!s)
@@ -274,7 +274,7 @@ export async function classifyTireInput(
     })
     let size: string | null = null
     if (object.size) {
-      const m = object.size.match(/(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i)
+      const m = object.size.match(/(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})/i)
       size = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
     }
     return {
@@ -487,11 +487,12 @@ export async function analyzeTireImage(
       ]
     })
 
-    // Normalize size: 215 75 R 16 → 215/75R16
+    // Normalize size: 215 75 R 16 → 215/75R16. Bỏ ký hiệu tốc độ tuỳ chọn
+    // (Z/H/V/W...) giữa tỷ lệ khung và "R" — vd "225/55ZR19" → "225/55R19".
     let normalizedSize: string | null = null
     if (object.tire_size) {
       const m = object.tire_size.match(
-        /(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i
+        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})/i
       )
       normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
     }
@@ -941,11 +942,13 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
       })}`
     )
 
-    // Normalize tire_size (uppercase + clean format)
+    // Normalize tire_size (uppercase + clean format). Bỏ ký hiệu tốc độ tuỳ
+    // chọn (Z/H/V/W...) giữa tỷ lệ khung và "R" — catalog không phân biệt
+    // theo speed rating, vd "225/55ZR19" → "225/55R19".
     let normalizedSize: string | null = null
     if (object.tire_size) {
       const m = object.tire_size.match(
-        /(\d{3})\s*\/?\s*(\d{2})\s*R?\s*(\d{2})/i
+        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})/i
       )
       normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
     }

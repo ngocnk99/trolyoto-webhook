@@ -39,6 +39,7 @@ import {
   fetchTireSizesByProductSearch,
   findWardsByText,
   getWardParentCode,
+  getWardByCode,
   type SpGaraCard,
   type WardMatch
 } from '../db'
@@ -92,6 +93,12 @@ const COMMUNITY_URL = 'https://www.facebook.com/groups/748788784953241'
 const NUDGE_HELP_MS = 15_000
 const NUDGE_BOOKING_MS = 45_000
 
+// V3: nudge "thiếu thông tin" khi bot đang hỏi size/brand/location mà khách im lặng.
+// Override qua ENV cho phép tune không cần sửa code + deploy lại (cũng tiện để
+// test nhanh: set vài giây thay vì chờ 90s/60s thật).
+const NUDGE_INFO_STAGE1_MS = Number(process.env.NUDGE_INFO_STAGE1_MS) || 90_000 // 90s: nhắc + hỏi lại field thiếu
+const NUDGE_INFO_STAGE2_MS = Number(process.env.NUDGE_INFO_STAGE2_MS) || 60_000 // +60s tiếp nếu vẫn im lặng: 2 tin mời "trợ giá khi cần"
+
 // Brand tiers V2 (giữ để map AI brand_tier → brand list lúc query DB)
 const BRAND_TIERS = {
   premium: {
@@ -130,8 +137,8 @@ const QR_TITLE = {
   BETTER_PRICE: '💰 Giá tốt hơn',
   CLOSER_DEALER: '📍 Đại lý gần hơn',
   VIEW_PROMO: '🎁 Xem khuyến mại',
-  VIEW_OTHER_GARAGE: 'Xem gara khác',
-  VIEW_OTHER_PRODUCT: 'Xem SP khác',
+  VIEW_OTHER_GARAGE: 'Xem giá gara khác',
+  VIEW_OTHER_PRODUCT: 'Xem loại lốp khác',
   COMMUNITY_SUBSIDY: 'Trợ giá khi cần',
   COMMUNITY_VOUCHER: 'Nhận voucher 200k',
   // V3 mới
@@ -231,10 +238,12 @@ type FieldKey = 'size' | 'brand' | 'location'
 /**
  * Parse kích cỡ lốp explicit từ text → chuẩn hoá "XXX/YYRZZ".
  * Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
+ * Bỏ ký hiệu tốc độ tuỳ chọn (Z/H/V/W...) đứng giữa tỷ lệ khung và "R" —
+ * vd "225/55ZR19" → "225/55R19" (catalog không phân biệt theo speed rating).
  * Trả null nếu không tìm thấy pattern hợp lệ.
  */
 function parseExplicitTireSize(text: string): string | null {
-  const m = text.match(/(\d{3})\s*[/\s]?\s*(\d{2})\s*[R/]\s*(\d{2})/i)
+  const m = text.match(/(\d{3})\s*[/\s]?\s*(\d{2})\s*[A-Z]?\s*[R/]\s*(\d{2})/i)
   return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
 }
 
@@ -484,7 +493,28 @@ async function sendCards(
   }).catch(e => console.error('[V3 log cards]', e))
 }
 
-// Card SP+gara (GIỮ Y V2 — wording không đổi)
+/**
+ * Gắn UTM params vào URL để tracking click nguồn từ chatbot (GA/analytics).
+ * utm_content phân biệt 3 loại button khi gửi card SP+gara.
+ */
+function withUtm(
+  url: string,
+  utmContent: 'view_promo' | 'view_other_garage' | 'view_other_product'
+): string {
+  try {
+    const u = new URL(url)
+    u.searchParams.set('utm_source', 'facebook_bot')
+    u.searchParams.set('utm_medium', 'chatbot')
+    u.searchParams.set('utm_campaign', 'tire_search')
+    u.searchParams.set('utm_content', utmContent)
+    return u.toString()
+  } catch (e) {
+    console.error('[V3 withUtm] invalid URL:', url, e)
+    return url
+  }
+}
+
+// Card SP+gara (GIỮ Y V2 — wording buttons đổi theo yêu cầu UTM tracking)
 function buildSpGaraCard(card: SpGaraCard): GenericElement {
   const productPageUrl = card.productSlug
     ? `${TROLYOTO_URL}/lop/${card.productSlug}`
@@ -500,26 +530,30 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
     .slice(0, 80)
 
   const buttons: Button[] = [
-    { type: 'web_url', title: QR_TITLE.VIEW_PROMO, url: card.detailUrl }
+    {
+      type: 'web_url',
+      title: QR_TITLE.VIEW_PROMO,
+      url: withUtm(card.detailUrl, 'view_promo')
+    }
   ]
   if (productPageUrl) {
     buttons.push({
       type: 'web_url',
       title: QR_TITLE.VIEW_OTHER_GARAGE,
-      url: productPageUrl
+      url: withUtm(productPageUrl, 'view_other_garage')
     })
   }
   buttons.push({
     type: 'web_url',
     title: QR_TITLE.VIEW_OTHER_PRODUCT,
-    url: listingUrl
+    url: withUtm(listingUrl, 'view_other_product')
   })
 
   return {
     title: `${card.brand} ${card.size}`,
     subtitle,
     ...(card.image ? { image_url: card.image } : {}),
-    default_action: { type: 'web_url' as const, url: card.detailUrl },
+    default_action: { type: 'web_url' as const, url: withUtm(card.detailUrl, 'view_promo') },
     buttons
   }
 }
@@ -697,6 +731,7 @@ async function handleBrandNameChoice(
   }
   const nextQ = nextMissingFieldQuestion(newState)
   await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText)
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
 }
 
 async function handleBrandTierChoice(
@@ -724,6 +759,7 @@ async function handleBrandTierChoice(
   }
   const nextQ = nextMissingFieldQuestion(newState)
   await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText)
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
 }
 
 async function handleWardChoice(
@@ -735,21 +771,19 @@ async function handleWardChoice(
   console.log(`[V3 flow] V3_WARD click → wardCode=${wardCode}`)
   cancelTimer(session.id, 'v3-ward-choice')
 
-  // Lookup ward thông tin để hiển thị label
-  const wards = findWardsByText('', 0) // empty search → []. Lookup by code instead via reverse search trong WARD_MAP.
-  // Đơn giản hơn: tìm ward bất kỳ matching wardCode bằng cách search wide
-  // Hoặc dùng map trực tiếp. Để tránh duplicate, đọc lại từ ward.json
-  // Strategy: dùng findWardsByText với 1 ký tự common rồi filter — overkill.
-  // Tốt hơn: thêm getWardByCode helper trong db. Tạm thời lookup bằng tìm rộng.
-  // Để giữ scope, ta trust wardCode + dùng label generic.
-  void wards
+  // Lookup ward theo code để lấy tên + path tỉnh hiện hành (tránh giữ lại tên
+  // tỉnh cũ khách gõ trước đó — có thể sai sau sáp nhập địa giới).
+  const wardInfo = getWardByCode(wardCode)
 
   const newState: SessionState = {
     ...session.state,
     ward_code: wardCode,
-    // Giữ ward_name từ trước nếu có; nếu chưa có, dùng province_name làm placeholder
     ward_name:
-      session.state.ward_name ?? session.state.province_name ?? wardCode
+      wardInfo?.name ??
+      session.state.ward_name ??
+      session.state.province_name ??
+      wardCode,
+    province_name: wardInfo?.path ?? session.state.province_name
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -775,6 +809,7 @@ async function handleWardChoice(
     nextQ ? `${ackText}\n\n${nextQ}` : ackText,
     needBrand && nextQ ? V3_BRAND_QRS() : undefined
   )
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -831,6 +866,7 @@ async function handleImage(
       session.id,
       'Để em hỗ trợ chính xác hơn, anh/chị thử chụp lại rõ phần "215/75R16" trên thành lốp giúp em ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
     )
+    maybeScheduleInfoNudge(psid, session.id, pageId, newState)
     return
   }
 
@@ -871,6 +907,7 @@ async function handleImage(
     nextQ ? `${ackText}\n\n${nextQ}` : ackText,
     needBrand && nextQ ? V3_BRAND_QRS() : undefined
   )
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1093,7 +1130,7 @@ async function handleGathering(
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
   // do AI auto-fill (có thể hallucinate); ưu tiên show car size options.
   // Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
-  const userExplicitSize = /\d{3}\s*[/\s]?\s*\d{2}\s*[R/]\s*\d{2}/i.test(userInput)
+  const userExplicitSize = /\d{3}\s*[/\s]?\s*\d{2}\s*[A-Z]?\s*[R/]\s*\d{2}/i.test(userInput)
   const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
 
   if (
@@ -1171,10 +1208,12 @@ async function handleGathering(
         sessionId,
         'Để em báo giá chính xác hơn, anh/chị gửi giúp em ảnh thành lốp xe để em đọc kích cỡ ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊'
       )
+      maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
       return
     }
     if (wasAsking === 'brand') {
       await reply(psid, sessionId, BRAND_ASK_TEXT_FULL, V3_BRAND_QRS())
+      maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
       return
     }
     if (wasAsking === 'location') {
@@ -1183,6 +1222,7 @@ async function handleGathering(
         sessionId,
         'Anh/chị giúp em xác nhận KHU VỰC THUỘC TỈNH/THÀNH nào để em tìm đại lý gần nhất ạ?\nVí dụ: "Hai Bà Trưng, Hà Nội" hoặc "TP. Vinh, Nghệ An" 😊'
       )
+      maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
       return
     }
   }
@@ -1242,6 +1282,9 @@ async function handleGathering(
         `Để em hỗ trợ chính xác cho xe "${carName}", anh/chị gửi giúp em ảnh thành lốp xe ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊`
       )
     }
+    // Cả 2 nhánh trên (show size options / retry no-sizes) đều là bot đang
+    // hỏi field "size" → schedule nudge nếu state vẫn thiếu.
+    maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
     return
   }
 
@@ -1273,6 +1316,10 @@ async function handleGathering(
       )
     }
   }
+
+  // Bot vừa hỏi tiếp field thiếu (size/brand/location) qua AI reply hoặc
+  // safety-net fallback → schedule nudge nếu vẫn còn thiếu.
+  maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1321,6 +1368,7 @@ async function showSpGaraResults(
   try {
     let cards: SpGaraCard[] = []
     let usedFallbackProvince = false
+    let usedFallbackBrand = false
 
     // 1. Ưu tiên ward_code nếu có
     if (wardCode) {
@@ -1358,6 +1406,29 @@ async function showSpGaraResults(
       }
     }
 
+    // 3. Vẫn không có gara (dù đã thử ward + toàn tỉnh) VÀ đang lọc theo brand
+    //    cụ thể (không phải "Xem tất cả") → thử lại CÙNG khu vực nhưng bỏ lọc
+    //    brand, để khách vẫn thấy lựa chọn khác thay vì đi thẳng CSKH.
+    if (cards.length === 0 && brandFilter !== '__skip_brand__') {
+      const fallbackWard = wardCode
+      const fallbackProvince =
+        provinceCode ?? (wardCode ? getWardParentCode(wardCode) : null)
+      if (fallbackWard || fallbackProvince) {
+        cards = await fetchSpGaraCards({
+          tireSize,
+          tireBrand: '__skip_brand__',
+          provinceCode: fallbackWard ? null : fallbackProvince,
+          wardCode: fallbackWard,
+          limit: 3,
+          sortBy: 'quantitysold'
+        })
+        usedFallbackBrand = cards.length > 0
+        console.log(
+          `[V3 showSpGara] brand fallback (all brands, ${fallbackWard ? `ward=${fallbackWard}` : `province=${fallbackProvince}`}) → ${cards.length} cards${usedFallbackBrand ? ' [BRAND fallback]' : ''}`
+        )
+      }
+    }
+
     const head = buildSummaryHead(state, updatedFields)
 
     if (cards.length === 0) {
@@ -1369,7 +1440,10 @@ async function showSpGaraResults(
         step: 'AWAITING_PHONE',
         state: {
           ...state,
-          cskh_reason: `Không có gara cho size ${tireSize} ở ${locationLabel}`
+          cskh_reason:
+            brandFilter !== '__skip_brand__'
+              ? `Không có gara cho size ${tireSize} (brand="${brandFilter}", đã thử cả all brand) ở ${locationLabel}`
+              : `Không có gara cho size ${tireSize} ở ${locationLabel}`
         }
       })
       await reply(psid, sessionId, msg1)
@@ -1384,6 +1458,14 @@ async function showSpGaraResults(
 
     // Có SP → intro verification + cards
     // ("😊 205/55R17 Michelin ở Hà Nội phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.")
+    if (usedFallbackBrand) {
+      await reply(
+        psid,
+        sessionId,
+        `Dạ khu vực mình hiện chưa có đúng hãng đã chọn cho size ${tireSize}, TROLYoto gợi ý các lựa chọn khác cùng size để mình tham khảo nhé 😊`
+      )
+      await delay(REPLY_GAP_MS)
+    }
     const msgFound = buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
@@ -1394,7 +1476,7 @@ async function showSpGaraResults(
       psid,
       sessionId,
       cards.map(buildSpGaraCard),
-      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}`
+      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedFallbackBrand ? ' (brand fallback)' : ''}`
     )
 
     const shownCodes = cards
@@ -1480,6 +1562,115 @@ async function nudgeBookingToConcern(
   if (sess.step !== 'AWAITING_BOOKING_STATE') return
   console.log(`[V3 nudge] concern-45s SEND session=${sessionId}`)
   await promptConcern(psid, sessionId, sess.state)
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Nudge "thiếu thông tin" — khách im lặng khi bot đang hỏi size/brand/location
+//  90s: nhắc + hỏi lại field thiếu. +60s tiếp (vẫn im lặng): 2 tin mời "trợ giá
+//  khi cần". CHỈ 1 LẦN / session (state.info_nudge_sent) — dùng slot rồi thì
+//  dù khách quay lại trả lời rồi lại im lặng tiếp cũng KHÔNG lặp lại kịch bản.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Nhãn field thiếu cho câu nhắc — dùng chung deriveLastAsked (size→brand→location). */
+function missingFieldLabel(
+  state: SessionState
+): 'kích cỡ nào' | 'thương hiệu nào' | 'khu vực nào' | null {
+  const asking = deriveLastAsked(state)
+  if (asking === 'size') return 'kích cỡ nào'
+  if (asking === 'brand') return 'thương hiệu nào'
+  if (asking === 'location') return 'khu vực nào'
+  return null
+}
+
+/**
+ * Gọi ở CUỐI mỗi nhánh mà bot vừa hỏi khách 1 field còn thiếu (size/brand/
+ * location) — cả từ AI gather turn lẫn car-size options lẫn fail-retry.
+ * Fire-and-forget (không await ở call site) — chỉ schedule, không chặn reply.
+ */
+function maybeScheduleInfoNudge(
+  psid: string,
+  sessionId: string,
+  pageId: string,
+  state: SessionState
+): void {
+  if (state.info_nudge_sent) return // slot 1 lần/session đã dùng
+  if (!missingFieldLabel(state)) return // đã đủ field, không cần nhắc
+
+  scheduleTimer(
+    sessionId,
+    NUDGE_INFO_STAGE1_MS,
+    () => fireInfoNudgeStage1(psid, sessionId, pageId),
+    'v3-info-nudge-90s'
+  )
+}
+
+async function fireInfoNudgeStage1(
+  psid: string,
+  sessionId: string,
+  pageId: string
+): Promise<void> {
+  // Re-fetch để tránh race: khách vừa trả lời ngay trước khi timer fire.
+  const sess = await getActiveSession(psid, pageId)
+  if (!sess || sess.id !== sessionId) return
+  if (!sess.is_active || sess.is_paused_by_cskh) return
+  if (sess.state.info_nudge_sent) return // đã dùng slot (đề phòng race đúp lịch)
+  const missing = missingFieldLabel(sess.state)
+  if (!missing) {
+    console.log(
+      `[V3 nudge] info-90s SKIP session=${sessionId} (đã đủ field trong lúc chờ)`
+    )
+    return
+  }
+
+  console.log(`[V3 nudge] info-90s SEND session=${sessionId} missing="${missing}"`)
+  const newState: SessionState = { ...sess.state, info_nudge_sent: true }
+  await Promise.all([
+    updateSession(sessionId, { state: newState }),
+    reply(
+      psid,
+      sessionId,
+      `TRỢ GIÁ tới 800K đã sẵn sàng cho mình ạ!\nAnh/chị muốn tìm ${missing} để TROLYoto giúp mình tìm sản phẩm phù hợp ngay ạ 😊`
+    )
+  ])
+
+  // Giai đoạn 2: +60s tiếp theo nếu vẫn im lặng.
+  scheduleTimer(
+    sessionId,
+    NUDGE_INFO_STAGE2_MS,
+    () => fireInfoNudgeStage2(psid, sessionId, pageId),
+    'v3-info-nudge-60s'
+  )
+}
+
+async function fireInfoNudgeStage2(
+  psid: string,
+  sessionId: string,
+  pageId: string
+): Promise<void> {
+  const sess = await getActiveSession(psid, pageId)
+  if (!sess || sess.id !== sessionId) return
+  if (!sess.is_active || sess.is_paused_by_cskh) return
+  if (!missingFieldLabel(sess.state)) {
+    console.log(
+      `[V3 nudge] info-60s SKIP session=${sessionId} (đã đủ field trong lúc chờ)`
+    )
+    return
+  }
+
+  console.log(`[V3 nudge] info-60s SEND session=${sessionId}`)
+  await sendButtonTemplate(
+    psid,
+    sessionId,
+    '😊 Hoặc anh/chị có thể chủ động nhận thêm trợ giá bất cứ lúc nào từ TROLYoto khi có nhu cầu bằng cách chọn tab dưới đây',
+    [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+    'Info-nudge stage2'
+  )
+  await delay(REPLY_GAP_MS)
+  await reply(
+    psid,
+    sessionId,
+    '😊 Cảm ơn anh/chị đã tin tưởng TROLYoto.\nKhi cần thay lốp hoặc chăm xe, TROLYoto luôn sẵn sàng hỗ trợ mình ạ!'
+  )
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1899,8 +2090,12 @@ async function handleMessengerEventV3Inner(
     if (payload) {
       // Khách chọn 1 size từ list QR (sau khi AI tra theo tên xe)
       if (payload.startsWith('V3_TIRE_SIZE:')) {
-        const size = payload.replace('V3_TIRE_SIZE:', '').toUpperCase()
-        console.log(`[V3 flow] V3_TIRE_SIZE click → tire_size=${size}`)
+        const rawSize = payload.replace('V3_TIRE_SIZE:', '').toUpperCase()
+        // Chuẩn hoá — nút gợi ý OEM có thể chứa ký hiệu tốc độ (vd "225/55ZR19")
+        // mà catalog lưu dạng không speed-rating ("225/55R19"), giữ nguyên literal
+        // sẽ không khớp DB → báo hết hàng oan.
+        const size = parseExplicitTireSize(rawSize) ?? rawSize
+        console.log(`[V3 flow] V3_TIRE_SIZE click → tire_size=${size} (raw="${rawSize}")`)
         const newState: SessionState = { ...state, tire_size: size }
         await updateSession(session.id, {
           step: 'V3_GATHERING',

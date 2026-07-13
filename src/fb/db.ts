@@ -911,6 +911,24 @@ export function getWardParentCode(wardCode: string): string | null {
 }
 
 /**
+ * Lấy đầy đủ thông tin ward (tên + path tỉnh hiện hành) từ mã ward.
+ * Dùng khi khách CHỌN 1 ward cụ thể (vd click QR) — tránh phải giữ lại tên
+ * tỉnh cũ khách gõ trước đó, vốn có thể sai sau sáp nhập địa giới
+ * (vd '04252' → path "Yên Bái, Lào Cai" dù khách gõ "Yên Bái").
+ */
+export function getWardByCode(code: string): WardMatch | null {
+  const w = WARD_MAP[code]
+  if (!w) return null
+  return {
+    code,
+    name: w.name_with_type,
+    path: w.path,
+    path_with_type: w.path_with_type,
+    parent_code: w.parent_code
+  }
+}
+
+/**
  * V3 fallback: tìm các ward (xã/phường) match với text khách nhập.
  * Dùng khi province.json không khớp (vd "Thái Bình" sau khi reorg địa giới).
  *

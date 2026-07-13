@@ -62,6 +62,12 @@ export interface SessionState {
    *  Sau khi đạt ngưỡng (MAX_FAILED_ATTEMPTS) → bot reset về welcome. */
   failed_attempts?: number
 
+  // ── V3 — nudge "thiếu thông tin" (90s hỏi tiếp + 60s mời trợ giá) ──────
+  /** Đã gửi bộ nhắc "thiếu thông tin" (90s + 60s) trong session này chưa.
+   *  Chỉ gửi 1 LẦN / session — dù khách quay lại trả lời rồi lại im lặng
+   *  tiếp thì KHÔNG lặp lại kịch bản này nữa. */
+  info_nudge_sent?: boolean
+
   // ── V2 ────────────────────────────────────────────────────────────────────
   /** Số điện thoại khách để lại (nhánh "📞 Để lại SĐT") */
   phone?: string

@@ -553,7 +553,10 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
     title: `${card.brand} ${card.size}`,
     subtitle,
     ...(card.image ? { image_url: card.image } : {}),
-    default_action: { type: 'web_url' as const, url: withUtm(card.detailUrl, 'view_promo') },
+    default_action: {
+      type: 'web_url' as const,
+      url: withUtm(card.detailUrl, 'view_promo')
+    },
     buttons
   }
 }
@@ -683,8 +686,7 @@ async function showCarSizeOptions(
   // "các" chỉ xuất hiện khi có nhiều hơn 1 size.
   const hasMultiple = capped.length > 1
   const displaySizes = capped.slice(0, 3)
-  const sizeList =
-    displaySizes.join(', ') + (capped.length > 3 ? ', ...' : '')
+  const sizeList = displaySizes.join(', ') + (capped.length > 3 ? ', ...' : '')
   const text = `Dạ xe ${carName} có ${hasMultiple ? 'các ' : ''}kích cỡ sau: ${sizeList}\n\nAnh/chị xác nhận có phù hợp không ạ? 😊`
   await reply(
     psid,
@@ -1130,7 +1132,8 @@ async function handleGathering(
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
   // do AI auto-fill (có thể hallucinate); ưu tiên show car size options.
   // Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
-  const userExplicitSize = /\d{3}\s*[/\s]?\s*\d{2}\s*[A-Z]?\s*[R/]\s*\d{2}/i.test(userInput)
+  const userExplicitSize =
+    /\d{3}\s*[/\s]?\s*\d{2}\s*[A-Z]?\s*[R/]\s*\d{2}/i.test(userInput)
   const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
 
   if (
@@ -1622,7 +1625,9 @@ async function fireInfoNudgeStage1(
     return
   }
 
-  console.log(`[V3 nudge] info-90s SEND session=${sessionId} missing="${missing}"`)
+  console.log(
+    `[V3 nudge] info-90s SEND session=${sessionId} missing="${missing}"`
+  )
   const newState: SessionState = { ...sess.state, info_nudge_sent: true }
   await Promise.all([
     updateSession(sessionId, { state: newState }),
@@ -1662,15 +1667,17 @@ async function fireInfoNudgeStage2(
     psid,
     sessionId,
     '😊 Hoặc anh/chị có thể chủ động nhận thêm trợ giá bất cứ lúc nào từ TROLYoto khi có nhu cầu bằng cách chọn tab dưới đây',
-    [{ type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }],
+    [
+      { type: 'web_url', title: QR_TITLE.COMMUNITY_SUBSIDY, url: COMMUNITY_URL }
+    ],
     'Info-nudge stage2'
   )
-  await delay(REPLY_GAP_MS)
-  await reply(
-    psid,
-    sessionId,
-    '😊 Cảm ơn anh/chị đã tin tưởng TROLYoto.\nKhi cần thay lốp hoặc chăm xe, TROLYoto luôn sẵn sàng hỗ trợ mình ạ!'
-  )
+  // await delay(REPLY_GAP_MS)
+  // await reply(
+  //   psid,
+  //   sessionId,
+  //   '😊 Cảm ơn anh/chị đã tin tưởng TROLYoto.\nKhi cần thay lốp hoặc chăm xe, TROLYoto luôn sẵn sàng hỗ trợ mình ạ!'
+  // )
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1979,7 +1986,7 @@ async function handleMessengerEventV3Inner(
     let session: FbSession | null = await getActiveSession(psid, pageId)
     if (session?.is_paused_by_cskh) return
 
-    const messageText = event.message?.text?.trim() ?? ''
+    let messageText = event.message?.text?.trim() ?? ''
     const payload =
       event.message?.quick_reply?.payload ?? event.postback?.payload ?? ''
     // Image attachment: BỎ QUA sticker (like 👍, emoji, sticker FB). Đặc điểm:
@@ -2095,7 +2102,9 @@ async function handleMessengerEventV3Inner(
         // mà catalog lưu dạng không speed-rating ("225/55R19"), giữ nguyên literal
         // sẽ không khớp DB → báo hết hàng oan.
         const size = parseExplicitTireSize(rawSize) ?? rawSize
-        console.log(`[V3 flow] V3_TIRE_SIZE click → tire_size=${size} (raw="${rawSize}")`)
+        console.log(
+          `[V3 flow] V3_TIRE_SIZE click → tire_size=${size} (raw="${rawSize}")`
+        )
         const newState: SessionState = { ...state, tire_size: size }
         await updateSession(session.id, {
           step: 'V3_GATHERING',
@@ -2158,8 +2167,23 @@ async function handleMessengerEventV3Inner(
       }
       // V3 không có welcome → các QR_AI_CONSULT/QR_CSKH_CONSULT/... không phát
       // hành; nếu xuất hiện (vd tin cũ) → bỏ qua + log.
-      console.log(`[V3 flow] unhandled payload=${payload} step=${step}`)
-      return
+      //
+      // FB đôi khi thay payload quick-reply bằng metadata quảng cáo khi hội thoại
+      // đến từ Click-to-Messenger ad (vd payload={"is_csm":true,"ad_id":...} thay
+      // vì "V3_TIRE_SIZE:185/60R15") — không khớp prefix nào ta định nghĩa, nhưng
+      // `messageText` (title nút, vd "Kích thước 185/60R15") vẫn đúng nội dung
+      // khách chọn. Fallback xử lý như text thường thay vì bỏ qua im lặng — nếu
+      // không, field coi như "chưa cung cấp" và bắn nhầm nudge chờ lâu dù khách
+      // đã chọn rồi.
+      if (!messageText) {
+        // quick_reply click → event.message.text đã có title; postback thuần
+        // (không có message) thì lấy title từ postback.
+        messageText = event.postback?.title?.trim() ?? ''
+      }
+      console.log(
+        `[V3 flow] unhandled payload=${payload} step=${step} → fallback messageText="${messageText}"`
+      )
+      if (!messageText) return
     }
 
     // ── Plain text ───────────────────────────────────────────────────────

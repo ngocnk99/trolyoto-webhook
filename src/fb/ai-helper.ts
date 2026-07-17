@@ -892,7 +892,10 @@ TẦM GIÁ (max_price_vnd) — nhận diện khi khách nêu ngưỡng giá bằ
   * "tầm 1.5-2 triệu" (có khoảng) → lấy cận TRÊN → max_price_vnd=2000000.
   * Khách CHỈ nêu tầm giá, KHÔNG nêu brand/phân khúc → max_price_vnd set, brand_tier=null, selected_brands=[].
   * Khách nêu CẢ brand/phân khúc VÀ tầm giá trong cùng câu (vd "michelin dưới 2tr") → điền CẢ HAI, tầm giá là filter THÊM chứ không thay thế brand.
-  * Null/omit nếu khách không nêu tầm giá bằng số cụ thể.
+  * Null/omit nếu khách KHÔNG nêu tầm giá bằng số cụ thể TRONG TIN NHẮN HIỆN TẠI này —
+    TUYỆT ĐỐI KHÔNG tự lặp lại/echo giá trị max_price đã có trong STATE hay đã nhắc ở
+    LỊCH SỬ GẦN ĐÂY trước đó chỉ vì nó vẫn "còn liên quan". Field này CHỈ phản ánh
+    những gì khách gõ ở tin nhắn NÀY, y hệt cách selected_brands hoạt động.
 - Khách yêu cầu chuyên viên / không muốn bot → action='handoff_cskh'.
 - Khi ĐỦ 3 trường → action='fetch_results', reply ngắn ack (vd: "Dạ TROLY tìm sản phẩm phù hợp ngay ạ 😊").
 - Khi thiếu → action='continue'.

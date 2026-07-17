@@ -34,6 +34,7 @@ import {
 import {
   fetchSpGaraCards,
   resolveProvince,
+  resolveMergedProvinceAlias,
   getMinPriceForTireSize,
   fetchTireSizesByCarTags,
   fetchTireSizesByProductSearch,
@@ -730,7 +731,9 @@ async function handleBrandNameChoice(
     ...session.state,
     selected_brands: [brand],
     brand_tier: 'all', // marker đã chọn brand cụ thể; brand_tier không lọc thêm
-    wants_best_quality: false
+    wants_best_quality: false,
+    // Đổi brand SAU khi đã có kết quả → giá cũ gắn với tìm kiếm cũ, xoá.
+    ...(session.state.has_shown_results ? { max_price: null } : {})
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -759,7 +762,9 @@ async function handleBrandTierChoice(
     ...session.state,
     brand_tier: tier,
     selected_brands: tier === 'all' ? [] : [...BRAND_TIERS[tier].brands],
-    wants_best_quality: false
+    wants_best_quality: false,
+    // Đổi brand/phân khúc SAU khi đã có kết quả → giá cũ gắn với tìm kiếm cũ, xoá.
+    ...(session.state.has_shown_results ? { max_price: null } : {})
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -797,7 +802,9 @@ async function handleWardChoice(
       session.state.ward_name ??
       session.state.province_name ??
       wardCode,
-    province_name: wardInfo?.path ?? session.state.province_name
+    province_name: wardInfo?.path ?? session.state.province_name,
+    // Đổi khu vực SAU khi đã có kết quả → giá cũ gắn với tìm kiếm cũ, xoá.
+    ...(session.state.has_shown_results ? { max_price: null } : {})
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -840,6 +847,19 @@ async function handleImage(
   const state = session.state
   const newState: SessionState = { ...state }
   const ackParts: string[] = []
+
+  // Đổi size/brand qua ảnh SAU khi đã có kết quả → giá cũ gắn với tìm kiếm
+  // cũ, xoá (trước khi apply update để không bị ghi đè lẫn).
+  const imgWillResetMaxPrice =
+    !!state.has_shown_results &&
+    ((!!analysis.tire_size &&
+      analysis.confidence >= 0.5 &&
+      analysis.tire_size !== state.tire_size) ||
+      (!!analysis.brand &&
+        analysis.confidence >= 0.5 &&
+        (state.selected_brands?.length !== 1 ||
+          state.selected_brands[0] !== analysis.brand)))
+  if (imgWillResetMaxPrice) newState.max_price = null
 
   // Áp dụng kết quả nếu confidence ≥ 0.5
   if (analysis.tire_size && analysis.confidence >= 0.5) {
@@ -1058,6 +1078,7 @@ async function handleGathering(
   // tránh case AI echo lại size CŨ khi khách gõ size MỚI (vd đang có 185/70R13,
   // khách gõ 155/70R13 nhưng AI trả về 185 cũ). Regex luôn lấy đúng size vừa gõ.
   const parsedSize = parseExplicitTireSize(userInput)
+
   if (parsedSize) {
     newState.tire_size = parsedSize
   } else if (decision.updates.tire_size) {
@@ -1095,8 +1116,34 @@ async function handleGathering(
     newState.brand_tier = undefined
     newState.selected_brands = []
   }
-  if (decision.updates.max_price != null) {
+  // ── max_price ──────────────────────────────────────────────────────────
+  // Giữ nguyên khi khách đổi size/brand/khu vực TRƯỚC lần fetch đầu tiên
+  // (đang gộp chung 1 yêu cầu). XOÁ khi đổi field đó SAU khi đã có kết quả
+  // (has_shown_results) — giá cũ gắn với tìm kiếm cũ, không áp dụng ngầm cho
+  // tìm kiếm mới. "isFreshPriceUpdate" (giá AI trả KHÁC giá cũ trong state)
+  // luôn được áp dụng bất kể có đổi field khác hay không — AI đôi khi "echo"
+  // lại giá cũ y hệt dựa vào lịch sử hội thoại dù khách không nhắc lại trong
+  // tin nhắn này (vd chỉ gõ "hankook"); so sánh giá trị mới≠cũ giúp phân biệt
+  // "khách nêu giá mới thật" với "AI lặp lại giá cũ".
+  const isFreshPriceUpdate =
+    decision.updates.max_price != null &&
+    decision.updates.max_price !== state.max_price
+  const changedCoreField =
+    (!!parsedSize && parsedSize !== state.tire_size) ||
+    (!!decision.updates.tire_size &&
+      decision.updates.tire_size !== state.tire_size) ||
+    !!decision.updates.brand_tier ||
+    (!!decision.updates.selected_brands &&
+      decision.updates.selected_brands.length > 0) ||
+    (!!decision.updates.province_name &&
+      decision.updates.province_name !== state.province_name)
+  if (isFreshPriceUpdate) {
     newState.max_price = decision.updates.max_price
+  } else if (state.has_shown_results && changedCoreField) {
+    newState.max_price = null
+    console.log(
+      `[V3 gather] session=${sessionId} reset max_price (đổi size/brand/khu vực sau khi đã có kết quả)`
+    )
   }
 
   // 3. Resolve location (province + ward). Strategy:
@@ -1111,71 +1158,90 @@ async function handleGathering(
     newState.ward_code = undefined
     newState.ward_name = undefined
     const text = decision.updates.province_name
-    try {
-      const r = await resolveProvince(text)
-      if (r.code) {
-        newState.province_code = r.code
-        newState.province_name = r.name ?? text
-        console.log(
-          `[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`
-        )
 
-        // Cũng quét ward trong text — nếu khớp đúng 1 ward thuộc province → auto-pick.
-        const wardsInText = findWardsByText(text, 5).filter(
-          w => w.parent_code === r.code
-        )
-        if (wardsInText.length === 1) {
-          newState.ward_code = wardsInText[0].code
-          newState.ward_name = wardsInText[0].name
+    // Tỉnh CŨ đã sáp nhập (2025) → resolve thẳng về ward/tỉnh MỚI tương ứng,
+    // bỏ qua hoàn toàn resolveProvince + ward-fallback (tránh vòng lặp hỏi
+    // lại "Thái Bình cũ" match nhiều ward trùng tên ở tỉnh khác không liên quan).
+    const mergedAlias = resolveMergedProvinceAlias(text)
+    if (mergedAlias) {
+      newState.province_code = mergedAlias.provinceCode
+      newState.province_name = mergedAlias.provinceName
+      newState.ward_code = mergedAlias.wardCode ?? undefined
+      newState.ward_name = mergedAlias.wardName ?? undefined
+      console.log(
+        `[V3 gather] merged-province alias "${text}" → ${
+          mergedAlias.wardCode
+            ? `ward ${mergedAlias.wardCode} (${mergedAlias.path})`
+            : `province ${mergedAlias.provinceCode} (${mergedAlias.provinceName}, không có ward cụ thể)`
+        }`
+      )
+    } else {
+      try {
+        const r = await resolveProvince(text)
+        if (r.code) {
+          newState.province_code = r.code
+          newState.province_name = r.name ?? text
           console.log(
-            `[V3 gather] auto-detect ward "${wardsInText[0].name}" (${wardsInText[0].code}) within province ${r.name}`
+            `[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`
           )
-        } else if (wardsInText.length > 1) {
-          // Nhiều ward khớp → giữ province, không pick ward (sẽ fallback province khi fetch)
-          console.log(
-            `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
-          )
-        }
-      } else {
-        // Province không match → fallback ward.json search rộng
-        let wards = findWardsByText(text, 11)
-        console.log(
-          `[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`
-        )
 
-        // Nhiều ward trùng tên (thường do sáp nhập địa giới, vd "Thái Bình" cũ
-        // giờ chỉ còn là 1 xã/phường trùng tên ở NHIỀU tỉnh khác nhau) → thử
-        // bóc thêm các cụm địa danh chi tiết hơn từ TOÀN BỘ tin nhắn gốc của
-        // khách (vd "huyện Kiến Xương") — nếu 1 cụm khớp DUY NHẤT 1 ward →
-        // resolve luôn, tránh hỏi lại vòng lặp dù khách đã cho thêm chi tiết.
-        if (wards.length > 1) {
-          const tokens = extractLocationTokens(userInput)
-          for (const token of tokens) {
-            const narrowed = findWardsByText(token, 5)
-            if (narrowed.length === 1) {
-              console.log(
-                `[V3 gather] narrowed via token "${token}" → ward ${narrowed[0].code} (${narrowed[0].path})`
-              )
-              wards = narrowed
-              break
+          // Cũng quét ward trong text — nếu khớp đúng 1 ward thuộc province → auto-pick.
+          const wardsInText = findWardsByText(text, 5).filter(
+            w => w.parent_code === r.code
+          )
+          if (wardsInText.length === 1) {
+            newState.ward_code = wardsInText[0].code
+            newState.ward_name = wardsInText[0].name
+            console.log(
+              `[V3 gather] auto-detect ward "${wardsInText[0].name}" (${wardsInText[0].code}) within province ${r.name}`
+            )
+          } else if (wardsInText.length > 1) {
+            // Nhiều ward khớp → giữ province, không pick ward (sẽ fallback province khi fetch)
+            console.log(
+              `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
+            )
+          }
+        } else {
+          // Province không match → fallback ward.json search rộng
+          let wards = findWardsByText(text, 11)
+          console.log(
+            `[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`
+          )
+
+          // Nhiều ward trùng tên (thường do sáp nhập địa giới, vd "Thái Bình" cũ
+          // giờ chỉ còn là 1 xã/phường trùng tên ở NHIỀU tỉnh khác nhau) → thử
+          // bóc thêm các cụm địa danh chi tiết hơn từ TOÀN BỘ tin nhắn gốc của
+          // khách (vd "huyện Kiến Xương") — nếu 1 cụm khớp DUY NHẤT 1 ward →
+          // resolve luôn, tránh hỏi lại vòng lặp dù khách đã cho thêm chi tiết.
+          if (wards.length > 1) {
+            const tokens = extractLocationTokens(userInput)
+            for (const token of tokens) {
+              const narrowed = findWardsByText(token, 5)
+              if (narrowed.length === 1) {
+                console.log(
+                  `[V3 gather] narrowed via token "${token}" → ward ${narrowed[0].code} (${narrowed[0].path})`
+                )
+                wards = narrowed
+                break
+              }
             }
           }
-        }
 
-        if (wards.length === 1) {
-          newState.ward_code = wards[0].code
-          newState.ward_name = wards[0].name
-          newState.province_name = wards[0].path
-        } else if (wards.length > 1) {
-          newState.province_name = text
-          needWardConfirm = wards
-        } else {
-          newState.province_name = text
+          if (wards.length === 1) {
+            newState.ward_code = wards[0].code
+            newState.ward_name = wards[0].name
+            newState.province_name = wards[0].path
+          } else if (wards.length > 1) {
+            newState.province_name = text
+            needWardConfirm = wards
+          } else {
+            newState.province_name = text
+          }
         }
+      } catch (e) {
+        console.error('[V3 gather] resolveProvince:', e)
+        newState.province_name = text
       }
-    } catch (e) {
-      console.error('[V3 gather] resolveProvince:', e)
-      newState.province_name = text
     }
   }
 
@@ -1646,7 +1712,8 @@ async function showSpGaraResults(
         ...state,
         shown_garage_codes: shownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false
+        shown_national: false,
+        has_shown_results: true
       }
     })
 
@@ -1935,7 +2002,8 @@ async function showCascadeResults(
         ...state,
         shown_garage_codes: shownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false
+        shown_national: false,
+        has_shown_results: true
       }
     })
 
@@ -2100,7 +2168,8 @@ async function showMultiBrandResults(
         ...state,
         shown_garage_codes: allShownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false
+        shown_national: false,
+        has_shown_results: true
       }
     })
 

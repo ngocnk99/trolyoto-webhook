@@ -47,6 +47,11 @@ export interface SessionState {
   /** Khách muốn "tốt nhất" mà không chỉ định brand/phân khúc cụ thể — kích
    *  hoạt cascade tìm phân khúc cao nhất đang có hàng tại khu vực khách. */
   wants_best_quality?: boolean
+  /** Đã từng show kết quả SP+gara thành công trong session này chưa — dùng để
+   *  quyết định có nên reset max_price khi khách đổi size/brand/khu vực hay
+   *  không (đổi TRƯỚC lần fetch đầu tiên → giữ giá; đổi SAU khi đã có kết quả
+   *  → giá cũ được coi là gắn với tìm kiếm cũ, cần xoá). */
+  has_shown_results?: boolean
   product_ids?: string[]
   province_code?: string | null
   province_name?: string | null

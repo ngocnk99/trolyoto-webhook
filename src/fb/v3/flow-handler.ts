@@ -250,7 +250,7 @@ function summarizeBrand(state: SessionState): string {
   return brands.join(', ')
 }
 
-type FieldKey = 'size' | 'brand' | 'location'
+type FieldKey = 'size' | 'brand' | 'location' | 'price'
 
 /**
  * Parse kích cỡ lốp explicit từ text → chuẩn hoá "XXX/YYRZZ".
@@ -284,6 +284,7 @@ function buildSummaryHead(state: SessionState, updated: FieldKey[]): string {
   let field: FieldKey | null = null
   if (updated.includes('location')) field = 'location'
   else if (updated.includes('brand')) field = 'brand'
+  else if (updated.includes('price')) field = 'price'
   else if (updated.includes('size')) field = 'size'
 
   let infoLine = ''
@@ -291,6 +292,12 @@ function buildSummaryHead(state: SessionState, updated: FieldKey[]): string {
     infoLine = `kích thước: ${state.tire_size}`
   } else if (field === 'brand') {
     infoLine = `thương hiệu: ${summarizeBrand(state)}`
+  } else if (field === 'price') {
+    infoLine = state.wants_best_quality
+      ? 'yêu cầu: tốt nhất'
+      : state.max_price != null
+        ? `tầm giá: dưới ${formatCurrency(state.max_price)}`
+        : ''
   } else if (field === 'location') {
     const loc = state.ward_name
       ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
@@ -1372,11 +1379,15 @@ async function handleGathering(
     if (
       decision.updates.brand_tier ||
       (decision.updates.selected_brands &&
-        decision.updates.selected_brands.length > 0) ||
+        decision.updates.selected_brands.length > 0)
+    ) {
+      updatedFields.push('brand')
+    }
+    if (
       decision.updates.max_price != null ||
       decision.updates.wants_best_quality === true
     ) {
-      updatedFields.push('brand')
+      updatedFields.push('price')
     }
     if (decision.updates.province_name) updatedFields.push('location')
     await dispatchAndShowResults(
@@ -1694,17 +1705,11 @@ async function showSpGaraResults(
       return
     }
 
-    // Có SP → intro verification + cards
-    // ("😊 205/55R17 Michelin ở Hà Nội phải không anh/chị?\n\nTROLYoto tìm giúp mình ngay đây ạ.")
-    if (usedFallbackBrand) {
-      await reply(
-        psid,
-        sessionId,
-        `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊\nAnh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!`
-      )
-      await delay(REPLY_GAP_MS)
-    }
-    const msgFound = buildSearchIntro(state)
+    // Có SP → intro (gộp 1 tin — kèm ghi chú brand fallback nếu có, tránh 2
+    // tin liên tiếp cùng mở đầu "TROLYoto tìm/đã tìm được..." trùng ý).
+    const msgFound = usedFallbackBrand
+      ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
+      : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
     const displayLabel = usedFallbackProvince

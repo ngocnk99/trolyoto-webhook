@@ -764,12 +764,15 @@ export async function fetchSpGaraCards(params: {
     `[DB fetchSpGaraCards] params: size="${tireSize}" brand="${tireBrand}" provinceCode="${provinceCode}" wardCode="${wardCode}" limit=${limit} sortBy=${sortBy}`
   )
 
-  // 1. Lấy danh sách SP theo size+brand (rộng để có đủ gara map qua)
+  // 1. Lấy danh sách SP theo size+brand (rộng để có đủ gara map qua).
+  //    Khi có lọc theo giá (maxFinalPriceFloor) → nới cap lên 30, tránh trường
+  //    hợp top-10 mặc định toàn hàng đắt bị lọc sạch trong khi catalog vẫn còn
+  //    SP rẻ hơn ở ngoài top-10 (theo lastprice ASC).
   const { items, productadminIds } = await fetchTireCatalog({
     tireSize,
     tireBrand,
     skip: 0,
-    limit: 10
+    limit: typeof maxFinalPriceFloor === 'number' ? 30 : 10
   })
   console.log(
     `[DB fetchSpGaraCards] fetchTireCatalog → ${items.length} products (sizeKey=${toSizeKey(tireSize)})`

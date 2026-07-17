@@ -174,7 +174,7 @@ const BRAND_TIER_BLOCK =
   '• Cân bằng: Goodyear, Hankook, Yokohama\n' +
   '• Tiết kiệm: Kumho, Sailun, Laufenn'
 
-const BRAND_ASK_TEXT_FULL = `Anh/chị muốn thương hiệu nào ạ? 😊\n\n${BRAND_TIER_BLOCK}`
+const BRAND_ASK_TEXT_FULL = `Anh/chị ưu tiên thương hiệu hoặc tầm giá nào không để TROLYoto giúp mình tìm sản phẩm ưng ý ạ? 😊\n\n${BRAND_TIER_BLOCK}`
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -209,6 +209,18 @@ function brandFilterFromState(state: SessionState): string {
   return '__skip_brand__'
 }
 
+/** Field 2 (brand/phân khúc/giá/tốt nhất) coi là ĐỦ khi có BẤT KỲ tín hiệu nào:
+ *  brand cụ thể, phân khúc, tầm giá, hoặc "tốt nhất". Dùng CHUNG ở mọi nơi check
+ *  "đủ field 2" để tránh sót — KHÔNG inline lại điều kiện này ở chỗ khác. */
+function hasBrandField(state: SessionState): boolean {
+  return (
+    !!state.brand_tier ||
+    (state.selected_brands !== undefined && state.selected_brands.length > 0) ||
+    state.max_price != null ||
+    state.wants_best_quality === true
+  )
+}
+
 const TIER_LABEL_VN: Record<'premium' | 'balanced' | 'budget' | 'all', string> =
   {
     premium: 'Cao cấp',
@@ -220,6 +232,10 @@ const TIER_LABEL_VN: Record<'premium' | 'balanced' | 'budget' | 'all', string> =
 /** Tóm tắt brand cho summary message — ưu tiên tên tier nếu khớp full list. */
 function summarizeBrand(state: SessionState): string {
   const brands = state.selected_brands ?? []
+  if (brands.length === 0 && state.wants_best_quality) return 'tốt nhất'
+  if (brands.length === 0 && state.max_price != null) {
+    return `dưới ${formatCurrency(state.max_price)}`
+  }
   if (brands.length === 0) return 'Tất cả'
   const tier = state.brand_tier
   if (tier === 'premium' || tier === 'balanced' || tier === 'budget') {
@@ -288,10 +304,7 @@ function deriveLastAsked(
   state: SessionState
 ): 'size' | 'brand' | 'location' | null {
   if (!state.tire_size) return 'size'
-  if (
-    !state.brand_tier &&
-    (!state.selected_brands || state.selected_brands.length === 0)
-  ) {
+  if (!hasBrandField(state)) {
     return 'brand'
   }
   if (!state.province_code && !state.ward_code) return 'location'
@@ -312,10 +325,7 @@ function nextMissingFieldQuestion(state: SessionState): string | null {
   if (!state.tire_size) {
     return 'Anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
   }
-  if (
-    !state.brand_tier &&
-    (!state.selected_brands || state.selected_brands.length === 0)
-  ) {
+  if (!hasBrandField(state)) {
     return BRAND_ASK_TEXT_FULL
   }
   if (!state.province_code && !state.ward_code) {
@@ -719,7 +729,8 @@ async function handleBrandNameChoice(
   const newState: SessionState = {
     ...session.state,
     selected_brands: [brand],
-    brand_tier: 'all' // marker đã chọn brand cụ thể; brand_tier không lọc thêm
+    brand_tier: 'all', // marker đã chọn brand cụ thể; brand_tier không lọc thêm
+    wants_best_quality: false
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -728,7 +739,7 @@ async function handleBrandNameChoice(
   const hasSize = !!newState.tire_size
   const hasLocation = !!newState.province_code || !!newState.ward_code
   if (hasSize && hasLocation) {
-    await showSpGaraResults(psid, session.id, pageId, newState, ['brand'])
+    await dispatchAndShowResults(psid, session.id, pageId, newState, ['brand'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -747,7 +758,8 @@ async function handleBrandTierChoice(
   const newState: SessionState = {
     ...session.state,
     brand_tier: tier,
-    selected_brands: tier === 'all' ? [] : [...BRAND_TIERS[tier].brands]
+    selected_brands: tier === 'all' ? [] : [...BRAND_TIERS[tier].brands],
+    wants_best_quality: false
   }
   await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
 
@@ -756,7 +768,7 @@ async function handleBrandTierChoice(
   const hasSize = !!newState.tire_size
   const hasLocation = !!newState.province_code || !!newState.ward_code
   if (hasSize && hasLocation) {
-    await showSpGaraResults(psid, session.id, pageId, newState, ['brand'])
+    await dispatchAndShowResults(psid, session.id, pageId, newState, ['brand'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -792,19 +804,13 @@ async function handleWardChoice(
   const ackText = `Dạ ghi nhận khu vực đã chọn ạ 👍`
 
   const hasSize = !!newState.tire_size
-  const hasBrand =
-    !!newState.brand_tier ||
-    (newState.selected_brands !== undefined &&
-      newState.selected_brands.length > 0)
+  const hasBrand = hasBrandField(newState)
   if (hasSize && hasBrand) {
-    await showSpGaraResults(psid, session.id, pageId, newState, ['location'])
+    await dispatchAndShowResults(psid, session.id, pageId, newState, ['location'])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
-  const needBrand =
-    !!newState.tire_size &&
-    !newState.brand_tier &&
-    (!newState.selected_brands || newState.selected_brands.length === 0)
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
   await reply(
     psid,
     session.id,
@@ -845,6 +851,7 @@ async function handleImage(
     // Ghi đè — brand từ ảnh là thông tin mới nhất, không merge với brand cũ
     newState.selected_brands = [brandUpper]
     newState.brand_tier = 'all'
+    newState.wants_best_quality = false
     ackParts.push(`thương hiệu ${brandUpper}`)
   }
 
@@ -880,29 +887,23 @@ async function handleImage(
   const ackText = `Dạ TROLY đọc được ${ackParts.join(' và ')} từ ảnh ạ 👍`
 
   const hasSize = !!newState.tire_size
-  const hasBrand =
-    !!newState.brand_tier ||
-    (newState.selected_brands !== undefined &&
-      newState.selected_brands.length > 0)
+  const hasBrand = hasBrandField(newState)
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   if (hasSize && hasBrand && hasLocation) {
-    // Đủ 3 trường → showSpGaraResults sẽ tự compose summary theo result
+    // Đủ 3 trường → dispatchAndShowResults sẽ tự compose summary theo result
     const updatedFields: FieldKey[] = []
     if (analysis.tire_size && analysis.confidence >= 0.5)
       updatedFields.push('size')
     if (analysis.brand && analysis.confidence >= 0.5)
       updatedFields.push('brand')
-    await showSpGaraResults(psid, session.id, pageId, newState, updatedFields)
+    await dispatchAndShowResults(psid, session.id, pageId, newState, updatedFields)
     return
   }
 
   const nextQ = nextMissingFieldQuestion(newState)
   // Nếu đang hỏi brand → kèm QR options
-  const needBrand =
-    !!newState.tire_size &&
-    !newState.brand_tier &&
-    (!newState.selected_brands || newState.selected_brands.length === 0)
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
   await reply(
     psid,
     session.id,
@@ -910,6 +911,105 @@ async function handleImage(
     needBrand && nextQ ? V3_BRAND_QRS() : undefined
   )
   maybeScheduleInfoNudge(psid, session.id, pageId, newState)
+}
+
+const ADMIN_UNIT_WORD =
+  /\b(xã|phường|thị trấn|huyện|quận|thị xã|thành phố|tỉnh|tp\.?)\s+/gi
+
+/**
+ * Bóc các cụm địa danh (ward/district/province) từ text địa chỉ ĐẦY ĐỦ khách
+ * gõ (không phải bản đã AI rút gọn về "tỉnh") — dùng làm fallback khi tên tỉnh
+ * đơn lẻ (vd "Thái Bình") khớp NHIỀU ward cùng tên sau sáp nhập địa giới, mà
+ * khách đã gõ thêm chi tiết xã/huyện (vd "Kiến Xương") có thể khớp DUY NHẤT 1
+ * ward → tự resolve thay vì hỏi lại (tránh loop hỏi-đáp vô ích).
+ *
+ * Vd "Thanh Tân huyện Kiến Xương tỉnh Thái Bình cũ"
+ *   → ["Thanh Tân", "Kiến Xương", "Thái Bình"] (cắt trước mỗi từ khoá đơn vị
+ *      hành chính, bỏ "cũ", bỏ từ khoá "huyện/tỉnh/..." khỏi mỗi cụm).
+ */
+function extractLocationTokens(text: string): string[] {
+  const cleaned = text.replace(/\(?\s*cũ\s*\)?/gi, ' ').trim()
+  if (!cleaned) return []
+
+  const chunks = cleaned
+    .split(/(?=\b(?:xã|phường|thị trấn|huyện|quận|thị xã|thành phố|tỉnh)\b)/i)
+    .flatMap(p => p.split(','))
+
+  const tokens = chunks
+    .map(p => p.replace(ADMIN_UNIT_WORD, '').trim())
+    .filter(p => p.length >= 4)
+
+  return Array.from(new Set(tokens))
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  FAQ "Lốp sản xuất năm nào" — trả lời CỐ ĐỊNH + replay card gần nhất
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Câu trả lời CỐ ĐỊNH — KHÔNG để AI tự sinh (khác mọi off-topic khác). */
+const MANUFACTURE_YEAR_FAQ_TEXT =
+  '😊 Năm sản xuất có thể khác nhau giữa từng gara. Anh/chị chọn [Xem năm sản xuất] để xem chi tiết nhé.'
+
+const VIEW_MANUFACTURE_YEAR_TITLE = 'Xem năm sản xuất'
+
+/**
+ * Khách hỏi "lốp sản xuất năm nào" — KHÔNG fetch lại DB. Tìm tin card gần nhất
+ * trong conversation_log (đã lưu sẵn đầy đủ LoggedCard[]), gửi lại y nguyên,
+ * chỉ đổi nhãn nút "🎁 Xem khuyến mại" → "Xem năm sản xuất" (giữ nguyên URL —
+ * theo yêu cầu: dùng chung URL với nút khuyến mại hiện tại).
+ * Chưa có card nào trước đó (khách hỏi ngay từ đầu) → chỉ trả FAQ + tiếp tục
+ * hỏi field còn thiếu như bình thường.
+ */
+async function handleManufactureYearFaq(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<void> {
+  await reply(psid, session.id, MANUFACTURE_YEAR_FAQ_TEXT)
+
+  const lastCardsMsg = [...session.conversation_log]
+    .reverse()
+    .find(m => m.role === 'bot' && m.type === 'cards' && m.cards?.length)
+
+  if (!lastCardsMsg?.cards) {
+    const nextQ = nextMissingFieldQuestion(newState)
+    if (nextQ) {
+      await delay(REPLY_GAP_MS)
+      const needBrand = !!newState.tire_size && !hasBrandField(newState)
+      await reply(
+        psid,
+        session.id,
+        nextQ,
+        needBrand ? V3_BRAND_QRS() : undefined
+      )
+    }
+    maybeScheduleInfoNudge(psid, session.id, pageId, newState)
+    return
+  }
+
+  await delay(REPLY_GAP_MS)
+  const relabeled: GenericElement[] = lastCardsMsg.cards.map(c => ({
+    title: c.title,
+    subtitle: c.subtitle,
+    image_url: c.image_url,
+    ...(c.url
+      ? { default_action: { type: 'web_url' as const, url: c.url } }
+      : {}),
+    buttons: c.buttons?.map(
+      (b): Button => ({
+        type: 'web_url',
+        title: b.title === QR_TITLE.VIEW_PROMO ? VIEW_MANUFACTURE_YEAR_TITLE : b.title,
+        url: b.url ?? ''
+      })
+    )
+  }))
+  await sendCards(
+    psid,
+    session.id,
+    relabeled,
+    'Replay card gần nhất (đổi nhãn nút → năm SX)'
+  )
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -940,7 +1040,9 @@ async function handleGathering(
         | 'all'
         | undefined,
       selected_brands: state.selected_brands,
-      province_name: state.province_name ?? undefined
+      province_name: state.province_name ?? undefined,
+      max_price: state.max_price,
+      wants_best_quality: state.wants_best_quality
     },
     userInput,
     recentHistory: recentHistory(session.conversation_log)
@@ -966,6 +1068,7 @@ async function handleGathering(
     decision.updates.brand_tier !== null
   ) {
     newState.brand_tier = decision.updates.brand_tier
+    newState.wants_best_quality = false // brand/tier cụ thể → không còn "tốt nhất" mở
     // Map tier → selected_brands (cho fetchSpGaraCards). Nếu AI cũng nêu brands cụ thể, ưu tiên brands.
     if (
       !decision.updates.selected_brands ||
@@ -981,8 +1084,19 @@ async function handleGathering(
     decision.updates.selected_brands.length > 0
   ) {
     newState.selected_brands = decision.updates.selected_brands
+    newState.wants_best_quality = false // brand cụ thể → không còn "tốt nhất" mở
     // Nếu AI cung cấp brands cụ thể mà chưa có tier → đoán tier hoặc set 'all' để query nhận brand filter
     if (!newState.brand_tier) newState.brand_tier = 'all'
+  }
+  // "Tốt nhất" (không kèm brand/phân khúc cụ thể) → mở cascade tìm tier cao nhất
+  // đang có hàng, GHI ĐÈ brand/tier cũ (nếu có) để không bị pin vào 1 hãng cũ.
+  if (decision.updates.wants_best_quality === true) {
+    newState.wants_best_quality = true
+    newState.brand_tier = undefined
+    newState.selected_brands = []
+  }
+  if (decision.updates.max_price != null) {
+    newState.max_price = decision.updates.max_price
   }
 
   // 3. Resolve location (province + ward). Strategy:
@@ -1024,10 +1138,30 @@ async function handleGathering(
         }
       } else {
         // Province không match → fallback ward.json search rộng
-        const wards = findWardsByText(text, 11)
+        let wards = findWardsByText(text, 11)
         console.log(
           `[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`
         )
+
+        // Nhiều ward trùng tên (thường do sáp nhập địa giới, vd "Thái Bình" cũ
+        // giờ chỉ còn là 1 xã/phường trùng tên ở NHIỀU tỉnh khác nhau) → thử
+        // bóc thêm các cụm địa danh chi tiết hơn từ TOÀN BỘ tin nhắn gốc của
+        // khách (vd "huyện Kiến Xương") — nếu 1 cụm khớp DUY NHẤT 1 ward →
+        // resolve luôn, tránh hỏi lại vòng lặp dù khách đã cho thêm chi tiết.
+        if (wards.length > 1) {
+          const tokens = extractLocationTokens(userInput)
+          for (const token of tokens) {
+            const narrowed = findWardsByText(token, 5)
+            if (narrowed.length === 1) {
+              console.log(
+                `[V3 gather] narrowed via token "${token}" → ward ${narrowed[0].code} (${narrowed[0].path})`
+              )
+              wards = narrowed
+              break
+            }
+          }
+        }
+
         if (wards.length === 1) {
           newState.ward_code = wards[0].code
           newState.ward_name = wards[0].name
@@ -1053,7 +1187,9 @@ async function handleGathering(
     decision.updates.brand_tier ||
     (decision.updates.selected_brands &&
       decision.updates.selected_brands.length > 0) ||
-    decision.updates.province_name
+    decision.updates.province_name ||
+    decision.updates.max_price != null ||
+    decision.updates.wants_best_quality === true
   )
 
   if (aiExtractedAnything) {
@@ -1086,9 +1222,21 @@ async function handleGathering(
     return
   }
 
-  // Ward confirm có priority cao hơn fetch_results
+  // FAQ "lốp sản xuất năm nào" — reply cố định + replay card gần nhất, KHÔNG
+  // dùng decision.reply do AI sinh (field này bắt buộc câu chữ nguyên văn).
+  // Chỉ check off_topic_kind (KHÔNG kèm is_off_topic) — is_off_topic đã biết
+  // không đáng tin cậy 100% (AI đôi khi set off_topic_kind đúng nhưng quên set
+  // is_off_topic=true cùng lúc); off_topic_kind tự nó đã là tín hiệu đủ chắc.
+  if (decision.off_topic_kind === 'manufacture_year') {
+    await handleManufactureYearFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // Ward confirm có priority cao hơn fetch_results. KHÔNG gửi decision.reply ở
+  // đây — AI thường sinh câu kiểu "tìm sản phẩm ngay ạ" (tưởng đã đủ info),
+  // gửi trước showWardConfirmOptions sẽ tạo mâu thuẫn (vừa nói "tìm ngay" vừa
+  // hỏi lại khu vực). showWardConfirmOptions tự có message đầy đủ.
   if (needWardConfirm) {
-    await reply(psid, sessionId, decision.reply)
     await showWardConfirmOptions(
       psid,
       sessionId,
@@ -1103,10 +1251,7 @@ async function handleGathering(
   //  — bất kể AI quyết định gì. Cover case khách re-gather: gửi size mới mà
   //    state có brand+location từ trước → fetch ngay với data mới.
   const hasSize = !!newState.tire_size
-  const hasBrand =
-    !!newState.brand_tier ||
-    (newState.selected_brands !== undefined &&
-      (newState.selected_brands?.length ?? 0) > 0)
+  const hasBrand = hasBrandField(newState)
   const hasLocation = !!newState.province_code || !!newState.ward_code
 
   // Đủ 3 trường → fetch. Nhưng CHỈ fetch khi AI thực sự cập nhật field
@@ -1121,7 +1266,9 @@ async function handleGathering(
   const brandChanged = !!(
     decision.updates.brand_tier ||
     (decision.updates.selected_brands &&
-      decision.updates.selected_brands.length > 0)
+      decision.updates.selected_brands.length > 0) ||
+    decision.updates.max_price != null ||
+    decision.updates.wants_best_quality === true
   )
   const provinceChanged =
     !!decision.updates.province_name &&
@@ -1148,12 +1295,14 @@ async function handleGathering(
     if (
       decision.updates.brand_tier ||
       (decision.updates.selected_brands &&
-        decision.updates.selected_brands.length > 0)
+        decision.updates.selected_brands.length > 0) ||
+      decision.updates.max_price != null ||
+      decision.updates.wants_best_quality === true
     ) {
       updatedFields.push('brand')
     }
     if (decision.updates.province_name) updatedFields.push('location')
-    await showSpGaraResults(psid, sessionId, pageId, newState, updatedFields)
+    await dispatchAndShowResults(psid, sessionId, pageId, newState, updatedFields)
     return
   }
 
@@ -1292,10 +1441,7 @@ async function handleGathering(
   }
 
   // ── Branch 2: gửi reply AI bình thường, có thể kèm brand QRs + tier block
-  const needBrand =
-    !!newState.tire_size &&
-    !newState.brand_tier &&
-    (!newState.selected_brands || newState.selected_brands.length === 0)
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
   const askingBrand = decision.action === 'continue' && needBrand
   // Khi hỏi brand → kèm block mô tả phân khúc (nối vào sau AI reply)
   const replyText = askingBrand
@@ -1373,6 +1519,8 @@ async function showSpGaraResults(
     let usedFallbackProvince = false
     let usedFallbackBrand = false
 
+    const maxFinalPriceFloor = state.max_price ?? undefined
+
     // 1. Ưu tiên ward_code nếu có
     if (wardCode) {
       cards = await fetchSpGaraCards({
@@ -1381,7 +1529,8 @@ async function showSpGaraResults(
         provinceCode: null,
         wardCode,
         limit: 3,
-        sortBy: 'lowest_price'
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
       })
       console.log(
         `[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`
@@ -1400,7 +1549,8 @@ async function showSpGaraResults(
           provinceCode: fallbackProvinceCode,
           wardCode: null,
           limit: 3,
-          sortBy: 'lowest_price'
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
         })
         usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
         console.log(
@@ -1411,7 +1561,8 @@ async function showSpGaraResults(
 
     // 3. Vẫn không có gara (dù đã thử ward + toàn tỉnh) VÀ đang lọc theo brand
     //    cụ thể (không phải "Xem tất cả") → thử lại CÙNG khu vực nhưng bỏ lọc
-    //    brand, để khách vẫn thấy lựa chọn khác thay vì đi thẳng CSKH.
+    //    brand, để khách vẫn thấy lựa chọn khác thay vì đi thẳng CSKH. Vẫn giữ
+    //    điều kiện giá (maxFinalPriceFloor) nếu khách có nêu tầm giá.
     if (cards.length === 0 && brandFilter !== '__skip_brand__') {
       const fallbackWard = wardCode
       const fallbackProvince =
@@ -1423,7 +1574,8 @@ async function showSpGaraResults(
           provinceCode: fallbackWard ? null : fallbackProvince,
           wardCode: fallbackWard,
           limit: 3,
-          sortBy: 'lowest_price'
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
         })
         usedFallbackBrand = cards.length > 0
         console.log(
@@ -1512,6 +1664,492 @@ async function showSpGaraResults(
       'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊'
     )
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Dispatch chiến lược tìm kiếm — brand cụ thể (1 hoặc ≥4 hãng) / phân khúc /
+//  chỉ giá → GIỮ NGUYÊN showSpGaraResults hiện có (case "standard").
+//  2-3 hãng cụ thể → multi_brand (nhiều carousel). "Tốt nhất" / "Xem hết"
+//  (brand_tier='all' rỗng brand) → cascade tier×khu vực.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Thứ tự thử tier khi cascade — cao cấp trước, "all" (bỏ lọc brand) sau cùng. */
+const TIER_CASCADE_ORDER: Array<'premium' | 'balanced' | 'budget' | 'all'> = [
+  'premium',
+  'balanced',
+  'budget',
+  'all'
+]
+
+type FetchStrategy =
+  | { kind: 'standard' }
+  | { kind: 'multi_brand'; brands: string[] }
+  | { kind: 'best_quality' }
+  | { kind: 'view_all' }
+
+function resolveFetchStrategy(state: SessionState): FetchStrategy {
+  const brands = state.selected_brands ?? []
+  // brand_tier==='all' + có brand cụ thể = marker "khách chọn brand rõ ràng"
+  // (KHÁC với brand_tier==='all' + brands rỗng = "xem hết", không tiêu chí gì).
+  const isExplicitBrandPick = state.brand_tier === 'all' && brands.length > 0
+
+  if (isExplicitBrandPick && brands.length >= 2 && brands.length <= 3) {
+    return { kind: 'multi_brand', brands }
+  }
+  if (
+    state.brand_tier === 'premium' ||
+    state.brand_tier === 'balanced' ||
+    state.brand_tier === 'budget' ||
+    isExplicitBrandPick // 1 hãng, hoặc ≥4 hãng → flat top (không đổi)
+  ) {
+    return { kind: 'standard' }
+  }
+  if (state.wants_best_quality) return { kind: 'best_quality' }
+  if (state.brand_tier === 'all' && brands.length === 0) return { kind: 'view_all' }
+  // Chỉ có max_price (không brand/tier/tốt nhất nào) → standard với
+  // brandFilter='__skip_brand__' + price filter (đã threading sẵn ở trên).
+  return { kind: 'standard' }
+}
+
+/**
+ * Cascade "tốt nhất": thử LẦN LƯỢT xã→(premium→balanced→budget→all), rồi mới
+ * tới tỉnh→(premium→balanced→budget→all) — DỪNG ở tổ hợp đầu tiên có kết quả.
+ * Đúng thứ tự người dùng đã chốt: ưu tiên hết các phân khúc trong PHẠM VI xã
+ * trước khi rơi xuống phạm vi tỉnh.
+ */
+async function fetchBestQualityCascade(
+  tireSize: string,
+  state: SessionState
+): Promise<{ cards: SpGaraCard[]; usedFallbackProvince: boolean }> {
+  const wardCode = state.ward_code ?? null
+  const provinceCode =
+    state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
+  const maxFinalPriceFloor = state.max_price ?? undefined
+
+  const locations: Array<{
+    wardCode: string | null
+    provinceCode: string | null
+    isWard: boolean
+  }> = []
+  if (wardCode) locations.push({ wardCode, provinceCode: null, isWard: true })
+  if (provinceCode)
+    locations.push({ wardCode: null, provinceCode, isWard: false })
+
+  for (const loc of locations) {
+    for (const tier of TIER_CASCADE_ORDER) {
+      const brandFilter =
+        tier === 'all' ? '__skip_brand__' : BRAND_TIERS[tier].brands.join('|')
+      const cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        provinceCode: loc.provinceCode,
+        wardCode: loc.wardCode,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      console.log(
+        `[V3 cascade best] loc=${loc.isWard ? `ward:${loc.wardCode}` : `province:${loc.provinceCode}`} tier=${tier} → ${cards.length} cards`
+      )
+      if (cards.length > 0) {
+        return { cards, usedFallbackProvince: !loc.isWard && !!wardCode }
+      }
+    }
+  }
+  return { cards: [], usedFallbackProvince: false }
+}
+
+/**
+ * Cascade "xem hết": lấy 1 SP rẻ nhất từ MỖI phân khúc premium/balanced/budget
+ * đang có hàng (mỗi phân khúc tự thử xã→tỉnh riêng, KHÔNG dừng sớm như "tốt
+ * nhất" — thử đủ cả 3 phân khúc), cap tổng 3 card. Nếu cả 3 phân khúc đều
+ * trống (kể cả sau fallback tỉnh) → thử thêm 1 bước bỏ lọc brand hoàn toàn để
+ * tránh trả về tay không dù catalog vẫn còn hàng ngoài 3 phân khúc chuẩn.
+ */
+async function fetchViewAllCascade(
+  tireSize: string,
+  state: SessionState
+): Promise<{ cards: SpGaraCard[]; usedFallbackProvince: boolean }> {
+  const wardCode = state.ward_code ?? null
+  const provinceCode =
+    state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
+  const maxFinalPriceFloor = state.max_price ?? undefined
+  const tiers: Array<'premium' | 'balanced' | 'budget'> = [
+    'premium',
+    'balanced',
+    'budget'
+  ]
+
+  const collected: SpGaraCard[] = []
+  let usedFallbackProvince = false
+
+  for (const tier of tiers) {
+    const brandFilter = BRAND_TIERS[tier].brands.join('|')
+    let cards: SpGaraCard[] = []
+    if (wardCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        provinceCode: null,
+        wardCode,
+        limit: 1,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+    }
+    if (cards.length === 0 && provinceCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        provinceCode,
+        wardCode: null,
+        limit: 1,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      if (cards.length > 0 && wardCode) usedFallbackProvince = true
+    }
+    if (cards.length > 0) collected.push(cards[0])
+    console.log(
+      `[V3 cascade viewAll] tier=${tier} → ${cards.length > 0 ? 1 : 0} card`
+    )
+  }
+
+  if (collected.length === 0) {
+    let cards: SpGaraCard[] = []
+    if (wardCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: '__skip_brand__',
+        provinceCode: null,
+        wardCode,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+    }
+    if (cards.length === 0 && provinceCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: '__skip_brand__',
+        provinceCode,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      if (cards.length > 0 && wardCode) usedFallbackProvince = true
+    }
+    console.log(
+      `[V3 cascade viewAll] cả 3 phân khúc trống → all-brand fallback → ${cards.length} cards`
+    )
+    collected.push(...cards)
+  }
+
+  return { cards: collected.slice(0, 3), usedFallbackProvince }
+}
+
+/**
+ * Render kết quả cascade ("tốt nhất" / "xem hết") — tái dùng buildSpGaraCard
+ * (đã có sẵn nút "Xem loại lốp khác" trên mỗi card) + luồng no-result/CSKH
+ * giống showSpGaraResults, chỉ khác nguồn cards đến từ cascade thay vì query
+ * đơn lẻ có 3-bước fallback.
+ */
+async function showCascadeResults(
+  psid: string,
+  sessionId: string,
+  pageId: string,
+  state: SessionState,
+  updatedFields: FieldKey[],
+  kind: 'best_quality' | 'view_all'
+): Promise<void> {
+  const tireSize = state.tire_size ?? ''
+  const wardCode = state.ward_code ?? null
+  const provinceCode = state.province_code ?? null
+  const locationLabel = state.ward_name
+    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+    : (state.province_name ?? '')
+
+  if (!wardCode && !provinceCode) {
+    console.warn(`[V3 cascade] no ward/province → cskhHandoff`)
+    await cskhHandoff(
+      psid,
+      sessionId,
+      state,
+      'State thiếu ward/province khi fetch (cascade)'
+    )
+    return
+  }
+
+  try {
+    const { cards, usedFallbackProvince } =
+      kind === 'best_quality'
+        ? await fetchBestQualityCascade(tireSize, state)
+        : await fetchViewAllCascade(tireSize, state)
+
+    const head = buildSummaryHead(state, updatedFields)
+
+    if (cards.length === 0) {
+      const msg1 = head
+        ? `${head}\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊`
+        : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
+      await updateSession(sessionId, {
+        step: 'AWAITING_PHONE',
+        state: {
+          ...state,
+          cskh_reason: `Không có gara cho size ${tireSize} (cascade ${kind}) ở ${locationLabel}`
+        }
+      })
+      await reply(psid, sessionId, msg1)
+      await delay(REPLY_GAP_MS)
+      await reply(
+        psid,
+        sessionId,
+        'Hoặc để được hỗ trợ mình nhanh hơn, anh/chị vui lòng để lại số điện thoại ạ 😊'
+      )
+      return
+    }
+
+    const msgFound = buildSearchIntro(state)
+    await reply(psid, sessionId, msgFound)
+    await delay(REPLY_GAP_MS)
+    const displayLabel = usedFallbackProvince
+      ? (state.province_name ?? locationLabel)
+      : locationLabel
+    await sendCards(
+      psid,
+      sessionId,
+      cards.map(buildSpGaraCard),
+      `${cards.length} SP+gara ở ${displayLabel} (${kind}${usedFallbackProvince ? ', ward fallback' : ''})`
+    )
+
+    const shownCodes = cards
+      .map(c => c.garageCode)
+      .filter((c): c is string => !!c)
+    const minPrice = Math.min(...cards.map(c => c.finalPrice))
+
+    await updateSession(sessionId, {
+      step: 'SHOWING_RESULTS_LOCAL',
+      is_active: true,
+      state: {
+        ...state,
+        shown_garage_codes: shownCodes,
+        shown_garage_min_price: minPrice,
+        shown_national: false
+      }
+    })
+
+    scheduleTimer(
+      sessionId,
+      NUDGE_HELP_MS,
+      () => promptHelpAndBooking(psid, sessionId, pageId),
+      'v3-help-15s'
+    )
+  } catch (err) {
+    console.error('[V3 flow] showCascadeResults:', err)
+    await reply(
+      psid,
+      sessionId,
+      'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊'
+    )
+  }
+}
+
+/**
+ * Fetch riêng từng hãng (2-3 hãng khách nêu) — mỗi hãng tự có ward→province
+ * fallback riêng. Hãng nào 0 kết quả → im lặng bỏ qua (đã chốt thiết kế).
+ */
+async function fetchMultiBrandResults(
+  tireSize: string,
+  state: SessionState
+): Promise<
+  Array<{ brand: string; cards: SpGaraCard[]; usedFallbackProvince: boolean }>
+> {
+  const wardCode = state.ward_code ?? null
+  const provinceCode =
+    state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
+  const maxFinalPriceFloor = state.max_price ?? undefined
+  const brands = state.selected_brands ?? []
+
+  const results: Array<{
+    brand: string
+    cards: SpGaraCard[]
+    usedFallbackProvince: boolean
+  }> = []
+
+  for (const brand of brands) {
+    let cards: SpGaraCard[] = []
+    if (wardCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brand,
+        provinceCode: null,
+        wardCode,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+    }
+    let usedFallbackProvince = false
+    if (cards.length === 0 && provinceCode) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brand,
+        provinceCode,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      usedFallbackProvince = !!wardCode
+    }
+    console.log(`[V3 multiBrand] brand=${brand} → ${cards.length} cards`)
+    if (cards.length > 0) {
+      results.push({ brand, cards, usedFallbackProvince })
+    }
+  }
+  return results
+}
+
+/**
+ * Hiển thị kết quả đa thương hiệu (2-3 hãng) — mỗi hãng 1 dòng text tên hãng +
+ * 1 carousel riêng, gửi TUẦN TỰ (delay REPLY_GAP_MS giữa các tin để FB không
+ * đảo thứ tự). Toàn bộ hãng không có hàng nào → coi như no-result chung.
+ */
+async function showMultiBrandResults(
+  psid: string,
+  sessionId: string,
+  pageId: string,
+  state: SessionState,
+  updatedFields: FieldKey[]
+): Promise<void> {
+  const tireSize = state.tire_size ?? ''
+  const wardCode = state.ward_code ?? null
+  const provinceCode = state.province_code ?? null
+  const locationLabel = state.ward_name
+    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+    : (state.province_name ?? '')
+
+  if (!wardCode && !provinceCode) {
+    console.warn(`[V3 multiBrand] no ward/province → cskhHandoff`)
+    await cskhHandoff(
+      psid,
+      sessionId,
+      state,
+      'State thiếu ward/province khi fetch (multi-brand)'
+    )
+    return
+  }
+
+  try {
+    const results = await fetchMultiBrandResults(tireSize, state)
+    const head = buildSummaryHead(state, updatedFields)
+
+    if (results.length === 0) {
+      const msg1 = head
+        ? `${head}\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊`
+        : 'Em đã nhận thông tin ạ 🙏\n\nBên em sẽ gửi thông tin sản phẩm sớm nhất tới anh/chị 😊'
+      await updateSession(sessionId, {
+        step: 'AWAITING_PHONE',
+        state: {
+          ...state,
+          cskh_reason: `Không có gara cho size ${tireSize} ở các hãng ${(state.selected_brands ?? []).join(', ')} tại ${locationLabel}`
+        }
+      })
+      await reply(psid, sessionId, msg1)
+      await delay(REPLY_GAP_MS)
+      await reply(
+        psid,
+        sessionId,
+        'Hoặc để được hỗ trợ mình nhanh hơn, anh/chị vui lòng để lại số điện thoại ạ 😊'
+      )
+      return
+    }
+
+    const msgFound = buildSearchIntro(state)
+    await reply(psid, sessionId, msgFound)
+    await delay(REPLY_GAP_MS)
+
+    const allShownCodes: string[] = []
+    const allPrices: number[] = []
+    for (let i = 0; i < results.length; i++) {
+      const { brand, cards, usedFallbackProvince } = results[i]
+      const displayLabel = usedFallbackProvince
+        ? (state.province_name ?? locationLabel)
+        : locationLabel
+      await reply(psid, sessionId, `🔹 ${brand}`)
+      await sendCards(
+        psid,
+        sessionId,
+        cards.map(buildSpGaraCard),
+        `${cards.length} SP+gara ${brand} ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}`
+      )
+      allShownCodes.push(
+        ...cards.map(c => c.garageCode).filter((c): c is string => !!c)
+      )
+      allPrices.push(...cards.map(c => c.finalPrice))
+      if (i < results.length - 1) await delay(REPLY_GAP_MS)
+    }
+
+    const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : undefined
+
+    await updateSession(sessionId, {
+      step: 'SHOWING_RESULTS_LOCAL',
+      is_active: true,
+      state: {
+        ...state,
+        shown_garage_codes: allShownCodes,
+        shown_garage_min_price: minPrice,
+        shown_national: false
+      }
+    })
+
+    scheduleTimer(
+      sessionId,
+      NUDGE_HELP_MS,
+      () => promptHelpAndBooking(psid, sessionId, pageId),
+      'v3-help-15s'
+    )
+  } catch (err) {
+    console.error('[V3 flow] showMultiBrandResults:', err)
+    await reply(
+      psid,
+      sessionId,
+      'Xin lỗi, có lỗi khi tìm sản phẩm/đại lý. Vui lòng thử lại sau ạ 😊'
+    )
+  }
+}
+
+/**
+ * ĐIỂM VÀO DUY NHẤT để hiển thị kết quả sau khi đủ 3 field — mọi call site cũ
+ * gọi showSpGaraResults trực tiếp phải đổi sang gọi hàm này để tự động dispatch
+ * đúng chiến lược (chuẩn / đa thương hiệu / cascade tốt-nhất / cascade xem-hết).
+ */
+async function dispatchAndShowResults(
+  psid: string,
+  sessionId: string,
+  pageId: string,
+  state: SessionState,
+  updatedFields: FieldKey[]
+): Promise<void> {
+  const strategy = resolveFetchStrategy(state)
+  console.log(`[V3 dispatch] strategy=${strategy.kind}`)
+  if (strategy.kind === 'multi_brand') {
+    await showMultiBrandResults(psid, sessionId, pageId, state, updatedFields)
+    return
+  }
+  if (strategy.kind === 'best_quality' || strategy.kind === 'view_all') {
+    await showCascadeResults(
+      psid,
+      sessionId,
+      pageId,
+      state,
+      updatedFields,
+      strategy.kind
+    )
+    return
+  }
+  await showSpGaraResults(psid, sessionId, pageId, state, updatedFields)
 }
 
 async function promptHelpAndBooking(
@@ -2078,10 +2716,7 @@ async function handleMessengerEventV3Inner(
       )
       if (nextQ) {
         const needBrand =
-          !!session.state.tire_size &&
-          !session.state.brand_tier &&
-          (!session.state.selected_brands ||
-            session.state.selected_brands.length === 0)
+          !!session.state.tire_size && !hasBrandField(session.state)
         await reply(
           psid,
           session.id,

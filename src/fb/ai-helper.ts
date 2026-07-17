@@ -538,6 +538,8 @@ export interface V3GatherCollected {
   brand_tier?: V3BrandTier | null
   selected_brands?: string[]
   province_name?: string
+  max_price?: number | null
+  wants_best_quality?: boolean
 }
 
 export interface V3GatherInput {
@@ -555,6 +557,10 @@ export interface V3GatherUpdate {
   /** Tên xe khách nêu (khi chưa có size chính xác). Bot orchestrator sẽ tra
    *  DB+AI để show list size cho khách chọn — KHÔNG hỏi size dạng text. */
   car_model?: string | null
+  /** Ngưỡng giá tối đa (VND) khi khách hỏi theo tầm giá. */
+  max_price?: number | null
+  /** Khách muốn "tốt nhất" mà không chỉ định brand/phân khúc cụ thể. */
+  wants_best_quality?: boolean | null
 }
 
 export interface V3GatherDecision {
@@ -577,6 +583,9 @@ export interface V3GatherDecision {
    * cho turn này — khách đang hỏi hợp lệ, không phải "không hiểu".
    */
   is_off_topic?: boolean
+  /** Loại câu hỏi off-topic cụ thể (chỉ set khi is_off_topic=true) — dùng để
+   *  route sang xử lý riêng (vd FAQ năm sản xuất → resend card cũ đổi nhãn nút). */
+  off_topic_kind?: 'manufacture_year' | null
 }
 
 const V3_BRAND_TIER_INFO = {
@@ -608,7 +617,9 @@ export async function v3GatherTurn(
     `tire_size: ${collected.tire_size ?? '(missing)'}`,
     `brand_tier: ${collected.brand_tier ?? '(missing)'}`,
     `selected_brands: ${collected.selected_brands?.join(', ') || '(missing)'}`,
-    `province_name: ${collected.province_name ?? '(missing)'}`
+    `province_name: ${collected.province_name ?? '(missing)'}`,
+    `max_price: ${collected.max_price ?? '(missing)'}`,
+    `wants_best_quality: ${collected.wants_best_quality ?? '(missing)'}`
   ].join('\n')
 
   try {
@@ -633,6 +644,18 @@ export async function v3GatherTurn(
           .nullish()
           .describe(
             'Brand cụ thể UPPERCASE khách nhắc (vd ["MICHELIN","BRIDGESTONE"]). Null/omit hoặc [] nếu chưa có.'
+          ),
+        max_price_vnd: z
+          .number()
+          .nullish()
+          .describe(
+            'Ngưỡng giá TỐI ĐA (VND) khi khách hỏi theo TẦM GIÁ thay vì/kèm brand-phân khúc. Parse "2tr"/"2 triệu"→2000000, "2tr5"/"2.5 triệu"→2500000, "dưới 2tr"/"tối đa 2tr"/"không quá 2tr"→2000000, "tầm 1.5-2 triệu" (có khoảng)→lấy cận TRÊN=2000000. Null/omit nếu khách không nêu tầm giá bằng số cụ thể.'
+          ),
+        wants_best_quality: z
+          .boolean()
+          .nullish()
+          .describe(
+            'True khi khách hỏi loại "tốt nhất"/"chất lượng nhất"/"bền nhất"/"xịn nhất" mà KHÔNG chỉ định brand/phân khúc cụ thể nào — hệ thống sẽ tự tìm SP tốt nhất đang có sẵn. False/omit cho các trường hợp khác (kể cả khi khách nói "cao cấp" — đó là brand_tier=premium, không phải trường này).'
           ),
         province_name: z
           .string()
@@ -667,12 +690,18 @@ export async function v3GatherTurn(
           .nullish()
           .describe(
             'True khi bạn đang trả lời câu hỏi NGOÀI luồng gathering (vd "có phải bot không", "đặt online à", "địa chỉ bạn ở đâu", "TROLYoto là gì"). Khi true, orchestrator sẽ KHÔNG tính fail counter. False/omit cho các turn gathering thông thường.'
+          ),
+        off_topic_kind: z
+          .enum(['manufacture_year'])
+          .nullish()
+          .describe(
+            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu") — kể cả khi câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường. Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC. Null/omit cho mọi trường hợp khác.'
           )
       }),
       system: `Bạn là TROLY — trợ lý ô tô của TROLYoto (nền tảng mua lốp xe ở Việt Nam).
 Nhiệm vụ: thu thập 3 thông tin để báo giá lốp:
 1. tire_size (định dạng XXX/YYRZZ)
-2. brand preference: brand cụ thể HOẶC phân khúc HOẶC xem hết
+2. brand preference: brand cụ thể (1-3 hãng) HOẶC phân khúc (mô tả định tính như "hàng bình dân" cũng tính) HOẶC tầm giá (vd "dưới 2tr") HOẶC "tốt nhất"/"chất lượng nhất" (không kèm brand cụ thể) HOẶC xem hết. Brand/phân khúc và tầm giá KHÔNG loại trừ nhau — khách có thể nêu cả hai cùng lúc (vd "michelin dưới 2tr"), lúc đó điền CẢ selected_brands VÀ max_price_vnd.
 3. province (tỉnh/TP ở Việt Nam) — HỎI SAU CÙNG, sau khi đã có size + brand
 
 TỪ ĐỒNG NGHĨA "LỐP" (CỰC QUAN TRỌNG): khách gọi lốp xe bằng nhiều cách —
@@ -851,7 +880,19 @@ QUY TẮC TRÍCH XUẤT:
    * State cũ: selected_brands=['HANKOOK']. Khách gõ "Hà Nội". → SAI: ['HANKOOK']. ĐÚNG: null/[] (khách KHÔNG nói brand).
 
 - "không quan trọng" / "hãng nào cũng được" / "xem hết" → brand_tier='all'.
-- "rẻ" / "tiết kiệm" → brand_tier='budget'. "êm" / "cao cấp" → 'premium'. "cân bằng" / "vừa tiền" → 'balanced'.
+- "rẻ" / "tiết kiệm" / "hàng bình thường" / "bình dân" / "cho xe dịch vụ" / "loại phổ thông" → brand_tier='budget'.
+- "êm" / "cao cấp" → 'premium'. "cân bằng" / "vừa tiền" → 'balanced'.
+- "tốt nhất" / "chất lượng nhất" / "bền nhất" / "loại xịn nhất" KHÔNG kèm brand/phân khúc cụ thể nào
+  → wants_best_quality=true, brand_tier=null, selected_brands=[] (hệ thống tự tìm SP tốt nhất đang có).
+  (Nếu khách nói "cao cấp" → đó là brand_tier='premium', KHÔNG phải wants_best_quality.)
+
+TẦM GIÁ (max_price_vnd) — nhận diện khi khách nêu ngưỡng giá bằng số:
+  * "2tr" / "2 triệu" → 2000000. "2tr5" / "2.5 triệu" → 2500000.
+  * "dưới 2tr" / "tối đa 2tr" / "không quá 2tr" → max_price_vnd=2000000.
+  * "tầm 1.5-2 triệu" (có khoảng) → lấy cận TRÊN → max_price_vnd=2000000.
+  * Khách CHỈ nêu tầm giá, KHÔNG nêu brand/phân khúc → max_price_vnd set, brand_tier=null, selected_brands=[].
+  * Khách nêu CẢ brand/phân khúc VÀ tầm giá trong cùng câu (vd "michelin dưới 2tr") → điền CẢ HAI, tầm giá là filter THÊM chứ không thay thế brand.
+  * Null/omit nếu khách không nêu tầm giá bằng số cụ thể.
 - Khách yêu cầu chuyên viên / không muốn bot → action='handoff_cskh'.
 - Khi ĐỦ 3 trường → action='fetch_results', reply ngắn ack (vd: "Dạ TROLY tìm sản phẩm phù hợp ngay ạ 😊").
 - Khi thiếu → action='continue'.
@@ -897,6 +938,9 @@ VÍ DỤ OFF-TOPIC REPLY (chọn template đúng theo loại câu hỏi):
   Reply: "Dạ tùy vào kích cỡ + thương hiệu + gara khác nhau sẽ có các chương trình khác nhau ạ 😊\\n\\nAnh/chị cho em biết kích cỡ lốp + thương hiệu mong muốn để em tìm chương trình phù hợp nhé?"
   → Tiếp tục flow tìm 3 dữ liệu: kích cỡ + thương hiệu + khu vực.
 
+[Loại 9] Hỏi NĂM/NGÀY SẢN XUẤT lốp: "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"
+  → LUÔN set is_off_topic=true VÀ off_topic_kind='manufacture_year' CÙNG LÚC — kể cả khi câu hỏi nghe như đang hỏi tiếp về SP vừa chọn (KHÔNG coi đây là câu hỏi "on-topic" cần trả lời chi tiết, KHÔNG áp dụng quy tắc "KHÔNG bịa SP cụ thể" ở đây vì hệ thống đã có câu trả lời cố định sẵn), kể cả khi state đã đủ 3 trường size/brand/khu vực. Reply KHÔNG cần tự soạn — hệ thống dùng câu cố định riêng, bạn CHỈ CẦN set đúng 2 field trên, reply có thể để trống hoặc câu ngắn bất kỳ (sẽ bị hệ thống ghi đè).
+
 LUÔN set is_off_topic=true, action=continue cho các turn off-topic này.
 
 QUAN TRỌNG — PHÂN BIỆT "địa chỉ":
@@ -911,7 +955,7 @@ VÍ DỤ REPLY ĐÚNG (ngắn + LUÔN có câu hỏi khi còn thiếu + xưng "e
 - (Thiếu size, khách mới chào) "Dạ anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊"
 - (Khách gõ "vinfast 3" hoặc "vf6") → car_model='VinFast VF3' (hoặc 'VinFast VF6'), reply: "Dạ em tra cứu kích cỡ phù hợp ạ 😊" (KHÔNG hỏi size — hệ thống tự đưa list)
 - (Khách gõ "michelin vf6") → selected_brands=['MICHELIN'], car_model='VinFast VF6', reply: "Dạ ghi nhận Michelin ạ 👍\\n\\nEm tra cứu kích cỡ cho xe VF6 ngay ạ 😊" (KHÔNG hỏi size text)
-- (Vừa nhận size, thiếu brand) "Dạ ghi nhận 175/75R16 ạ 👍\\n\\nAnh/chị muốn thương hiệu nào ạ? 😊" (hệ thống sẽ tự đưa QR list các brand phổ biến)
+- (Vừa nhận size, thiếu brand) "Dạ ghi nhận 175/75R16 ạ 👍\\n\\nAnh/chị ưu tiên thương hiệu hoặc tầm giá nào không để TROLYoto giúp mình tìm sản phẩm ưng ý ạ? 😊" (hệ thống sẽ tự đưa QR list các brand phổ biến)
 - (Vừa nhận brand, thiếu province) "Dạ ghi nhận thương hiệu cân bằng ạ 👍\\n\\nAnh/chị ở KHU VỰC THUỘC TỈNH/THÀNH nào để em tìm đại lý gần nhất ạ?\\nVí dụ: 'Cầu Giấy, Hà Nội' hoặc 'TP. Vinh, Nghệ An' 😊"
 - (Vừa nhận province, đủ 3 trường) "Dạ em tìm sản phẩm phù hợp ngay ạ 😊" (action=fetch_results)
 
@@ -938,6 +982,9 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         selected_brands: object.selected_brands,
         province_name: object.province_name,
         car_model: object.car_model,
+        max_price_vnd: object.max_price_vnd,
+        wants_best_quality: object.wants_best_quality,
+        off_topic_kind: object.off_topic_kind,
         action: object.action
       })}`
     )
@@ -958,18 +1005,27 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         ? brandsRaw.map((b: string) => b.trim().toUpperCase()).filter(Boolean)
         : null
 
+    // max_price_vnd < 100k coi như nhiễu (vd AI hiểu nhầm "2" thành 2đ) — bỏ qua.
+    const normalizedMaxPrice =
+      typeof object.max_price_vnd === 'number' && object.max_price_vnd >= 100_000
+        ? object.max_price_vnd
+        : null
+
     return {
       updates: {
         tire_size: normalizedSize,
         brand_tier: object.brand_tier ?? null,
         selected_brands: normalizedBrands,
         province_name: object.province_name?.trim() || null,
-        car_model: object.car_model?.trim() || null
+        car_model: object.car_model?.trim() || null,
+        max_price: normalizedMaxPrice,
+        wants_best_quality: object.wants_best_quality ?? null
       },
       reply: object.reply,
       action: object.action,
       cskh_reason: object.cskh_reason ?? null,
-      is_off_topic: object.is_off_topic ?? false
+      is_off_topic: object.is_off_topic ?? false,
+      off_topic_kind: object.off_topic_kind ?? null
     }
   } catch (e: any) {
     // Log chi tiết để debug schema/network/quota issues

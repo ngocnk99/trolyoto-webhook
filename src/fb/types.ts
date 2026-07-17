@@ -40,6 +40,13 @@ export interface SessionState {
   min_price?: number               // giá thấp nhất DB trả về (dùng cho Step 5)
   brand_tier?: BrandTier
   selected_brands?: string[]
+  /** Ngưỡng giá TỐI ĐA (VND) khách nêu (vd "dưới 2 triệu") — filter THÊM vào
+   *  brand_tier/selected_brands nếu có, hoặc lọc theo giá thuần nếu khách
+   *  không nêu brand nào. */
+  max_price?: number | null
+  /** Khách muốn "tốt nhất" mà không chỉ định brand/phân khúc cụ thể — kích
+   *  hoạt cascade tìm phân khúc cao nhất đang có hàng tại khu vực khách. */
+  wants_best_quality?: boolean
   product_ids?: string[]
   province_code?: string | null
   province_name?: string | null

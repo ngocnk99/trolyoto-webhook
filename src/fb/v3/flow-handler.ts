@@ -138,7 +138,7 @@ const QR_TITLE = {
   BETTER_PRICE: '💰 Giá tốt hơn',
   CLOSER_DEALER: '📍 Đại lý gần hơn',
   VIEW_PROMO: '🎁 Xem khuyến mại',
-  VIEW_OTHER_GARAGE: 'Xem giá gara khác',
+  VIEW_OTHER_GARAGE: 'So sánh giá gara khác',
   VIEW_OTHER_PRODUCT: 'Xem loại lốp khác',
   COMMUNITY_SUBSIDY: 'Trợ giá khi cần',
   COMMUNITY_VOUCHER: 'Nhận voucher 200k',
@@ -813,7 +813,9 @@ async function handleWardChoice(
   const hasSize = !!newState.tire_size
   const hasBrand = hasBrandField(newState)
   if (hasSize && hasBrand) {
-    await dispatchAndShowResults(psid, session.id, pageId, newState, ['location'])
+    await dispatchAndShowResults(psid, session.id, pageId, newState, [
+      'location'
+    ])
     return
   }
   const nextQ = nextMissingFieldQuestion(newState)
@@ -917,7 +919,13 @@ async function handleImage(
       updatedFields.push('size')
     if (analysis.brand && analysis.confidence >= 0.5)
       updatedFields.push('brand')
-    await dispatchAndShowResults(psid, session.id, pageId, newState, updatedFields)
+    await dispatchAndShowResults(
+      psid,
+      session.id,
+      pageId,
+      newState,
+      updatedFields
+    )
     return
   }
 
@@ -1019,7 +1027,10 @@ async function handleManufactureYearFaq(
     buttons: c.buttons?.map(
       (b): Button => ({
         type: 'web_url',
-        title: b.title === QR_TITLE.VIEW_PROMO ? VIEW_MANUFACTURE_YEAR_TITLE : b.title,
+        title:
+          b.title === QR_TITLE.VIEW_PROMO
+            ? VIEW_MANUFACTURE_YEAR_TITLE
+            : b.title,
         url: b.url ?? ''
       })
     )
@@ -1368,7 +1379,13 @@ async function handleGathering(
       updatedFields.push('brand')
     }
     if (decision.updates.province_name) updatedFields.push('location')
-    await dispatchAndShowResults(psid, sessionId, pageId, newState, updatedFields)
+    await dispatchAndShowResults(
+      psid,
+      sessionId,
+      pageId,
+      newState,
+      updatedFields
+    )
     return
   }
 
@@ -1772,7 +1789,8 @@ function resolveFetchStrategy(state: SessionState): FetchStrategy {
     return { kind: 'standard' }
   }
   if (state.wants_best_quality) return { kind: 'best_quality' }
-  if (state.brand_tier === 'all' && brands.length === 0) return { kind: 'view_all' }
+  if (state.brand_tier === 'all' && brands.length === 0)
+    return { kind: 'view_all' }
   // Chỉ có max_price (không brand/tier/tốt nhất nào) → standard với
   // brandFilter='__skip_brand__' + price filter (đã threading sẵn ở trên).
   return { kind: 'standard' }

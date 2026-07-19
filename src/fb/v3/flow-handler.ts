@@ -254,13 +254,15 @@ type FieldKey = 'size' | 'brand' | 'location' | 'price'
 
 /**
  * Parse kích cỡ lốp explicit từ text → chuẩn hoá "XXX/YYRZZ".
- * Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
- * Bỏ ký hiệu tốc độ tuỳ chọn (Z/H/V/W...) đứng giữa tỷ lệ khung và "R" —
- * vd "225/55ZR19" → "225/55R19" (catalog không phân biệt theo speed rating).
- * Trả null nếu không tìm thấy pattern hợp lệ.
+ * Match "205/60R16", "205/60/16", "205/60/R16" (sep THỪA cả / lẫn R cùng lúc,
+ * vd khách gõ "215/60/r16") + có/không space. Bỏ ký hiệu tốc độ tuỳ chọn
+ * (Z/H/V/W...) đứng giữa tỷ lệ khung và "R" — vd "225/55ZR19" → "225/55R19"
+ * (catalog không phân biệt theo speed rating). Cận giữa 2 nhóm số cuối cho
+ * phép tối đa 4 ký tự phân cách (chữ/space/-//) để không khớp nhầm số ngẫu
+ * nhiên ở xa. Trả null nếu không tìm thấy pattern hợp lệ.
  */
 function parseExplicitTireSize(text: string): string | null {
-  const m = text.match(/(\d{3})\s*[/\s]?\s*(\d{2})\s*[A-Z]?\s*[R/]\s*(\d{2})/i)
+  const m = text.match(/(\d{3})\s*[/\s-]?\s*(\d{2})[\sA-Z/-]{0,4}(\d{2})/i)
   return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
 }
 
@@ -1362,9 +1364,10 @@ async function handleGathering(
   // Detect: khách EXPLICIT nêu size (vd "vf3 205/55r17") qua regex trong tin gốc.
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
   // do AI auto-fill (có thể hallucinate); ưu tiên show car size options.
-  // Match cả "205/60R16" lẫn "205/60/16" (sep thứ 2 là R hoặc /) + có/không space.
+  // Match "205/60R16", "205/60/16", "205/60/R16" (sep THỪA cả / lẫn R, vd
+  // "215/60/r16") + có/không space — đồng bộ với parseExplicitTireSize.
   const userExplicitSize =
-    /\d{3}\s*[/\s]?\s*\d{2}\s*[A-Z]?\s*[R/]\s*\d{2}/i.test(userInput)
+    /\d{3}\s*[/\s-]?\s*\d{2}[\sA-Z/-]{0,4}\d{2}/i.test(userInput)
   const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
 
   if (

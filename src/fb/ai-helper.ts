@@ -179,6 +179,146 @@ export async function verifyTireSizesForCar(
   }
 }
 
+// ── resolveCarModel ─────────────────────────────────────────────────────────
+
+export interface CarModelResolution {
+  /** Tên chuẩn "<Hãng> <Model>" (vd "Hyundai Santa Fe"), null nếu không xác định được. */
+  carModel: string | null
+  brand: string | null
+  confidence: number
+}
+
+/** Model mạnh hơn — dùng khi retry (lần đầu resolveCarModel trả sai/không xác định). */
+const STRONG_MODEL = 'gpt-4o'
+
+/**
+ * Dedicated AI call CHỈ để xác định tên xe (hãng + model) từ free text tiếng
+ * Việt của khách — TÁCH RIÊNG khỏi v3GatherTurn (prompt gom chung size+brand+
+ * giá+khu vực+xe dễ khiến model xao nhãng, hallucinate tên xe không tồn tại
+ * khi khách gõ sai chính tả / phát âm tiếng Việt không chuẩn, vd "san ta pe"
+ * (Santa Fe bị tách âm tiết) từng bị đoán nhầm thành "Toyota San").
+ *
+ * Khác với v3GatherTurn: nhận toàn bộ userInput GỐC (không phải car_model đã
+ * bị v3GatherTurn rút gọn) để giữ được ngữ cảnh gợi ý (vd "hàn quốc" giúp loại
+ * trừ hãng Nhật/Mỹ/Đức), và hỗ trợ exclude-list + escalate model khi retry.
+ *
+ * @param params.excludeModels  Các tên xe ĐÃ THỬ và bị xác nhận sai (khách gửi
+ *   tin khác thay vì chọn size) — dùng để tránh AI lặp lại đúng lỗi cũ.
+ * @param params.useStrongModel true khi đây là lần retry (đã có excludeModels)
+ *   — chuyển sang model mạnh hơn (gpt-4o) để tăng độ chính xác.
+ */
+export async function resolveCarModel(params: {
+  userInput: string
+  excludeModels?: string[]
+  useStrongModel?: boolean
+}): Promise<CarModelResolution> {
+  const { userInput, excludeModels = [], useStrongModel = false } = params
+  const modelToUse = useStrongModel ? STRONG_MODEL : MODEL
+  try {
+    const { object } = await generateObject({
+      model: openai(modelToUse) as any,
+      schema: z.object({
+        car_model: z
+          .string()
+          .nullable()
+          .describe(
+            'Tên xe chuẩn dạng "<Hãng> <Model>" (vd "Hyundai Santa Fe", "Toyota Camry"). Null nếu KHÔNG đủ tin cậy để xác định.'
+          ),
+        brand: z.string().nullable().describe('Tên hãng xe (vd "Hyundai"). Null nếu car_model null.'),
+        confidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .describe('Độ tin cậy 0-1. Dưới 0.6 → set car_model=null thay vì đoán liều.')
+      }),
+      system: `Bạn là chuyên gia nhận diện tên xe ô tô bán tại Việt Nam từ text tiếng Việt của khách hàng (chat/nhắn tin, có thể gõ tắt, sai chính tả, hoặc phiên âm tiếng Việt không chuẩn).
+
+── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM ──
+* TOYOTA:    Vios, Innova, Fortuner, Camry, Altis/Corolla Altis, Wigo, Yaris, Corolla Cross, Veloz, Avanza, Hilux, Land Cruiser, Raize, Rush
+* HYUNDAI:   Accent, Grand i10, Tucson, Santa Fe, Elantra, Kona, Creta, Stargazer, Custin, Palisade
+* KIA:       Seltos, Morning, Sonet, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
+* MAZDA:     CX-3, CX-5, CX-8, CX-30, Mazda 2, Mazda 3, Mazda 6, BT-50
+* HONDA:     City, Civic, CR-V, HR-V, Accord, Brio, Jazz, BR-V
+* FORD:      Ranger, Everest, EcoSport, Focus, Territory, Explorer, Transit
+* MITSUBISHI: Xpander, Outlander, Pajero, Triton, Attrage, Mirage, Xforce
+* SUZUKI:    Swift, Ertiga, XL7, Ciaz, Carry, Jimny
+* NISSAN:    Almera, Navara, X-Trail, Sunny, Terra, Kicks
+* CHEVROLET: Spark, Trailblazer, Colorado, Captiva, Cruze, Aveo
+* VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President
+* MG:        ZS, HS, MG5, RX5, MG3
+* SUBARU:    Forester, Outback, XV, Impreza
+* LEXUS:     RX, NX, LX, ES, GX, IS
+* BMW:       X1, X3, X5, X7, Series 3, Series 5, Series 7
+* MERCEDES:  C-Class, E-Class, S-Class, GLC, GLE, GLB, A-Class
+* AUDI:      A4, A6, A8, Q3, Q5, Q7, Q8
+* PEUGEOT:   3008, 5008, 2008
+* ISUZU:     D-Max, mu-X
+* WULING:    Mini EV, Hongguang
+
+── XỬ LÝ PHÁT ÂM/GÕ TIẾNG VIỆT KHÔNG CHUẨN (CỰC QUAN TRỌNG) ──
+Khách Việt Nam thường TÁCH ÂM TIẾT khi gõ/phát âm tên xe nước ngoài, hoặc gõ
+theo cách nghe được. Hãy GHÉP LẠI các âm tiết rời rạc và so khớp NGỮ ÂM (phát
+âm gần giống) với model trong danh sách trên, KHÔNG chỉ so khớp chuỗi ký tự
+chính xác. Ví dụ:
+* "san ta pe" / "xan ta phê" → "Santa Fe" (Hyundai)
+* "pho tu nơ" / "pho tuy nơ" → "Fortuner" (Toyota)
+* "cờ rốt xì" / "cờ rốt" → "Cross" (vd "Corolla Cross")
+* "i ét" / "i ét mười" → "i10" (Hyundai Grand i10)
+* "xe lô ra tô" → không khớp gì trong danh sách → car_model=null
+
+── GỢI Ý TỪ QUỐC GIA XUẤT XỨ (nếu khách có nhắc) ──
+* "hàn quốc"/"hàn" → ưu tiên Hyundai, Kia
+* "nhật"/"nhật bản" → ưu tiên Toyota, Honda, Mazda, Nissan, Mitsubishi, Suzuki, Isuzu, Lexus
+* "đức" → ưu tiên BMW, Mercedes, Audi
+* "mỹ" → ưu tiên Ford, Chevrolet
+* "trung quốc"/"tàu" → ưu tiên MG, Wuling
+* "việt nam" → VinFast
+
+── QUY TẮC BẮT BUỘC ──
+* Trả tên CHUẨN "<Hãng> <Model>" (vd "Hyundai Santa Fe"), KHÔNG kèm năm/đời.
+* CHỈ trả car_model khi confidence ≥ 0.6. Nếu không đủ tin cậy (model không
+  khớp ngữ âm/ngữ nghĩa với BẤT KỲ tên nào trong danh sách, kể cả sau khi thử
+  ghép âm tiết) → car_model=null, brand=null, confidence thấp. TUYỆT ĐỐI
+  KHÔNG bịa ra 1 model không tồn tại trong danh sách (vd KHÔNG được trả "Toyota San" —
+  "San" không phải model Toyota nào cả).
+* ĐẶC BIỆT THẬN TRỌNG với input NGẮN/CỘT SỐNG YẾU (vd chỉ có 1 âm tiết mơ hồ +
+  năm, như "San 2017" — KHÔNG có thêm ngữ cảnh nào khác): KHÔNG được cố "chọn
+  đại" 1 model gần giống chỉ để có câu trả lời. "San" một mình KHÔNG đủ căn cứ
+  để suy ra "Fortuner"/bất kỳ model nào — trường hợp này BẮT BUỘC car_model=null,
+  confidence thấp (vd 0.2-0.4), để hệ thống hỏi khách rõ hơn thay vì đoán liều.
+  Chỉ tự tin (≥0.6) khi có ít nhất 1 tín hiệu ngữ âm RÕ RÀNG khớp 1 model cụ
+  thể, hoặc có thêm ngữ cảnh hỗ trợ (quốc gia, hãng, đặc điểm xe).
+* Nếu có exclude-list (model đã thử và SAI) trong phần prompt bên dưới → KHÔNG
+  ĐƯỢC trả lại các model đó, bắt buộc tìm phương án KHÁC dựa trên toàn bộ ngữ
+  cảnh (kể cả gợi ý quốc gia, âm tiết gần đúng khác trong câu).`,
+      prompt: `Tin nhắn khách: "${userInput}"
+${
+  excludeModels.length > 0
+    ? `\nCác model ĐÃ THỬ và XÁC NHẬN SAI (không được trả lại): ${excludeModels.join(', ')}\nHãy suy luận LẠI từ đầu, ưu tiên các gợi ý ngữ âm/quốc gia khác trong câu để tìm ra xe ĐÚNG.`
+    : ''
+}
+
+Xác định tên xe (hãng + model).`
+    })
+
+    console.log(
+      `[AI resolveCarModel] model=${modelToUse} input="${userInput}" exclude=[${excludeModels.join(',')}] → car_model=${object.car_model} confidence=${object.confidence}`
+    )
+
+    if (!object.car_model || object.confidence < 0.6) {
+      return { carModel: null, brand: null, confidence: object.confidence }
+    }
+    return {
+      carModel: object.car_model.trim(),
+      brand: object.brand?.trim() ?? null,
+      confidence: object.confidence
+    }
+  } catch (e) {
+    console.error('[AI resolveCarModel]', e)
+    return { carModel: null, brand: null, confidence: 0 }
+  }
+}
+
 /**
  * Bóc TÊN tỉnh/thành phố (theo cách viết chuẩn tiếng Việt) từ free text địa chỉ.
  * Dùng khi heuristic match `province.json` trong db.ts không khớp (vd: user chỉ

@@ -58,7 +58,8 @@ import type {
 import {
   v3GatherTurn,
   getCarNameVariants,
-  analyzeTireImage
+  analyzeTireImage,
+  resolveCarModel
 } from '../ai-helper'
 import { scheduleTimer, cancelTimer } from '../timers'
 
@@ -1478,14 +1479,59 @@ async function handleGathering(
 
   // ── Branch 1: AI phát hiện tên xe + khách KHÔNG explicit nêu size → show options
   if (carWantsOptions && decision.updates.car_model) {
-    const carName = decision.updates.car_model
     // Bỏ qua tire_size từ AI (có thể hallucinate) + clear stale state.tire_size
     newState.tire_size = undefined
+
+    // resolveCarModel là AI call RIÊNG, dedicated chỉ để xác định tên xe —
+    // KHÔNG dùng thẳng decision.updates.car_model (v3GatherTurn gộp chung
+    // nhiều việc dễ hallucinate tên xe không tồn tại khi khách gõ sai chính
+    // tả/phát âm, vd "san ta pe" từng bị đoán nhầm "Toyota San"). Nhận
+    // NGUYÊN VĂN userInput (không phải bản đã rút gọn) để giữ ngữ cảnh gợi ý
+    // (vd "hàn quốc"). Nếu đã có lần thử trước (car_model_attempts) → coi là
+    // khách đang SỬA LẠI vì lần trước sai → loại trừ + dùng model mạnh hơn.
+    const priorAttempts = state.car_model_attempts ?? []
+    const isRetry = priorAttempts.length > 0
+    const resolution = await resolveCarModel({
+      userInput,
+      excludeModels: priorAttempts,
+      useStrongModel: isRetry
+    })
+
+    if (!resolution.carModel) {
+      // Resolver cũng không xác định được → coi như size-fail, tránh lặp lại
+      // vòng hỏi vô ích với 1 tên xe hallucinate.
+      const failCount = (newState.fail_size ?? 0) + 1
+      newState.fail_size = failCount
+      newState.car_model_attempts = []
+      await updateSession(sessionId, { state: newState })
+      console.log(
+        `[V3 gather] resolveCarModel không xác định được từ "${userInput}" (exclude=${priorAttempts.length}) → fail_size=${failCount}`
+      )
+
+      if (failCount >= MAX_FAIL_PER_STEP) {
+        await cskhHandoff(
+          psid,
+          sessionId,
+          newState,
+          `Không xác định được xe từ "${userInput}" (${failCount} lần)`
+        )
+        return
+      }
+      await reply(
+        psid,
+        sessionId,
+        `Để em hỗ trợ chính xác hơn, anh/chị gửi giúp em ảnh thành lốp xe ạ 📸\n\nHoặc nhập tay theo định dạng XXX/YYRZZ (vd: 185/60R15) cũng được ạ 😊`
+      )
+      maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
+      return
+    }
+
+    const carName = resolution.carModel
+    newState.car_model_attempts = [...priorAttempts, carName]
     await updateSession(sessionId, { state: newState })
     console.log(
-      `[V3 gather] car="${carName}" userExplicitSize=false → ignore AI size, show car options`
+      `[V3 gather] car raw="${decision.updates.car_model}" → resolveCarModel(${isRetry ? 'retry' : '1st'})="${carName}" (confidence=${resolution.confidence}) → lookupCarSizes`
     )
-    console.log(`[V3 gather] car_model="${carName}" → lookupCarSizes (DB only)`)
 
     const justGotBrand =
       (decision.updates.selected_brands &&
@@ -2835,7 +2881,13 @@ async function handleMessengerEventV3Inner(
         console.log(
           `[V3 flow] V3_TIRE_SIZE click → tire_size=${size} (raw="${rawSize}")`
         )
-        const newState: SessionState = { ...state, tire_size: size }
+        // Khách đã CHỌN 1 size từ list → coi như tên xe đã resolve đúng, xoá
+        // car_model_attempts (tránh tồn đọng ảnh hưởng lần tra xe khác sau này).
+        const newState: SessionState = {
+          ...state,
+          tire_size: size,
+          car_model_attempts: []
+        }
         await updateSession(session.id, {
           step: 'V3_GATHERING',
           state: newState

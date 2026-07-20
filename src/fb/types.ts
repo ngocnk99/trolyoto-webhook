@@ -52,6 +52,12 @@ export interface SessionState {
    *  không (đổi TRƯỚC lần fetch đầu tiên → giữ giá; đổi SAU khi đã có kết quả
    *  → giá cũ được coi là gắn với tìm kiếm cũ, cần xoá). */
   has_shown_results?: boolean
+  /** Các tên xe (đã chuẩn hoá "Hãng Model") đã thử resolveCarModel + show size
+   *  options nhưng khách KHÔNG bấm chọn size nào (gửi tin khác thay vào đó) —
+   *  coi là "đã xác nhận sai". Dùng làm exclude-list + trigger escalate model
+   *  mạnh hơn cho lần resolveCarModel kế tiếp. Reset về [] khi khách chọn 1
+   *  size (QR_TIRE_SIZE) hoặc khi resolver cũng chịu (fail hẳn). */
+  car_model_attempts?: string[]
   product_ids?: string[]
   province_code?: string | null
   province_name?: string | null

@@ -319,6 +319,109 @@ Xác định tên xe (hãng + model).`
   }
 }
 
+// ── resolveAddress ───────────────────────────────────────────────────────────
+
+export interface AddressResolution {
+  /** Tên tỉnh/TP CHUẨN, khớp 1 trong 34 tỉnh/TP hiện hành. Null nếu không xác định được. */
+  provinceName: string | null
+  /** Tên phường/xã/khu vực cụ thể khách có nhắc (nếu có) — dùng để thu hẹp
+   *  thêm xuống mức ward trong phạm vi tỉnh đã xác nhận. Null nếu không có. */
+  wardHint: string | null
+  confidence: number
+}
+
+/**
+ * Dedicated AI call CHỈ để xác định ĐỊA CHỈ (tỉnh/TP + gợi ý phường/xã) từ
+ * free text tiếng Việt của khách — TÁCH RIÊNG khỏi v3GatherTurn, cùng lý do
+ * với resolveCarModel: prompt gom chung nhiều việc dễ khiến model hiểu sai
+ * địa chỉ gõ tắt/sai chính tả/phát âm không chuẩn (vd "Phố nói a hùng yên"
+ * từng bị hiểu nhầm khớp sang ward "Yên Bái, Lào Cai" thay vì "Hưng Yên").
+ *
+ * Nhận toàn bộ userInput GỐC (không phải province_name đã bị v3GatherTurn
+ * rút gọn/hiểu sai) để giữ ngữ cảnh đầy đủ nhất.
+ */
+export async function resolveAddress(params: {
+  userInput: string
+}): Promise<AddressResolution> {
+  const { userInput } = params
+  try {
+    const { object } = await generateObject({
+      model: openai(MODEL) as any,
+      schema: z.object({
+        province_name: z
+          .string()
+          .nullable()
+          .describe(
+            'Tên tỉnh/TP CHUẨN, PHẢI khớp đúng 1 trong danh sách 34 tỉnh/TP hiện hành bên dưới. Null nếu không đủ tin cậy.'
+          ),
+        ward_hint: z
+          .string()
+          .nullable()
+          .describe(
+            'Tên phường/xã/khu vực cụ thể khách có nhắc (vd "Phố Nối", "Cầu Giấy") — chỉ set khi khách nhắc RÕ, không suy diễn. Null nếu không có.'
+          ),
+        confidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .describe('Độ tin cậy 0-1 cho province_name. Dưới 0.65 → set province_name=null thay vì đoán liều.')
+      }),
+      system: `Bạn là chuyên gia xác định ĐỊA CHỈ (tỉnh/thành phố) tại Việt Nam từ text tiếng Việt của khách hàng (chat/nhắn tin, có thể gõ tắt, thiếu dấu, sai chính tả, hoặc lỗi phát âm/gõ do gõ vội — vd "hùng yên" thay vì "Hưng Yên", "Phố nói" thay vì "Phố Nối").
+
+── DANH SÁCH 34 TỈNH/THÀNH PHỐ HIỆN HÀNH (sau sáp nhập 2025) ──
+An Giang, Bắc Ninh, Cao Bằng, Cà Mau, Cần Thơ, Gia Lai, Huế, Hà Nội, Hà Tĩnh,
+Hưng Yên, Hải Phòng, Hồ Chí Minh, Khánh Hòa, Lai Châu, Lào Cai, Lâm Đồng,
+Lạng Sơn, Nghệ An, Ninh Bình, Phú Thọ, Quảng Ngãi, Quảng Ninh, Quảng Trị,
+Sơn La, Thanh Hóa, Thái Nguyên, Tuyên Quang, Tây Ninh, Vĩnh Long, Điện Biên,
+Đà Nẵng, Đắk Lắk, Đồng Nai, Đồng Tháp
+
+province_name TRẢ VỀ PHẢI khớp CHÍNH XÁC 1 tên trong danh sách trên (không tự
+bịa tên tỉnh cũ đã sáp nhập — nếu khách nhắc tỉnh cũ như "Thái Bình"/"Hải Dương"
+thì đã có hệ thống khác xử lý riêng trước khi tới bạn, bạn KHÔNG cần lo case đó).
+
+── XỬ LÝ LỖI CHÍNH TẢ/GÕ TẮT/THIẾU DẤU (CỰC QUAN TRỌNG) ──
+Khách thường gõ thiếu dấu, sai dấu (vd "hùng" thay vì "hưng" — 2 từ khác nghĩa
+nhưng gõ nhầm dấu do gõ nhanh), viết tắt, hoặc lẫn ký tự lạ do lỗi bàn phím/
+giọng nói chuyển văn bản. Hãy đọc theo ÂM ĐIỆU GẦN ĐÚNG và ngữ cảnh tổng thể
+câu để suy ra tên tỉnh/phường xã ĐÚNG, KHÔNG chỉ so khớp ký tự chính xác.
+Ví dụ:
+* "Phố nói a hùng yên" → "hùng yên" gần âm với "Hưng Yên" (chỉ sai dấu ù/ư),
+  "Phố nói a" gần âm với "Phố Nối" (1 phường thuộc Hưng Yên) →
+  province_name="Hưng Yên", ward_hint="Phố Nối"
+* "Cầu giấy hà lội" → province_name="Hà Nội", ward_hint="Cầu Giấy"
+* Chỉ nhắc quận/huyện/phường mà KHÔNG nhắc tỉnh → suy ra tỉnh từ quận/huyện đó
+  nếu bạn CHẮC CHẮN (vd "Cầu Giấy" → Hà Nội).
+
+── QUY TẮC BẮT BUỘC ──
+* CHỈ trả province_name khi confidence ≥ 0.65. Nếu câu quá mơ hồ, không có
+  địa danh nào nhận diện được (kể cả sau khi thử đọc gần âm) → province_name=null,
+  confidence thấp — ĐỪNG đoán đại 1 tỉnh nghe "gần giống" chỉ để có câu trả lời.
+* TUYỆT ĐỐI KHÔNG chọn 1 tỉnh chỉ vì nó chứa 1 âm tiết trùng ngẫu nhiên (vd
+  KHÔNG được suy "yên" trong "hùng yên" thành tỉnh có chữ "Yên" bất kỳ như
+  "Yên Bái" — phải đọc TOÀN BỘ cụm từ theo ngữ âm, không chỉ 1 âm tiết lẻ).
+* ward_hint CHỈ set khi khách THỰC SỰ nhắc tên phường/xã/khu vực cụ thể, không
+  suy diễn khi không có căn cứ.`,
+      prompt: `Tin nhắn khách: "${userInput}"\n\nXác định tỉnh/thành phố (và phường/xã nếu có nhắc).`
+    })
+
+    console.log(
+      `[AI resolveAddress] input="${userInput}" → province_name=${object.province_name} ward_hint=${object.ward_hint} confidence=${object.confidence}`
+    )
+
+    if (!object.province_name || object.confidence < 0.65) {
+      return { provinceName: null, wardHint: null, confidence: object.confidence }
+    }
+    return {
+      provinceName: object.province_name.trim(),
+      wardHint: object.ward_hint?.trim() ?? null,
+      confidence: object.confidence
+    }
+  } catch (e) {
+    console.error('[AI resolveAddress]', e)
+    return { provinceName: null, wardHint: null, confidence: 0 }
+  }
+}
+
 /**
  * Bóc TÊN tỉnh/thành phố (theo cách viết chuẩn tiếng Việt) từ free text địa chỉ.
  * Dùng khi heuristic match `province.json` trong db.ts không khớp (vd: user chỉ

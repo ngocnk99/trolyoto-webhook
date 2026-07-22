@@ -33,7 +33,7 @@ import {
 } from '../session'
 import {
   fetchSpGaraCards,
-  resolveProvince,
+  resolveProvinceSync,
   resolveMergedProvinceAlias,
   getMinPriceForTireSize,
   fetchTireSizesByCarTags,
@@ -59,7 +59,8 @@ import {
   v3GatherTurn,
   getCarNameVariants,
   analyzeTireImage,
-  resolveCarModel
+  resolveCarModel,
+  resolveAddress
 } from '../ai-helper'
 import { scheduleTimer, cancelTimer } from '../timers'
 
@@ -1173,6 +1174,11 @@ async function handleGathering(
   //    c. Province không match → ward-only fallback (cho case "Thái Bình" sau reorg).
   //  LUÔN ghi đè khi AI trả province_name (kể cả state đã có province/ward cũ).
   let needWardConfirm: WardMatch[] | null = null
+  /** Set khi resolveAddress KHÔNG xác định được địa chỉ — trigger hỏi lại
+   *  (tối đa MAX_FAIL_PER_STEP lần) thay vì âm thầm đoán bừa theo ward khớp
+   *  ngẫu nhiên 1 từ (nguồn gốc bug "hùng yên" từng bị hiểu nhầm "Yên Bái"). */
+  let locationAskAgainMsg: string | null = null
+  let locationHandoffReason: string | null = null
   if (decision.updates.province_name) {
     // Clear location cũ — sẽ được set lại sau resolve
     newState.province_code = undefined
@@ -1180,87 +1186,160 @@ async function handleGathering(
     newState.ward_name = undefined
     const text = decision.updates.province_name
 
-    // Tỉnh CŨ đã sáp nhập (2025) → resolve thẳng về ward/tỉnh MỚI tương ứng,
-    // bỏ qua hoàn toàn resolveProvince + ward-fallback (tránh vòng lặp hỏi
-    // lại "Thái Bình cũ" match nhiều ward trùng tên ở tỉnh khác không liên quan).
-    const mergedAlias = resolveMergedProvinceAlias(text)
-    if (mergedAlias) {
-      newState.province_code = mergedAlias.provinceCode
-      newState.province_name = mergedAlias.provinceName
-      newState.ward_code = mergedAlias.wardCode ?? undefined
-      newState.ward_name = mergedAlias.wardName ?? undefined
-      console.log(
-        `[V3 gather] merged-province alias "${text}" → ${
-          mergedAlias.wardCode
-            ? `ward ${mergedAlias.wardCode} (${mergedAlias.path})`
-            : `province ${mergedAlias.provinceCode} (${mergedAlias.provinceName}, không có ward cụ thể)`
-        }`
-      )
-    } else {
-      try {
-        const r = await resolveProvince(text)
-        if (r.code) {
-          newState.province_code = r.code
-          newState.province_name = r.name ?? text
-          console.log(
-            `[V3 gather] resolveProvince("${text}") → province=${r.code} ${r.name}`
-          )
+    // Thử match deterministic (merged-alias + sync) trên USERINPUT GỐC TRƯỚC —
+    // đáng tin hơn "text" (province_name do v3GatherTurn tự trích xuất/tóm tắt
+    // TỪ userInput — CÓ THỂ đã tự đoán/ảo giác sai ngay trong bước extract, vd
+    // "hùng yên" từng bị v3GatherTurn tự trả về "Yên Bái", khiến sync-match
+    // trên "text" "khớp đúng" 1 tỉnh cũ HỢP LỆ nhưng SAI theo alias, chặn mất
+    // cơ hội gọi resolveAddress bên dưới). "text" chỉ dùng làm phương án dự
+    // phòng cho case nhiều lượt chat (địa chỉ nhắc ở lượt trước, userInput
+    // lượt này không lặp lại, vd khách chỉ trả lời "ok" sau khi đã cho địa chỉ).
+    const tryResolveDeterministic = (candidate: string): boolean => {
+      const alias = resolveMergedProvinceAlias(candidate)
+      if (alias) {
+        newState.province_code = alias.provinceCode
+        newState.province_name = alias.provinceName
+        newState.ward_code = alias.wardCode ?? undefined
+        newState.ward_name = alias.wardName ?? undefined
+        newState.fail_location = 0
+        console.log(
+          `[V3 gather] merged-province alias "${candidate}" → ${
+            alias.wardCode
+              ? `ward ${alias.wardCode} (${alias.path})`
+              : `province ${alias.provinceCode} (${alias.provinceName}, không có ward cụ thể)`
+          }`
+        )
+        return true
+      }
+      const r = resolveProvinceSync(candidate)
+      if (r.code) {
+        newState.province_code = r.code
+        newState.province_name = r.name ?? candidate
+        newState.fail_location = 0
+        console.log(
+          `[V3 gather] resolveProvinceSync("${candidate}") → province=${r.code} ${r.name}`
+        )
 
-          // Cũng quét ward trong text — nếu khớp đúng 1 ward thuộc province → auto-pick.
-          const wardsInText = findWardsByText(text, 5).filter(
-            w => w.parent_code === r.code
+        // Cũng quét ward trong candidate — nếu khớp đúng 1 ward thuộc province → auto-pick.
+        const wardsInText = findWardsByText(candidate, 5).filter(
+          w => w.parent_code === r.code
+        )
+        if (wardsInText.length === 1) {
+          newState.ward_code = wardsInText[0].code
+          newState.ward_name = wardsInText[0].name
+          console.log(
+            `[V3 gather] auto-detect ward "${wardsInText[0].name}" (${wardsInText[0].code}) within province ${r.name}`
           )
-          if (wardsInText.length === 1) {
-            newState.ward_code = wardsInText[0].code
-            newState.ward_name = wardsInText[0].name
+        } else if (wardsInText.length > 1) {
+          // Nhiều ward khớp → giữ province, không pick ward (sẽ fallback province khi fetch)
+          console.log(
+            `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
+          )
+        }
+        return true
+      }
+      return false
+    }
+
+    // CHỈ thử deterministic trên userInput — KHÔNG thử lại trên "text" (province_name
+    // do v3GatherTurn tự trích xuất). Lý do: "text" luôn là 1 tên tỉnh CHUẨN/hợp lệ
+    // khi non-null (kể cả khi bị ảo giác), nên resolveProvinceSync(text) hầu như
+    // LUÔN "khớp" — vô hiệu hoá hoàn toàn lớp bảo vệ resolveAddress bên dưới. Case
+    // thực tế gặp phải: input "em o cho asdkjqwelkj... khong biet ghi the nao"
+    // (không hề nhắc địa danh) vẫn khiến v3GatherTurn tự bịa ra "Hà Nội" — một tên
+    // tỉnh hợp lệ — nên sync-match trên "text" sẽ luôn "thành công" dù là bịa. Coi
+    // "text" chỉ là TÍN HIỆU (khách CÓ nhắc gì đó về khu vực), không phải dữ liệu
+    // đáng tin — giống hệt cách resolveCarModel chỉ dùng userInput gốc, không dùng
+    // car_model đã bị v3GatherTurn rút gọn.
+    const resolvedDeterministically = tryResolveDeterministic(userInput)
+
+    if (!resolvedDeterministically) {
+      try {
+        // Deterministic trên userInput fail → resolveAddress dedicated AI call,
+        // nhận NGUYÊN VĂN userInput để giữ ngữ cảnh đầy đủ nhất, có confidence
+        // threshold rõ ràng thay vì đoán bừa qua fuzzy substring match hay tin
+        // tưởng mù quáng vào "text" (vd "hùng yên" từng bị match nhầm ward
+        // "Yên Bái" chỉ vì trùng 1 âm tiết "yên").
+        const addressResolution = await resolveAddress({ userInput })
+        let resolvedOk = false
+
+        if (addressResolution.provinceName) {
+          const reResolved = resolveProvinceSync(
+            addressResolution.provinceName
+          )
+          if (reResolved.code) {
+            newState.province_code = reResolved.code
+            newState.province_name =
+              reResolved.name ?? addressResolution.provinceName
+            newState.fail_location = 0
+            resolvedOk = true
             console.log(
-              `[V3 gather] auto-detect ward "${wardsInText[0].name}" (${wardsInText[0].code}) within province ${r.name}`
+              `[V3 gather] resolveAddress("${userInput}") → province=${reResolved.code} ${reResolved.name} (confidence=${addressResolution.confidence}) ward_hint="${addressResolution.wardHint ?? ''}"`
             )
-          } else if (wardsInText.length > 1) {
-            // Nhiều ward khớp → giữ province, không pick ward (sẽ fallback province khi fetch)
-            console.log(
-              `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
+
+            if (addressResolution.wardHint) {
+              const wardsInHint = findWardsByText(
+                addressResolution.wardHint,
+                5
+              ).filter(w => w.parent_code === reResolved.code)
+              if (wardsInHint.length === 1) {
+                newState.ward_code = wardsInHint[0].code
+                newState.ward_name = wardsInHint[0].name
+                console.log(
+                  `[V3 gather] ward_hint "${addressResolution.wardHint}" → ward ${wardsInHint[0].code} (${wardsInHint[0].name})`
+                )
+              }
+            }
+          } else {
+            console.warn(
+              `[V3 gather] resolveAddress trả province_name="${addressResolution.provinceName}" không khớp province.json hiện hành`
             )
           }
-        } else {
-          // Province không match → fallback ward.json search rộng
-          let wards = findWardsByText(text, 11)
-          console.log(
-            `[V3 gather] province resolve fail "${text}" → ward fallback ${wards.length} matches`
-          )
+        }
 
-          // Nhiều ward trùng tên (thường do sáp nhập địa giới, vd "Thái Bình" cũ
-          // giờ chỉ còn là 1 xã/phường trùng tên ở NHIỀU tỉnh khác nhau) → thử
-          // bóc thêm các cụm địa danh chi tiết hơn từ TOÀN BỘ tin nhắn gốc của
-          // khách (vd "huyện Kiến Xương") — nếu 1 cụm khớp DUY NHẤT 1 ward →
-          // resolve luôn, tránh hỏi lại vòng lặp dù khách đã cho thêm chi tiết.
+        if (!resolvedOk) {
+          // Nhiều ward TRÙNG TÊN vẫn còn giá trị disambiguate an toàn (khách
+          // TỰ xác nhận qua QR, không phải bot âm thầm đoán) — giữ lại
+          // nhánh này. CHỈ bỏ nhánh "1 match → auto-accept" (nguồn gốc bug).
+          const tokens = extractLocationTokens(userInput)
+          let wards = findWardsByText(text, 11)
           if (wards.length > 1) {
-            const tokens = extractLocationTokens(userInput)
             for (const token of tokens) {
               const narrowed = findWardsByText(token, 5)
               if (narrowed.length === 1) {
-                console.log(
-                  `[V3 gather] narrowed via token "${token}" → ward ${narrowed[0].code} (${narrowed[0].path})`
-                )
                 wards = narrowed
                 break
               }
             }
           }
-
-          if (wards.length === 1) {
-            newState.ward_code = wards[0].code
-            newState.ward_name = wards[0].name
-            newState.province_name = wards[0].path
-          } else if (wards.length > 1) {
+          if (wards.length > 1) {
             newState.province_name = text
             needWardConfirm = wards
+            resolvedOk = true
+            console.log(
+              `[V3 gather] resolveAddress fail → ward fallback ${wards.length} candidates, hỏi khách xác nhận`
+            )
+          }
+        }
+
+        if (!resolvedOk) {
+          const failCount = (newState.fail_location ?? 0) + 1
+          newState.fail_location = failCount
+          // Ghi lại userInput GỐC (không phải "text" có thể đã bị v3GatherTurn
+          // ảo giác) — để CSKH nhận handoff thấy đúng khách đã gõ gì.
+          newState.province_name = userInput
+          console.log(
+            `[V3 gather] resolveAddress không xác định được từ "${userInput}" → fail_location=${failCount}`
+          )
+          if (failCount >= MAX_FAIL_PER_STEP) {
+            locationHandoffReason = `Không xác định được khu vực từ "${userInput}" (${failCount} lần)`
           } else {
-            newState.province_name = text
+            locationAskAgainMsg =
+              'Anh/chị giúp em xác nhận lại KHU VỰC THUỘC TỈNH/THÀNH nào ạ?\nVí dụ: "Cầu Giấy, Hà Nội" hoặc "TP. Vinh, Nghệ An" 😊'
           }
         }
       } catch (e) {
-        console.error('[V3 gather] resolveProvince:', e)
+        console.error('[V3 gather] resolveAddress:', e)
         newState.province_name = text
       }
     }
@@ -1280,10 +1359,16 @@ async function handleGathering(
   )
 
   if (aiExtractedAnything) {
-    // Khách cung cấp info hữu ích → reset fail counters
+    // Khách cung cấp info hữu ích → reset fail counters. KHÔNG reset
+    // fail_location nếu resolveAddress vừa xác định fail lượt này (đã tự
+    // tăng fail_location ở bước 3) — customer CÓ gõ gì đó (aiExtractedAnything
+    // vẫn true vì province_name có text) nhưng nội dung không xác định được
+    // địa chỉ, nên phải giữ đúng số lần fail để giới hạn hỏi lại.
     newState.fail_size = 0
     newState.fail_brand = 0
-    newState.fail_location = 0
+    if (!locationAskAgainMsg && !locationHandoffReason) {
+      newState.fail_location = 0
+    }
   }
 
   // 4b. Persist state
@@ -1316,6 +1401,21 @@ async function handleGathering(
   // is_off_topic=true cùng lúc); off_topic_kind tự nó đã là tín hiệu đủ chắc.
   if (decision.off_topic_kind === 'manufacture_year') {
     await handleManufactureYearFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // resolveAddress không xác định được địa chỉ → handoff CSKH (đã đạt giới
+  // hạn hỏi lại) hoặc hỏi lại (chưa đạt). Priority cao hơn fetch_results/ward
+  // confirm — chưa có địa chỉ hợp lệ thì chưa thể làm gì tiếp.
+  if (locationHandoffReason) {
+    await reply(psid, sessionId, decision.reply)
+    await cskhHandoff(psid, sessionId, newState, locationHandoffReason)
+    return
+  }
+  if (locationAskAgainMsg) {
+    // State (kèm fail_location đã tăng) đã persist ở bước 4b phía trên.
+    await reply(psid, sessionId, locationAskAgainMsg)
+    maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
     return
   }
 

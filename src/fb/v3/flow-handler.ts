@@ -1150,13 +1150,20 @@ async function handleGathering(
   const isFreshPriceUpdate =
     decision.updates.max_price != null &&
     decision.updates.max_price !== state.max_price
+  // So sánh với state CŨ ở MỌI field (kể cả brand) — tránh AI echo lại đúng
+  // brand đã có (vd "Cảm ơn" sau khi có kết quả → v3GatherTurn lặp lại
+  // selected_brands cũ y hệt) khiến changedCoreField sai thành true, xoá oan
+  // max_price khách vừa set dù chẳng có gì thực sự thay đổi.
   const changedCoreField =
     (!!parsedSize && parsedSize !== state.tire_size) ||
     (!!decision.updates.tire_size &&
       decision.updates.tire_size !== state.tire_size) ||
-    !!decision.updates.brand_tier ||
+    (!!decision.updates.brand_tier &&
+      decision.updates.brand_tier !== state.brand_tier) ||
     (!!decision.updates.selected_brands &&
-      decision.updates.selected_brands.length > 0) ||
+      decision.updates.selected_brands.length > 0 &&
+      JSON.stringify(decision.updates.selected_brands) !==
+        JSON.stringify(state.selected_brands)) ||
     (!!decision.updates.province_name &&
       decision.updates.province_name !== state.province_name)
   if (isFreshPriceUpdate) {
@@ -1179,7 +1186,17 @@ async function handleGathering(
    *  ngẫu nhiên 1 từ (nguồn gốc bug "hùng yên" từng bị hiểu nhầm "Yên Bái"). */
   let locationAskAgainMsg: string | null = null
   let locationHandoffReason: string | null = null
-  if (decision.updates.province_name) {
+  // CHỈ re-resolve khi province_name THỰC SỰ khác state cũ đã resolve — tránh
+  // v3GatherTurn echo lại giá trị cũ (vd khách nhắn "cảm ơn"/hỏi off-topic sau
+  // khi đã có kết quả → AI vẫn lặp lại province_name="Hà Nội" y hệt) khiến bot
+  // XOÁ province_code/ward_code đã resolve đúng rồi RE-RESOLVE lại từ đầu chỉ
+  // bằng tên tỉnh trần trụi — với tỉnh lớn kiểu "Hà Nội"/"Hồ Chí Minh" (rất
+  // nhiều ward có path chứa sẵn tên tỉnh làm substring) sẽ vô tình khớp hàng
+  // chục ward trùng tên → hỏi lại khách vô lý dù đã xác nhận khu vực từ trước.
+  const isFreshLocationUpdate =
+    !!decision.updates.province_name &&
+    decision.updates.province_name !== state.province_name
+  if (isFreshLocationUpdate && decision.updates.province_name) {
     // Clear location cũ — sẽ được set lại sau resolve
     newState.province_code = undefined
     newState.ward_code = undefined
@@ -1384,7 +1401,23 @@ async function handleGathering(
   }
 
   if (decision.action === 'handoff_cskh') {
-    await reply(psid, sessionId, decision.reply)
+    // Đã từng hỏi SĐT rồi (cskhHandoff trước đó đặt step=AWAITING_PHONE) mà
+    // khách trả lời tiếp vẫn không có SĐT + AI lại quyết định handoff lần nữa
+    // → khách đang từ chối/không có SĐT để cho (vd "không có số điện thoại
+    // gara"), KHÔNG hỏi lại vòng 2 (tránh lặp lại y nguyên câu xin lỗi mãi) —
+    // đóng luồng luôn qua handlePhoneInput (đã có sẵn nhánh "không có SĐT").
+    if (session.step === 'AWAITING_PHONE') {
+      console.log(
+        `[V3 gather] session=${sessionId} handoff_cskh lặp lại ở AWAITING_PHONE → đóng luồng (handlePhoneInput)`
+      )
+      await handlePhoneInput(psid, sessionId, userInput, newState)
+      return
+    }
+    // KHÔNG gửi decision.reply ở đây — mọi call site khác của cskhHandoff
+    // trong file này đều gọi trực tiếp, không kèm reply riêng (cskhHandoff tự
+    // có message rõ ràng, nhất quán). Từng có bug: decision.reply do AI sinh
+    // đôi khi nhầm lẫn hỏi "SĐT của gara" thay vì SĐT khách, kèm dư thừa vì
+    // cskhHandoff NGAY SAU ĐÓ cũng hỏi SĐT lần nữa → 3 tin nhắn liên tiếp.
     await cskhHandoff(
       psid,
       sessionId,
@@ -1408,7 +1441,8 @@ async function handleGathering(
   // hạn hỏi lại) hoặc hỏi lại (chưa đạt). Priority cao hơn fetch_results/ward
   // confirm — chưa có địa chỉ hợp lệ thì chưa thể làm gì tiếp.
   if (locationHandoffReason) {
-    await reply(psid, sessionId, decision.reply)
+    // KHÔNG gửi decision.reply riêng — giống mọi cskhHandoff call site khác,
+    // tránh dư thừa (cskhHandoff tự có message rõ ràng "Em đã nhận thông tin...").
     await cskhHandoff(psid, sessionId, newState, locationHandoffReason)
     return
   }
@@ -1450,13 +1484,21 @@ async function handleGathering(
     (!!parsedSize && parsedSize !== state.tire_size) ||
     (!!decision.updates.tire_size &&
       decision.updates.tire_size !== state.tire_size)
-  const brandChanged = !!(
-    decision.updates.brand_tier ||
-    (decision.updates.selected_brands &&
-      decision.updates.selected_brands.length > 0) ||
-    decision.updates.max_price != null ||
-    decision.updates.wants_best_quality === true
-  )
+  // So sánh với state CŨ (giống sizeChanged/provinceChanged) — tránh AI echo
+  // lại đúng brand/giá đã có (vd "Cảm ơn" sau khi đã có kết quả → v3GatherTurn
+  // vẫn lặp lại selected_brands=['GOODYEAR'] y hệt cũ) khiến relevantFieldUpdated
+  // sai thành true, tự động re-fetch + gửi lại y nguyên card sản phẩm vô ích.
+  const brandChanged =
+    (!!decision.updates.brand_tier &&
+      decision.updates.brand_tier !== state.brand_tier) ||
+    (!!decision.updates.selected_brands &&
+      decision.updates.selected_brands.length > 0 &&
+      JSON.stringify(decision.updates.selected_brands) !==
+        JSON.stringify(state.selected_brands)) ||
+    (decision.updates.max_price != null &&
+      decision.updates.max_price !== state.max_price) ||
+    (decision.updates.wants_best_quality === true &&
+      state.wants_best_quality !== true)
   const provinceChanged =
     !!decision.updates.province_name &&
     decision.updates.province_name !== state.province_name

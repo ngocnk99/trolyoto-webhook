@@ -113,5 +113,5 @@ webhook.controller.ts: processEvents()
 
 - `province.json` — 34 tỉnh/TP hiện hành (sau sáp nhập 2025/2026).
 - `ward.json` — toàn bộ phường/xã, mỗi entry có `parent_code` (tỉnh) + `path`/`path_with_type` (chuỗi đầy đủ "Phường X, Tỉnh Y" — **path LUÔN chứa tên tỉnh làm substring**, đây là lý do fuzzy-search ward theo tên tỉnh trần trụi sẽ khớp toàn bộ ward trong tỉnh đó, xem `follow.md` mục 3 ⚠️).
-- `MERGED_PROVINCE_ALIASES` (`db.ts`) — 29 tỉnh cũ đã sáp nhập → tỉnh mới + ward đại diện (đồng bộ với `src/libs/chat/db/locationResolve.ts` bên Web, cùng tên hằng số/hàm).
+- `MERGED_PROVINCE_ALIASES` (`db.ts`) — 29 tỉnh cũ đã sáp nhập + ~50 thành phố/thị xã cũ (tỉnh lỵ, nằm trong 1 tỉnh cũ, tên KHÁC tên tỉnh — vd "Vĩnh Yên" khác "Vĩnh Phúc") → tỉnh mới + ward đại diện. Danh sách city-level tra từ `old_data.txt` (86 dòng, do user cung cấp), verify từng ward.json (không suy đoán). Đồng bộ với `src/libs/chat/db/locationResolve.ts` + `src/libs/chat/tireDb.ts` bên Web (cùng tên hằng số/hàm, `tireDb.ts` giữ bản `resolveProvinceCodeFromText`/`stripVn` riêng — nhớ sửa CẢ 2 file Web khi đổi).
 - Bảng Supabase chính: `fb_messenger_sessions` (session + state + conversation_log dạng JSON array), sản phẩm/gara nằm ở schema chung project Next.js (query qua `db.ts`/`tireDb.ts`).

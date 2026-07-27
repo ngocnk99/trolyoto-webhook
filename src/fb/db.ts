@@ -860,7 +860,14 @@ export function resolveProvinceSync(text: string): ProvinceResolution {
 
     for (const c of candidates) {
       if (!c || c.length < 2) continue
-      if (haystack.includes(c) || c.includes(haystack)) {
+      // c.includes(haystack): text khách gõ NGẮN HƠN tên tỉnh -> chỉ an toàn
+      // khi haystack đủ dài, tránh 1 tên NGẮN, KHÔNG ĐỔI tự nó (vd "Vinh" -
+      // TP Vinh, Nghệ An, không sáp nhập) bị coi là tiền tố mập mờ khớp NHẦM
+      // vào tên tỉnh khác dài hơn chứa nó (vd "Vĩnh Long" chứa "vinh" như 1
+      // tiền tố, dù không liên quan).
+      const isMatch =
+        haystack.includes(c) || (haystack.length >= 5 && c.includes(haystack))
+      if (isMatch) {
         const score = Math.min(c.length, haystack.length)
         if (!best || score > best.score) {
           best = { code, name: p.name, score }
@@ -1018,7 +1025,74 @@ const MERGED_PROVINCE_ALIASES: Record<
   'soc trang': { provinceCode: '92', provinceName: 'Cần Thơ', wardCode: '31507', wardName: 'Phường Sóc Trăng', path: 'Sóc Trăng, Cần Thơ' },
   'hau giang': { provinceCode: '92', provinceName: 'Cần Thơ', wardCode: null, wardName: null, path: null },
   'bac lieu': { provinceCode: '96', provinceName: 'Cà Mau', wardCode: '31825', wardName: 'Phường Bạc Liêu', path: 'Bạc Liêu, Cà Mau' },
-  'kien giang': { provinceCode: '91', provinceName: 'An Giang', wardCode: null, wardName: null, path: null }
+  'kien giang': { provinceCode: '91', provinceName: 'An Giang', wardCode: null, wardName: null, path: null },
+
+  // ── Tên THÀNH PHỐ/THỊ XÃ cũ (không phải tên tỉnh) ─────────────────────────
+  // Khác nhóm trên: đây là tên tỉnh lỵ/thành phố cũ NẰM TRONG 1 tỉnh cũ (có
+  // thể tỉnh đó đã đổi tên hoặc giữ nguyên) - khách hay chỉ gõ tên thành phố,
+  // KHÔNG kèm tên tỉnh (vd "Vĩnh Yên" thay vì "Vĩnh Phúc"). Loại tên này KHÔNG
+  // khớp được `resolveProvinceSync` (không phải 1 trong 34 tỉnh hiện hành) và
+  // cũng KHÔNG khớp nhóm alias tên-tỉnh phía trên -> từng bị rơi xuống AI
+  // `resolveAddress`, AI đoán liều theo âm gần giống 1 tỉnh HIỆN HÀNH bất kỳ
+  // (vd "Vĩnh Yên" bị đoán nhầm thành "Vĩnh Long" - chỉ vì cùng bắt đầu bằng
+  // "Vĩnh", trong khi Vĩnh Yên thực chất thuộc Phú Thọ). Toàn bộ danh sách +
+  // wardCode dưới đây verify trực tiếp với ward.json (không suy đoán) từ bảng
+  // tra cứu tỉnh/thành cũ người dùng cung cấp (xem old_data.txt).
+  'long xuyen': { provinceCode: '91', provinceName: 'An Giang', wardCode: '30307', wardName: 'Phường Long Xuyên', path: 'Long Xuyên, An Giang' },
+  'chau doc': { provinceCode: '91', provinceName: 'An Giang', wardCode: '30316', wardName: 'Phường Châu Đốc', path: 'Châu Đốc, An Giang' },
+  // Đã có key gộp 'ba ria vung tau' phía trên, nhưng chỉ khớp khi text KHÔNG
+  // có tiền tố khác (vd "Tp Vũng Tàu" KHÔNG match "ba ria vung tau" theo cả 2
+  // chiều includes) -> thêm riêng 2 key này để chắc chắn khớp mọi cách gõ.
+  'vung tau': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '26506', wardName: 'Phường Vũng Tàu', path: 'Vũng Tàu, Hồ Chí Minh' },
+  'ba ria': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '26560', wardName: 'Phường Bà Rịa', path: 'Bà Rịa, Hồ Chí Minh' },
+  'tu son': { provinceCode: '24', provinceName: 'Bắc Ninh', wardCode: '09367', wardName: 'Phường Từ Sơn', path: 'Từ Sơn, Bắc Ninh' },
+  'quy nhon': { provinceCode: '52', provinceName: 'Gia Lai', wardCode: '21583', wardName: 'Phường Quy Nhơn', path: 'Quy Nhơn, Gia Lai' },
+  'thu dau mot': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '25747', wardName: 'Phường Thủ Dầu Một', path: 'Thủ Dầu Một, Hồ Chí Minh' },
+  'di an': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '25942', wardName: 'Phường Dĩ An', path: 'Dĩ An, Hồ Chí Minh' },
+  'thuan an': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '25978', wardName: 'Phường Thuận An', path: 'Thuận An, Hồ Chí Minh' },
+  'tan uyen': { provinceCode: '79', provinceName: 'Hồ Chí Minh', wardCode: '25888', wardName: 'Phường Tân Uyên', path: 'Tân Uyên, Hồ Chí Minh' },
+  'dong xoai': { provinceCode: '75', provinceName: 'Đồng Nai', wardCode: '25210', wardName: 'Phường Đồng Xoài', path: 'Đồng Xoài, Đồng Nai' },
+  'phan thiet': { provinceCode: '68', provinceName: 'Lâm Đồng', wardCode: '22945', wardName: 'Phường Phan Thiết', path: 'Phan Thiết, Lâm Đồng' },
+  'buon ma thuot': { provinceCode: '66', provinceName: 'Đắk Lắk', wardCode: '24133', wardName: 'Phường Buôn Ma Thuột', path: 'Buôn Ma Thuột, Đắk Lắk' },
+  'gia nghia': { provinceCode: '68', provinceName: 'Lâm Đồng', wardCode: null, wardName: null, path: null },
+  'bien hoa': { provinceCode: '75', provinceName: 'Đồng Nai', wardCode: '26068', wardName: 'Phường Biên Hòa', path: 'Biên Hòa, Đồng Nai' },
+  'long khanh': { provinceCode: '75', provinceName: 'Đồng Nai', wardCode: '26080', wardName: 'Phường Long Khánh', path: 'Long Khánh, Đồng Nai' },
+  'cao lanh': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '29869', wardName: 'Phường Cao Lãnh', path: 'Cao Lãnh, Đồng Tháp' },
+  'sa dec': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '29905', wardName: 'Phường Sa Đéc', path: 'Sa Đéc, Đồng Tháp' },
+  'hong ngu': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '29955', wardName: 'Phường Hồng Ngự', path: 'Hồng Ngự, Đồng Tháp' },
+  'pleiku': { provinceCode: '52', provinceName: 'Gia Lai', wardCode: '23575', wardName: 'Phường Pleiku', path: 'Pleiku, Gia Lai' },
+  'phu ly': { provinceCode: '37', provinceName: 'Ninh Bình', wardCode: '13285', wardName: 'Phường Phủ Lý', path: 'Phủ Lý, Ninh Bình' },
+  'chi linh': { provinceCode: '31', provinceName: 'Hải Phòng', wardCode: '10546', wardName: 'Phường Chí Linh', path: 'Chí Linh, Hải Phòng' },
+  'vi thanh': { provinceCode: '92', provinceName: 'Cần Thơ', wardCode: '31321', wardName: 'Phường Vị Thanh', path: 'Vị Thanh, Cần Thơ' },
+  'nga bay': { provinceCode: '92', provinceName: 'Cần Thơ', wardCode: '31340', wardName: 'Phường Ngã Bảy', path: 'Ngã Bảy, Cần Thơ' },
+  'nha trang': { provinceCode: '56', provinceName: 'Khánh Hòa', wardCode: '22366', wardName: 'Phường Nha Trang', path: 'Nha Trang, Khánh Hòa' },
+  'cam ranh': { provinceCode: '56', provinceName: 'Khánh Hòa', wardCode: '22420', wardName: 'Phường Cam Ranh', path: 'Cam Ranh, Khánh Hòa' },
+  'rach gia': { provinceCode: '91', provinceName: 'An Giang', wardCode: '30742', wardName: 'Phường Rạch Giá', path: 'Rạch Giá, An Giang' },
+  'ha tien': { provinceCode: '91', provinceName: 'An Giang', wardCode: '30769', wardName: 'Phường Hà Tiên', path: 'Hà Tiên, An Giang' },
+  'phu quoc': { provinceCode: '91', provinceName: 'An Giang', wardCode: null, wardName: null, path: null },
+  'da lat': { provinceCode: '68', provinceName: 'Lâm Đồng', wardCode: null, wardName: null, path: null },
+  'bao loc': { provinceCode: '68', provinceName: 'Lâm Đồng', wardCode: null, wardName: null, path: null },
+  'tan an': { provinceCode: '80', provinceName: 'Tây Ninh', wardCode: '27712', wardName: 'Phường Tân An', path: 'Tân An, Tây Ninh' },
+  'tam diep': { provinceCode: '37', provinceName: 'Ninh Bình', wardCode: '14362', wardName: 'Phường Tam Điệp', path: 'Tam Điệp, Ninh Bình' },
+  'phan rang thap cham': { provinceCode: '56', provinceName: 'Khánh Hòa', wardCode: null, wardName: null, path: null },
+  'viet tri': { provinceCode: '25', provinceName: 'Phú Thọ', wardCode: '07900', wardName: 'Phường Việt Trì', path: 'Việt Trì, Phú Thọ' },
+  'tuy hoa': { provinceCode: '66', provinceName: 'Đắk Lắk', wardCode: '22015', wardName: 'Phường Tuy Hòa', path: 'Tuy Hòa, Đắk Lắk' },
+  'dong hoi': { provinceCode: '44', provinceName: 'Quảng Trị', wardCode: '18880', wardName: 'Phường Đồng Hới', path: 'Đồng Hới, Quảng Trị' },
+  'tam ky': { provinceCode: '48', provinceName: 'Đà Nẵng', wardCode: '20341', wardName: 'Phường Tam Kỳ', path: 'Tam Kỳ, Đà Nẵng' },
+  'hoi an': { provinceCode: '48', provinceName: 'Đà Nẵng', wardCode: '20410', wardName: 'Phường Hội An', path: 'Hội An, Đà Nẵng' },
+  'ha long': { provinceCode: '22', provinceName: 'Quảng Ninh', wardCode: '06688', wardName: 'Phường Hạ Long', path: 'Hạ Long, Quảng Ninh' },
+  'mong cai': { provinceCode: '22', provinceName: 'Quảng Ninh', wardCode: null, wardName: null, path: null },
+  'cam pha': { provinceCode: '22', provinceName: 'Quảng Ninh', wardCode: '06793', wardName: 'Phường Cẩm Phả', path: 'Cẩm Phả, Quảng Ninh' },
+  'uong bi': { provinceCode: '22', provinceName: 'Quảng Ninh', wardCode: '06811', wardName: 'Phường Uông Bí', path: 'Uông Bí, Quảng Ninh' },
+  'dong ha': { provinceCode: '44', provinceName: 'Quảng Trị', wardCode: '19333', wardName: 'Phường Đông Hà', path: 'Đông Hà, Quảng Trị' },
+  'song cong': { provinceCode: '19', provinceName: 'Thái Nguyên', wardCode: '05518', wardName: 'Phường Sông Công', path: 'Sông Công, Thái Nguyên' },
+  'pho yen': { provinceCode: '19', provinceName: 'Thái Nguyên', wardCode: '05860', wardName: 'Phường Phổ Yên', path: 'Phổ Yên, Thái Nguyên' },
+  'sam son': { provinceCode: '38', provinceName: 'Thanh Hóa', wardCode: '16531', wardName: 'Phường Sầm Sơn', path: 'Sầm Sơn, Thanh Hóa' },
+  'my tho': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '28261', wardName: 'Phường Mỹ Tho', path: 'Mỹ Tho, Đồng Tháp' },
+  'go cong': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '28306', wardName: 'Phường Gò Công', path: 'Gò Công, Đồng Tháp' },
+  'cai lay': { provinceCode: '82', provinceName: 'Đồng Tháp', wardCode: '28439', wardName: 'Phường Cai Lậy', path: 'Cai Lậy, Đồng Tháp' },
+  'vinh yen': { provinceCode: '25', provinceName: 'Phú Thọ', wardCode: '08707', wardName: 'Phường Vĩnh Yên', path: 'Vĩnh Yên, Phú Thọ' },
+  'phuc yen': { provinceCode: '25', provinceName: 'Phú Thọ', wardCode: '08740', wardName: 'Phường Phúc Yên', path: 'Phúc Yên, Phú Thọ' }
 }
 
 /**
@@ -1040,7 +1114,16 @@ export function resolveMergedProvinceAlias(text: string): {
 
   let best: { key: string; score: number } | null = null
   for (const key of Object.keys(MERGED_PROVINCE_ALIASES)) {
-    if (haystack.includes(key) || key.includes(haystack)) {
+    // haystack.includes(key): text khách gõ DÀI HƠN/chứa trọn key -> an toàn dù
+    // key ngắn (khách gõ rõ ràng đủ, không mập mờ).
+    // key.includes(haystack): text khách gõ NGẮN HƠN key (vd "Bà Rịa" khớp
+    // "ba ria vung tau") -> CHỈ an toàn khi haystack đủ dài để không phải 1
+    // tiền tố mập mờ của nhiều key khác nhau (vd "Vinh" (Nghệ An, không đổi)
+    // ngắn hơn "vinh phuc"/"vinh yen" nên bị includes() coi là match SAI nếu
+    // không chặn) - yêu cầu tối thiểu 5 ký tự cho chiều này.
+    const isMatch =
+      haystack.includes(key) || (haystack.length >= 5 && key.includes(haystack))
+    if (isMatch) {
       const score = Math.min(key.length, haystack.length)
       if (!best || score > best.score) best = { key, score }
     }
@@ -1263,6 +1346,12 @@ function buildGarageOffer(
 function stripVn(s: string): string {
   return s
     .toLowerCase()
+    .replace(/đ/g, 'd') // "Đ" không có canonical decomposition trong NFD (không
+    // giống các nguyên âm có dấu) -> normalize('NFD') KHÔNG tách được nó, phải
+    // thay tay trước, nếu không catch-all bên dưới sẽ XOÁ HẲN chữ "đ" (không
+    // phải chuyển thành "d") -> "Đốc" thành "oc" thay vì "doc", gây sai lệch
+    // toàn bộ các so khớp chứa chữ đầu "Đ" (vd "Nam Định", "Bình Định", "Đắk
+    // Nông", "Châu Đốc"...).
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
     .replace(/[^a-z0-9\s]/g, ' ')

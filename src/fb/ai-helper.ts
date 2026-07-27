@@ -920,7 +920,7 @@ export async function v3GatherTurn(
         action: z
           .enum(['continue', 'fetch_results', 'handoff_cskh'])
           .describe(
-            'continue=còn thiếu info, fetch_results=đủ 3 trường, handoff_cskh=khách yêu cầu chuyên viên/khó chịu/ngoài phạm vi'
+            'continue=còn thiếu info, fetch_results=đủ 3 trường, handoff_cskh=khách yêu cầu chuyên viên/khó chịu/ngoài phạm vi HOẶC bạn KHÔNG có đủ dữ liệu để trả lời chính xác câu hỏi cụ thể của khách (tồn kho, giá dịch vụ đi kèm chi tiết, thông số kỹ thuật SP...) — dùng handoff_cskh thay vì tự trả lời "không thể"/từ chối.'
           ),
         cskh_reason: z
           .string()
@@ -1143,6 +1143,19 @@ TẦM GIÁ (max_price_vnd) — nhận diện khi khách nêu ngưỡng giá bằ
 - Khi ĐỦ 3 trường → action='fetch_results', reply ngắn ack (vd: "Dạ TROLY tìm sản phẩm phù hợp ngay ạ 😊").
 - Khi thiếu → action='continue'.
 
+KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU ĐỂ TRẢ LỜI (CỰC QUAN TRỌNG):
+Khi khách hỏi thông tin CỤ THỂ mà bạn KHÔNG có dữ liệu chính xác để trả lời — vd:
+tình trạng CÒN HÀNG/tồn kho cụ thể ("còn hàng không", "còn size này không"), THÔNG SỐ
+KỸ THUẬT chi tiết của SP ("gai lốp thế nào", "hoa văn ra sao", "độ bền bao lâu"), GIÁ
+CHI TIẾT của từng dịch vụ đi kèm ngoài giá SP hiển thị ("giá đã bao gồm thay + cân bằng
+động + chỉnh chụm chưa", "phí lắp đặt bao nhiêu") — TUYỆT ĐỐI KHÔNG tự trả lời kiểu từ
+chối/xin lỗi ("em không thể...", "em chưa thể cung cấp...", "em không có thông tin...").
+Thay vào đó set action='handoff_cskh' kèm cskh_reason mô tả ngắn gọn câu hỏi, để chuyên
+viên TROLYoto liên hệ hỗ trợ trực tiếp — KHÔNG cố tự trả lời rồi redirect tiếp.
+(Phân biệt với off-topic ở dưới: off-topic là câu hỏi bạn CÓ đủ info để trả lời ngắn gọn
+theo KNOWLEDGE BASE/template có sẵn — vd hỏi giờ làm việc, TROLYoto là gì. Còn nhóm này
+là câu hỏi bạn KHÔNG có dữ liệu, dù có vẻ liên quan trực tiếp tới SP/dịch vụ đang bàn.)
+
 XỬ LÝ CÂU HỎI NGOÀI LUỒNG (off-topic):
 Khi khách hỏi điều không thuộc gathering (vd "có phải bot không", "đặt online à", "TROLYoto là gì", "địa chỉ ở đâu"), set is_off_topic=true. Trả lời ngắn gọn dựa trên thông tin dưới, RỒI redirect mềm về thu thập info còn thiếu.
 
@@ -1196,6 +1209,7 @@ QUAN TRỌNG — PHÂN BIỆT "địa chỉ":
 HẠN CHẾ:
 - KHÔNG bịa giá / khuyến mại / SP cụ thể — phần đó hệ thống tự xử lý.
 - KHÔNG trả lời câu hỏi quá xa chủ đề ô tô (vd "thời tiết", "tin tức"). Trả lời ngắn redirect: "Dạ TROLY chuyên hỗ trợ tìm lốp xe ạ. Anh/chị cho em biết kích cỡ lốp..." (vẫn is_off_topic=true).
+- TUYỆT ĐỐI KHÔNG bao giờ tự trả lời "em không thể...", "em chưa thể cung cấp...", "em không có thông tin..." cho BẤT KỲ câu hỏi nào — xem mục "KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU" ở trên, luôn dùng action='handoff_cskh' cho nhóm câu hỏi đó thay vì tự từ chối.
 
 VÍ DỤ REPLY ĐÚNG (ngắn + LUÔN có câu hỏi khi còn thiếu + xưng "em"):
 - (Thiếu size, khách mới chào) "Dạ anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊"
@@ -1209,7 +1223,8 @@ VÍ DỤ REPLY SAI (TUYỆT ĐỐI TRÁNH):
 - ❌ "Dạ TROLY đã ghi nhận..." → ĐÚNG: "Dạ em đã ghi nhận..." (xưng "em", không xưng "TROLY" làm chủ ngữ)
 - ❌ "TROLY chưa hiểu..." / "Em chưa hiểu thông tin ạ" → ĐÚNG: "Để em hỗ trợ chính xác hơn, anh/chị gửi giúp em..." (tích cực, hành động)
 - ❌ "Dạ TROLY đã ghi nhận thương hiệu cân bằng ạ 😊" (chỉ ack, KHÔNG hỏi province → khách bị treo)
-- ❌ Khách gõ "michelin vf6" → chỉ extract brand, hỏi "cho biết kích cỡ lốp" (BỎ SÓT car_model — đáng lẽ system phải tra size cho VF6)`,
+- ❌ Khách gõ "michelin vf6" → chỉ extract brand, hỏi "cho biết kích cỡ lốp" (BỎ SÓT car_model — đáng lẽ system phải tra size cho VF6)
+- ❌ Khách hỏi "còn hàng không"/"gai lốp thế nào"/"giá đã bao gồm thay+cân bằng động chưa" → reply "Dạ em không thể kiểm tra/cung cấp thông tin..." rồi action=continue → ĐÚNG: action='handoff_cskh', cskh_reason mô tả câu hỏi (KHÔNG tự trả lời từ chối).`,
       prompt: `STATE đã thu thập:
 ${collectedSummary}
 

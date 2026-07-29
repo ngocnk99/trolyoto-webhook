@@ -380,13 +380,21 @@ async function showWardConfirmOptions(
 }
 
 /** Lấy lịch sử gần đây từ conversation_log để feed AI ngữ cảnh. */
+/**
+ * Lịch sử gửi cho AI (v3GatherTurn) — CHỈ hội thoại thật giữa khách và bot
+ * (role bot/user, KHÔNG phải log system) VÀ KHÔNG bị đánh dấu hidden_from_ai
+ * (danh sách SP/cards, CTA cộng đồng/khuyến mại, nudge trợ giá tự động theo
+ * timer — xem `ConversationMessage.hidden_from_ai`). Loại các tin này TRƯỚC
+ * khi cắt `limit` để cửa sổ lịch sử luôn đủ N lượt hội thoại thật, không bị
+ * "hao" chỗ bởi tin hệ thống xen giữa.
+ */
 function recentHistory(
   log: ConversationMessage[] | undefined,
   limit = 6
 ): Array<{ role: 'bot' | 'user'; text: string }> {
   if (!log || log.length === 0) return []
   return log
-    .filter(m => m.role === 'bot' || m.role === 'user')
+    .filter(m => (m.role === 'bot' || m.role === 'user') && !m.hidden_from_ai)
     .slice(-limit)
     .map(m => ({ role: m.role as 'bot' | 'user', text: m.text }))
 }
@@ -414,7 +422,12 @@ async function reply(
   psid: string,
   sessionId: string,
   text: string,
-  quickReplies?: QuickReply[]
+  quickReplies?: QuickReply[],
+  /** true = tin nudge/broadcast hệ thống tự bắn (vd "TRỢ GIÁ tới 800K" theo
+   *  timer), KHÔNG phải phản hồi trực tiếp cho tin khách vừa gửi — loại khỏi
+   *  recentHistory() để tránh AI đọc nhầm số liệu quảng cáo thành yêu cầu
+   *  thật của khách. Mặc định false (hội thoại bình thường). */
+  hiddenFromAi = false
 ): Promise<void> {
   const tok = currentToken()
   sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
@@ -436,7 +449,8 @@ async function reply(
     quick_replies: quickReplies?.map(q => ({
       title: q.title,
       payload: q.payload
-    }))
+    })),
+    hidden_from_ai: hiddenFromAi || undefined
   }).catch(e => console.error('[V3 log bot]', e))
 }
 
@@ -471,7 +485,10 @@ async function sendButtonTemplate(
     quick_replies: buttons.map(b => ({
       title: b.title,
       payload: b.payload ?? b.url ?? ''
-    }))
+    })),
+    // sendButtonTemplate CHỈ dùng cho CTA cộng đồng/khuyến mại + nudge trợ giá
+    // (không phải hội thoại gathering) — luôn loại khỏi recentHistory().
+    hidden_from_ai: true
   }).catch(e => console.error('[V3 log button]', e))
 }
 
@@ -511,7 +528,10 @@ async function sendCards(
     type: 'cards',
     text: context,
     ts: new Date().toISOString(),
-    cards
+    cards,
+    // Danh sách SP/gara cụ thể — không phải hội thoại, luôn loại khỏi
+    // recentHistory() (tránh AI đọc nhầm giá/SP cụ thể thành thứ bot "đã nói").
+    hidden_from_ai: true
   }).catch(e => console.error('[V3 log cards]', e))
 }
 
@@ -2555,7 +2575,11 @@ async function fireInfoNudgeStage1(
     reply(
       psid,
       sessionId,
-      `TRỢ GIÁ tới 800K đã sẵn sàng cho mình ạ!\nAnh/chị muốn tìm ${missing} để TROLYoto giúp mình tìm sản phẩm phù hợp ngay ạ 😊`
+      `TRỢ GIÁ tới 800K đã sẵn sàng cho mình ạ!\nAnh/chị muốn tìm ${missing} để TROLYoto giúp mình tìm sản phẩm phù hợp ngay ạ 😊`,
+      undefined,
+      true // hiddenFromAi — nudge tự động theo timer, số "800K" là trợ giá hệ
+      // thống chứ KHÔNG phải mức giá khách yêu cầu (nguồn gốc bug AI hiểu
+      // nhầm "Giá cao quá" → max_price=800000).
     )
   ])
 

@@ -24,6 +24,11 @@ Khi khách gõ **tên xe** (không phải size trực tiếp) → gọi `resolve
 - Tự động fetch + gửi lại y nguyên card sản phẩm chỉ vì khách nói "cảm ơn".
 - Xoá oan `max_price` khách vừa set.
 
+**⚠️ Ràng buộc bắt buộc — KHÔNG tự đoán số khi khách chê giá mà không nêu số cụ thể:**
+Khách nói "giá cao quá"/"đắt quá" (KHÔNG kèm số) → `max_price_vnd` PHẢI = null, action='continue', hỏi lại khách muốn mức giá dưới bao nhiêu — **KHÔNG được tự suy ra 1 con số**. Bug thật đã xảy ra: khách nói "Giá cao quá" sau khi lịch sử hội thoại có tin nudge tự động "TRỢ GIÁ tới 800K đã sẵn sàng..." (số tiền TRỢ GIÁ của hệ thống, không liên quan khách) → AI hiểu nhầm 800K là mức giá khách muốn, tự fetch lại với `max_price=800000`, không tìm ra SP nào (giá thật ~2tr+) → handoff CSKH sai lý do, khách bị hỏi nhầm hoàn toàn. Fix 2 lớp:
+1. Prompt: dạy AI phân biệt số liệu marketing/hệ thống (trong lịch sử) với số khách thực sự nêu, và bắt buộc hỏi lại khi khách chê giá không kèm số.
+2. **Kiến trúc (quan trọng hơn, chặn tận gốc)**: `recentHistory()` (đưa vào `v3GatherTurn`) CHỈ chứa hội thoại thật giữa khách-bot, lọc bỏ tin "hệ thống tự tạo" qua cờ `ConversationMessage.hidden_from_ai` — set tại nguồn phát sinh (`sendCards`, `sendButtonTemplate`, `fireInfoNudgeStage1`), không phải suy đoán lại lúc đọc. Bất kỳ tin nudge/CTA/danh sách SP mới thêm sau này PHẢI tự set cờ này nếu không muốn AI đọc nhầm.
+
 ## 3. Xác định khu vực (Location) — pipeline 3 tầng + retry có giới hạn
 
 Thứ tự thử (dừng ở tầng đầu tiên thành công):

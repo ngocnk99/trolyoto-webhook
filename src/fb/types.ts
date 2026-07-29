@@ -144,6 +144,16 @@ export interface ConversationMessage {
   cards?: LoggedCard[]
   /** Payload khi user click QR/postback */
   payload?: string
+  /**
+   * true = tin nhắn "hệ thống tự tạo" (danh sách SP/cards, nudge trợ giá tự
+   * động theo timer, CTA cộng đồng/khuyến mại) — KHÔNG phải hội thoại thật
+   * giữa khách và bot. Set NGAY LÚC GHI LOG (tại nguồn phát sinh: sendCards,
+   * sendButtonTemplate, fireInfoNudgeStage1...), KHÔNG suy đoán lại khi đọc.
+   * `recentHistory()` lọc bỏ các tin có cờ này trước khi đưa vào AI — tránh
+   * AI đọc nhầm số liệu quảng cáo (vd "TRỢ GIÁ tới 800K") thành mức giá
+   * khách yêu cầu, hoặc dữ liệu SP cụ thể thành thứ bot "đã nói".
+   */
+  hidden_from_ai?: boolean
 }
 
 export interface FbSession {

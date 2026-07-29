@@ -58,6 +58,8 @@ webhook.controller.ts: processEvents()
 
 **`v3GatherTurn` là 1 schema Zod lớn** (`generateObject`) trả về: `tire_size, brand_tier, selected_brands, province_name, car_model, max_price_vnd, wants_best_quality, off_topic_kind, is_off_topic, action, reply, cskh_reason`. `action` ∈ `continue | fetch_results | handoff_cskh`.
 
+**`recentHistory()` — chỉ hội thoại thật, KHÔNG phải mọi tin đã gửi.** `ConversationMessage.hidden_from_ai` đánh dấu tin "hệ thống tự tạo" (danh sách SP/cards, CTA cộng đồng/khuyến mại qua `sendButtonTemplate`, nudge trợ giá tự động theo timer `fireInfoNudgeStage1`) — set NGAY LÚC GHI LOG tại nguồn phát sinh (`sendCards`/`sendButtonTemplate` luôn set; `reply()` nhận tham số `hiddenFromAi` tuỳ call site), `recentHistory()` lọc bỏ trước khi đưa vào AI. Lý do: bug thật — khách chê "Giá cao quá" (không kèm số) sau khi lịch sử có tin nudge "TRỢ GIÁ tới 800K", AI hiểu nhầm 800K là mức giá khách muốn → tự fetch với `max_price=800000` sai hoàn toàn. Đồng bộ với Web (`route.ts`: `finalize()` lọc bubble theo `AI_HISTORY_EXCLUDED_BUBBLE_TYPES` trước khi `pushBotMessages`).
+
 ⚠️ Đây là AI, **không deterministic** — cùng input/state có thể trả `action` khác nhau giữa 2 lần gọi (đã quan sát thực tế khi test). Field nào AI trả **có thể là ECHO của giá trị cũ trong state** dù tin nhắn hiện tại không nhắc gì tới field đó — xem mục 5.
 
 ## 4. `handleGathering()` — thứ tự xử lý (v3/flow-handler.ts)

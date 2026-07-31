@@ -58,6 +58,12 @@ export interface SessionState {
    *  mạnh hơn cho lần resolveCarModel kế tiếp. Reset về [] khi khách chọn 1
    *  size (QR_TIRE_SIZE) hoặc khi resolver cũng chịu (fail hẳn). */
   car_model_attempts?: string[]
+  /** Danh sách size vừa show cho khách theo tên xe (`showCarSizeOptions`) —
+   *  dùng để LỌC LẠI (client-side, không qua AI) khi khách gõ "vành X"/"la
+   *  zăng X" thay vì bấm QR (vd size ['235/55R19','235/60R18'], khách gõ
+   *  "vành 18" → chọn '235/60R18'). Reset về [] khi khách đã chọn 1 size
+   *  (giống car_model_attempts) để tránh khớp nhầm ở lượt hội thoại sau. */
+  last_shown_car_sizes?: string[]
   product_ids?: string[]
   province_code?: string | null
   province_name?: string | null

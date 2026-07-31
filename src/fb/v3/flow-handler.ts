@@ -269,6 +269,34 @@ function parseExplicitTireSize(text: string): string | null {
 }
 
 /**
+ * Phát hiện khách nêu ĐƯỜNG KÍNH VÀNH/MÂM xe (số cuối trong size lốp, vd
+ * "235/60R18" → vành 18) qua từ "vành"/"la zăng"/"lazang" (chấp nhận cả
+ * không dấu: "vanh", "la zang") kèm số cụ thể. Dùng để LỌC LẠI (client-side,
+ * KHÔNG qua AI — chính xác 100% vì so khớp trực tiếp trong list DB đã trả
+ * về cho đúng xe đó) danh sách size vừa show theo tên xe
+ * (`state.last_shown_car_sizes`, xem `showCarSizeOptions`) — vd khách gõ
+ * "vành 18" sau khi thấy list [235/55R19, 235/60R18, 235/60R17] → chọn
+ * '235/60R18'. Trả null nếu không match hoặc số ngoài phạm vi đường kính
+ * vành xe con hợp lý (12-24 inch).
+ */
+function parseWheelDiameter(text: string): number | null {
+  const m = text.match(/(?:vành|vanh|la\s*zăng|la\s*zang|lazang)\D{0,10}(\d{2})\b/i)
+  if (!m) return null
+  const d = parseInt(m[1], 10)
+  if (d < 12 || d > 24) return null
+  return d
+}
+
+/** Tìm size trong danh sách khớp đúng đường kính vành (hậu tố "R{diameter}"). */
+function findSizeByWheelDiameter(
+  sizes: string[],
+  diameter: number
+): string | null {
+  const suffix = `R${diameter}`
+  return sizes.find(s => s.toUpperCase().endsWith(suffix)) ?? null
+}
+
+/**
  * Build intro KHI có sản phẩm — hướng dẫn khách bấm vào card.
  * (Không còn dạng xác nhận "{size} {brand} ở {location} phải không...".)
  */
@@ -1714,6 +1742,11 @@ async function handleGathering(
 
     const sizes = await lookupCarSizes(carName)
     if (sizes.length > 0) {
+      // Lưu list vừa show — cho phép khách gõ "vành X"/"la zăng X" thay vì
+      // bấm QR (xem parseWheelDiameter ở đầu file + check trong dispatcher).
+      await updateSession(sessionId, {
+        state: { ...newState, last_shown_car_sizes: sizes }
+      })
       await showCarSizeOptions(psid, sessionId, carName, sizes)
     } else {
       // V3: car name không tra ra size → coi là size-fail
@@ -3048,11 +3081,13 @@ async function handleMessengerEventV3Inner(
           `[V3 flow] V3_TIRE_SIZE click → tire_size=${size} (raw="${rawSize}")`
         )
         // Khách đã CHỌN 1 size từ list → coi như tên xe đã resolve đúng, xoá
-        // car_model_attempts (tránh tồn đọng ảnh hưởng lần tra xe khác sau này).
+        // car_model_attempts (tránh tồn đọng ảnh hưởng lần tra xe khác sau này)
+        // + last_shown_car_sizes (tránh khớp nhầm "vành X" ở lượt hội thoại sau).
         const newState: SessionState = {
           ...state,
           tire_size: size,
-          car_model_attempts: []
+          car_model_attempts: [],
+          last_shown_car_sizes: []
         }
         await updateSession(session.id, {
           step: 'V3_GATHERING',
@@ -3136,6 +3171,53 @@ async function handleMessengerEventV3Inner(
 
     // ── Plain text ───────────────────────────────────────────────────────
     if (messageText) {
+      // Khách gõ "vành X"/"la zăng X" NGAY SAU khi vừa được show list size
+      // theo tên xe (state.last_shown_car_sizes) → lọc CLIENT-SIDE (không
+      // qua AI) xuống đúng size khớp đường kính vành trong CHÍNH list DB đã
+      // trả về cho xe đó — coi như khách "chọn" size này, xử lý y hệt click
+      // QR V3_TIRE_SIZE (xem payload.startsWith('V3_TIRE_SIZE:') phía trên).
+      if (state.last_shown_car_sizes && state.last_shown_car_sizes.length > 0) {
+        const diameter = parseWheelDiameter(messageText)
+        if (diameter != null) {
+          const matched = findSizeByWheelDiameter(
+            state.last_shown_car_sizes,
+            diameter
+          )
+          if (matched) {
+            console.log(
+              `[V3 flow] wheel diameter=${diameter} từ "${messageText}" → khớp size "${matched}" (list=${state.last_shown_car_sizes.join(',')})`
+            )
+            const newState: SessionState = {
+              ...state,
+              tire_size: matched,
+              car_model_attempts: [],
+              last_shown_car_sizes: []
+            }
+            await updateSession(session.id, {
+              step: 'V3_GATHERING',
+              state: newState
+            })
+            await handleGathering(
+              psid,
+              { ...session, state: newState, step: 'V3_GATHERING' },
+              pageId,
+              matched
+            )
+            return
+          }
+          console.log(
+            `[V3 flow] wheel diameter=${diameter} từ "${messageText}" → KHÔNG khớp size nào (list=${state.last_shown_car_sizes.join(',')})`
+          )
+          await reply(
+            psid,
+            session.id,
+            `Dạ xe này không có kích cỡ vành ${diameter} ạ, hiện chỉ có: ${state.last_shown_car_sizes.join(', ')}\n\nAnh/chị chọn giúp em 1 trong các kích cỡ trên nhé 😊`,
+            state.last_shown_car_sizes.map(s => qr(s, `V3_TIRE_SIZE:${s}`))
+          )
+          return
+        }
+      }
+
       // /reset đã được xử lý SỚM ở đầu dispatcher (bypass paused guard)
       switch (step) {
         case 'AWAITING_PHONE':

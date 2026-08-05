@@ -827,8 +827,9 @@ export interface V3GatherDecision {
    */
   is_off_topic?: boolean
   /** Loại câu hỏi off-topic cụ thể (chỉ set khi is_off_topic=true) — dùng để
-   *  route sang xử lý riêng (vd FAQ năm sản xuất → resend card cũ đổi nhãn nút). */
-  off_topic_kind?: 'manufacture_year' | null
+   *  route sang xử lý riêng (vd FAQ năm sản xuất / địa chỉ-SĐT gara → resend
+   *  card cũ đổi nhãn nút). */
+  off_topic_kind?: 'manufacture_year' | 'garage_contact' | null
 }
 
 const V3_BRAND_TIER_INFO = {
@@ -935,10 +936,10 @@ export async function v3GatherTurn(
             'True khi bạn đang trả lời câu hỏi NGOÀI luồng gathering (vd "có phải bot không", "đặt online à", "địa chỉ bạn ở đâu", "TROLYoto là gì"). Khi true, orchestrator sẽ KHÔNG tính fail counter. False/omit cho các turn gathering thông thường.'
           ),
         off_topic_kind: z
-          .enum(['manufacture_year'])
+          .enum(['manufacture_year', 'garage_contact'])
           .nullish()
           .describe(
-            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu") — kể cả khi câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường. Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC. Null/omit cho mọi trường hợp khác.'
+            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"). Set "garage_contact" BẤT CỨ KHI NÀO khách hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (vd "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "gara ở đâu", "liên hệ gara sao", "sđt gara là gì") — KHÁC với hỏi địa chỉ/SĐT của TROLYoto (đó là off-topic Loại 2 riêng). Cả 2 trường hợp: kể cả câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường. Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC, KHÔNG set action=\'handoff_cskh\' (hệ thống đã có câu trả lời cố định riêng, không cần chuyển CSKH). Null/omit cho mọi trường hợp khác.'
           )
       }),
       system: `Bạn là TROLY — trợ lý ô tô của TROLYoto (nền tảng mua lốp xe ở Việt Nam).
@@ -1164,7 +1165,9 @@ Thay vào đó set action='handoff_cskh' kèm cskh_reason mô tả ngắn gọn 
 viên TROLYoto liên hệ hỗ trợ trực tiếp — KHÔNG cố tự trả lời rồi redirect tiếp.
 (Phân biệt với off-topic ở dưới: off-topic là câu hỏi bạn CÓ đủ info để trả lời ngắn gọn
 theo KNOWLEDGE BASE/template có sẵn — vd hỏi giờ làm việc, TROLYoto là gì. Còn nhóm này
-là câu hỏi bạn KHÔNG có dữ liệu, dù có vẻ liên quan trực tiếp tới SP/dịch vụ đang bàn.)
+là câu hỏi bạn KHÔNG có dữ liệu, dù có vẻ liên quan trực tiếp tới SP/dịch vụ đang bàn.
+NGOẠI LỆ: hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI GARA cụ thể — KHÔNG thuộc nhóm handoff_cskh này,
+xem [Loại 10] bên dưới, đã có FAQ riêng.)
 
 XỬ LÝ CÂU HỎI NGOÀI LUỒNG (off-topic):
 Khi khách hỏi điều không thuộc gathering (vd "có phải bot không", "đặt online à", "TROLYoto là gì", "địa chỉ ở đâu"), set is_off_topic=true. Trả lời ngắn gọn dựa trên thông tin dưới, RỒI redirect mềm về thu thập info còn thiếu.
@@ -1209,6 +1212,14 @@ VÍ DỤ OFF-TOPIC REPLY (chọn template đúng theo loại câu hỏi):
 
 [Loại 9] Hỏi NĂM/NGÀY SẢN XUẤT lốp: "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"
   → LUÔN set is_off_topic=true VÀ off_topic_kind='manufacture_year' CÙNG LÚC — kể cả khi câu hỏi nghe như đang hỏi tiếp về SP vừa chọn (KHÔNG coi đây là câu hỏi "on-topic" cần trả lời chi tiết, KHÔNG áp dụng quy tắc "KHÔNG bịa SP cụ thể" ở đây vì hệ thống đã có câu trả lời cố định sẵn), kể cả khi state đã đủ 3 trường size/brand/khu vực. Reply KHÔNG cần tự soạn — hệ thống dùng câu cố định riêng, bạn CHỈ CẦN set đúng 2 field trên, reply có thể để trống hoặc câu ngắn bất kỳ (sẽ bị hệ thống ghi đè).
+
+[Loại 10] Hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (KHÁC "địa chỉ TROLYoto" ở Loại 2):
+  Ví dụ: "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "sđt gara là gì", "gara ở đâu",
+  "liên hệ gara sao", "cho xin sđt", "địa chỉ gara này ở đâu".
+  → LUÔN set is_off_topic=true VÀ off_topic_kind='garage_contact' CÙNG LÚC — KHÔNG set
+  action='handoff_cskh' (đây KHÔNG thuộc nhóm "không có dữ liệu" ở trên — hệ thống đã có
+  câu trả lời cố định + gửi lại card gara riêng), kể cả khi state đã đủ 3 trường. Reply
+  KHÔNG cần tự soạn — hệ thống dùng câu cố định riêng, bạn CHỈ CẦN set đúng 2 field trên.
 
 LUÔN set is_off_topic=true, action=continue cho các turn off-topic này.
 

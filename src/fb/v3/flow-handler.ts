@@ -1039,30 +1039,37 @@ function extractLocationTokens(text: string): string[] {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  FAQ "Lốp sản xuất năm nào" — trả lời CỐ ĐỊNH + replay card gần nhất
+//  FAQ "cố định + replay card gần nhất" — dùng chung cho "lốp sản xuất năm
+//  nào" và "địa chỉ/SĐT gara" (2 FAQ có CÙNG shape: trả lời cố định, gửi lại
+//  y nguyên card SP+gara gần nhất, chỉ đổi nhãn nút "🎁 Xem khuyến mại").
 // ════════════════════════════════════════════════════════════════════════════
 
-/** Câu trả lời CỐ ĐỊNH — KHÔNG để AI tự sinh (khác mọi off-topic khác). */
 const MANUFACTURE_YEAR_FAQ_TEXT =
   '😊 Năm sản xuất có thể khác nhau giữa từng gara. Anh/chị chọn [Xem năm sản xuất] để xem chi tiết nhé.'
-
 const VIEW_MANUFACTURE_YEAR_TITLE = 'Xem năm sản xuất'
 
+const GARAGE_CONTACT_FAQ_TEXT =
+  '😊 Anh/chị sẽ có ngay thông tin liên hệ khi chọn [Xem gara này] ạ.'
+const VIEW_GARAGE_CONTACT_TITLE = 'Xem gara này'
+
 /**
- * Khách hỏi "lốp sản xuất năm nào" — KHÔNG fetch lại DB. Tìm tin card gần nhất
- * trong conversation_log (đã lưu sẵn đầy đủ LoggedCard[]), gửi lại y nguyên,
- * chỉ đổi nhãn nút "🎁 Xem khuyến mại" → "Xem năm sản xuất" (giữ nguyên URL —
- * theo yêu cầu: dùng chung URL với nút khuyến mại hiện tại).
- * Chưa có card nào trước đó (khách hỏi ngay từ đầu) → chỉ trả FAQ + tiếp tục
- * hỏi field còn thiếu như bình thường.
+ * Trả lời CỐ ĐỊNH (KHÔNG để AI tự sinh) + tìm tin card gần nhất trong
+ * conversation_log (đã lưu sẵn đầy đủ LoggedCard[]), gửi lại y nguyên, chỉ
+ * đổi nhãn nút "🎁 Xem khuyến mại" → `viewButtonTitle` (giữ nguyên URL — theo
+ * yêu cầu: dùng chung URL với nút khuyến mại hiện tại). Chưa có card nào
+ * trước đó (khách hỏi ngay từ đầu) → chỉ trả FAQ + tiếp tục hỏi field còn
+ * thiếu như bình thường.
  */
-async function handleManufactureYearFaq(
+async function replyFaqWithReplayCard(
   psid: string,
   session: FbSession,
   pageId: string,
-  newState: SessionState
+  newState: SessionState,
+  faqText: string,
+  viewButtonTitle: string,
+  logContext: string
 ): Promise<void> {
-  await reply(psid, session.id, MANUFACTURE_YEAR_FAQ_TEXT)
+  await reply(psid, session.id, faqText)
 
   const lastCardsMsg = [...session.conversation_log]
     .reverse()
@@ -1095,19 +1102,47 @@ async function handleManufactureYearFaq(
     buttons: c.buttons?.map(
       (b): Button => ({
         type: 'web_url',
-        title:
-          b.title === QR_TITLE.VIEW_PROMO
-            ? VIEW_MANUFACTURE_YEAR_TITLE
-            : b.title,
+        title: b.title === QR_TITLE.VIEW_PROMO ? viewButtonTitle : b.title,
         url: b.url ?? ''
       })
     )
   }))
-  await sendCards(
+  await sendCards(psid, session.id, relabeled, logContext)
+}
+
+/** Khách hỏi "lốp sản xuất năm nào" — xem replyFaqWithReplayCard(). */
+async function handleManufactureYearFaq(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<void> {
+  await replyFaqWithReplayCard(
     psid,
-    session.id,
-    relabeled,
+    session,
+    pageId,
+    newState,
+    MANUFACTURE_YEAR_FAQ_TEXT,
+    VIEW_MANUFACTURE_YEAR_TITLE,
     'Replay card gần nhất (đổi nhãn nút → năm SX)'
+  )
+}
+
+/** Khách hỏi địa chỉ/SĐT của GARA cụ thể — xem replyFaqWithReplayCard(). */
+async function handleGarageContactFaq(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<void> {
+  await replyFaqWithReplayCard(
+    psid,
+    session,
+    pageId,
+    newState,
+    GARAGE_CONTACT_FAQ_TEXT,
+    VIEW_GARAGE_CONTACT_TITLE,
+    'Replay card gần nhất (đổi nhãn nút → gara contact)'
   )
 }
 
@@ -1491,6 +1526,13 @@ async function handleGathering(
   // is_off_topic=true cùng lúc); off_topic_kind tự nó đã là tín hiệu đủ chắc.
   if (decision.off_topic_kind === 'manufacture_year') {
     await handleManufactureYearFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // FAQ "địa chỉ/SĐT gara" — cùng shape với FAQ năm sản xuất ở trên (reply cố
+  // định + replay card gần nhất, đổi nhãn nút khác).
+  if (decision.off_topic_kind === 'garage_contact') {
+    await handleGarageContactFaq(psid, session, pageId, newState)
     return
   }
 
@@ -3279,10 +3321,18 @@ async function handleMessengerEventV3Inner(
           break
 
         case 'SHOWING_RESULTS_LOCAL':
-          // Đang chờ timer 15s → im lặng
+          // Khách gửi tin TRONG LÚC đang chờ nudge 15s (`promptHelpAndBooking`)
+          // → XỬ LÝ BÌNH THƯỜNG, KHÔNG im lặng bỏ qua — khách có thể đang hỏi
+          // câu hỏi thật (vd "lốp sản xuất năm nào", "có SĐT gara không") cần
+          // trả lời ngay. Bug thật đã xảy ra: im lặng bỏ tin khách → nudge cũ
+          // vẫn fire theo lịch, hỏi 1 câu không liên quan như thể khách chưa
+          // nói gì. handleGathering() tự cancelTimer() timer đang chờ (Map
+          // key=sessionId, chỉ 1 timer/session) → nudge cũ tự huỷ, không xung
+          // đột với tin trả lời mới.
           console.log(
-            `[V3 flow] SHOWING_RESULTS_LOCAL silent session=${session.id}`
+            `[V3 flow] SHOWING_RESULTS_LOCAL → handleGathering session=${session.id}`
           )
+          await handleGathering(psid, session, pageId, messageText)
           break
 
         case 'WELCOME':

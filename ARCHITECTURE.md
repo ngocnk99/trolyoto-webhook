@@ -74,6 +74,7 @@ webhook.controller.ts: processEvents()
    1. `decision.error` → reply + QR "Chat tư vấn viên"
    2. `decision.action==='handoff_cskh'` → xem `follow.md` mục 8 (có guard chặn lặp ở `AWAITING_PHONE`)
    3. `decision.off_topic_kind==='manufacture_year'` → FAQ cố định, replay card cũ
+   3b. `decision.off_topic_kind==='garage_contact'` (hỏi địa chỉ/SĐT gara) → FAQ cố định, replay card cũ — CÙNG SHAPE với manufacture_year, dùng chung `replyFaqWithReplayCard()`. Prompt bắt buộc AI dùng off_topic_kind này thay vì action='handoff_cskh' cho nhóm câu hỏi này (khác với "còn hàng không"/"gai lốp thế nào" — nhóm đó KHÔNG có FAQ cố định nên vẫn đi handoff_cskh, xem mục "KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU" trong ai-helper.ts).
    4. `locationHandoffReason` (fail_location chạm giới hạn) → `cskhHandoff`
    5. `locationAskAgainMsg` → hỏi lại khu vực
    6. `needWardConfirm` (đa khớp ward) → QR chọn ward

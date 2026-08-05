@@ -68,6 +68,17 @@ Ward fallback về tỉnh nếu không có gara tại ward cụ thể (log rõ `
 
 **Reset `max_price`**: chỉ reset khi đổi size/brand/khu vực **SAU KHI đã show kết quả lần đầu** (`has_shown_results=true`) — đổi TRƯỚC lần fetch đầu tiên (đang gộp yêu cầu) thì GIỮ giá.
 
+**Sau khi show kết quả — nudge 15s + khách nhắn tiếp (`SHOWING_RESULTS_LOCAL`):**
+Bot lên lịch `scheduleTimer('v3-help-15s', ...)` (map key = sessionId, CHỈ 1 timer/session — schedule mới tự cancel timer cũ). Khi khách gửi tin BẤT KỲ (kể cả free-text hỏi FAQ) → dispatcher PHẢI route qua `handleGathering()` như mọi step khác — `handleGathering()` tự `cancelTimer()` timer đang chờ ở dòng đầu tiên, không cần code riêng.
+
+**⚠️ Bug thật đã xảy ra (đã fix, đừng regress)**: step `SHOWING_RESULTS_LOCAL` từng được code là "im lặng" (comment "Đang chờ timer 15s → im lặng", KHÔNG gọi `handleGathering`) — khách gửi câu hỏi thật ("lốp sản xuất năm nào") trong lúc chờ 15s bị **BỎ QUA HOÀN TOÀN** (không trả lời gì), sau đó nudge 15s vẫn fire theo lịch cũ, hỏi 1 câu không liên quan ("Anh chị cần hỗ trợ thêm gì...") như thể khách chưa nói gì — khách phải hỏi lại lần 2 mới được trả lời. **Đã fix**: `SHOWING_RESULTS_LOCAL` route qua `handleGathering()` như bình thường.
+
+**FAQ "cố định + replay card/offers gần nhất"** — pattern dùng chung cho các câu hỏi có sẵn 1 câu trả lời chuẩn KHÔNG đổi theo ngữ cảnh (AI KHÔNG tự soạn reply, chỉ cần set đúng `off_topic_kind`):
+- `manufacture_year` ("lốp sản xuất năm nào") → đổi nhãn nút "🎁 Xem khuyến mại" → "Xem năm sản xuất".
+- `garage_contact` ("cho xin địa chỉ/SĐT gara") → đổi nhãn nút → "Xem gara này".
+
+**⚠️ Bug thật đã xảy ra**: `garage_contact` chưa có FAQ riêng lúc đầu → khách hỏi "có số điện thoại gara không" bị AI xếp nhầm vào nhóm "KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU" (mục 2) → `action='handoff_cskh'`, chuyển thẳng CSKH thay vì trả lời FAQ có sẵn. **Đã fix**: thêm `off_topic_kind='garage_contact'` + FAQ riêng, PHẢI đặt trước/loại trừ rõ khỏi nhóm "không có dữ liệu" trong prompt (nếu thêm FAQ cố định mới tương tự sau này — nhớ làm y hệt: vừa thêm template mới, vừa loại trừ khỏi mục "KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU" để tránh AI phân vân giữa 2 nhánh).
+
 ## 5. Dedicated AI resolvers (không dùng thẳng field từ `v3GatherTurn`)
 
 Nguyên tắc chung: `v3GatherTurn` là 1 AI call TỔNG HỢP nhiều field cùng lúc, dễ ảo giác với field cần suy luận phức tạp (tên xe phát âm sai, địa chỉ gõ tắt). Với các field này, `v3GatherTurn` chỉ đóng vai trò **TÍN HIỆU** ("khách có nhắc gì đó về X"), KHÔNG phải **DỮ LIỆU** đáng tin — phải verify qua 1 AI call riêng, hẹp, nhận **userInput gốc**:

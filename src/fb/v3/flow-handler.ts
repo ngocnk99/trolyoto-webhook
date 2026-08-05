@@ -574,7 +574,11 @@ async function sendCards(
  */
 function withUtm(
   url: string,
-  utmContent: 'view_promo' | 'view_other_garage' | 'view_other_product'
+  utmContent:
+    | 'view_promo'
+    | 'view_other_garage'
+    | 'view_other_product'
+    | 'view_all'
 ): string {
   try {
     const u = new URL(url)
@@ -2281,6 +2285,29 @@ async function showCascadeResults(
       cards.map(buildSpGaraCard),
       `${cards.length} SP+gara ở ${displayLabel} (${kind}${usedFallbackProvince ? ', ward fallback' : ''})`
     )
+
+    // "Xem hết" (view_all, không tiêu chí brand cụ thể) → thêm nút [Xem tất
+    // cả] BÊN DƯỚI 3 card, dẫn về trang /lop chung lọc theo kích cỡ (không
+    // giới hạn 3 phân khúc như trên) — theo yêu cầu spec riêng cho case này.
+    if (kind === 'view_all' && tireSize) {
+      await delay(REPLY_GAP_MS)
+      await sendButtonTemplate(
+        psid,
+        sessionId,
+        'Anh/chị có thể xem thêm các lựa chọn khác tại đây ạ 😊',
+        [
+          {
+            type: 'web_url',
+            title: QR_TITLE.BRAND_ALL,
+            url: withUtm(
+              `${TROLYOTO_URL}/lop?page=1&size=${encodeURIComponent(tireSize)}`,
+              'view_all'
+            )
+          }
+        ],
+        'Xem tất cả (view_all)'
+      )
+    }
 
     const shownCodes = cards
       .map(c => c.garageCode)

@@ -29,6 +29,18 @@ Khách nói "giá cao quá"/"đắt quá" (KHÔNG kèm số) → `max_price_vnd`
 1. Prompt: dạy AI phân biệt số liệu marketing/hệ thống (trong lịch sử) với số khách thực sự nêu, và bắt buộc hỏi lại khi khách chê giá không kèm số.
 2. **Kiến trúc (quan trọng hơn, chặn tận gốc)**: `recentHistory()` (đưa vào `v3GatherTurn`) CHỈ chứa hội thoại thật giữa khách-bot, lọc bỏ tin "hệ thống tự tạo" qua cờ `ConversationMessage.hidden_from_ai` — set tại nguồn phát sinh (`sendCards`, `sendButtonTemplate`, `fireInfoNudgeStage1`), không phải suy đoán lại lúc đọc. Bất kỳ tin nudge/CTA/danh sách SP mới thêm sau này PHẢI tự set cờ này nếu không muốn AI đọc nhầm.
 
+**⚠️ Ràng buộc bắt buộc — khách hỏi GIÁ CHUNG CHUNG (không chê đắt) KHÔNG được hiểu thành "yêu cầu lọc giá":**
+Bug thật: bot vừa gợi ý 1 size xe + hỏi "xác nhận có phù hợp không", khách trả lời "Bao nhiêu một chiếc vậy" (hỏi thông tin, KHÔNG chê đắt/không muốn lọc giá) → AI hiểu nhầm thành ý "chê giá cao", hỏi ngược lại "mức giá dưới bao nhiêu ạ?" — sai hoàn toàn ý khách. Phân biệt 2 case trong prompt: "chê giá cao không kèm số" (mục trên) hỏi lại mức giá mong muốn; còn "hỏi giá chung chung, chưa đủ 3 trường" thì `max_price_vnd=null` + reply giải thích ngắn + hỏi tiếp field CÒN THIẾU (size→brand→khu vực) như 1 turn gathering bình thường — KHÔNG hỏi mức giá. Khi field đang thiếu là field đã có nhưng CHƯA xác nhận chính thức (xem 2 bullet dưới), coi như đã có, không hỏi lại xác nhận (tránh vòng lặp thừa).
+
+**⚠️ Ràng buộc bắt buộc — reply hỏi tiếp field còn thiếu PHẢI kết thúc bằng dấu "?":**
+`handleGathering` có 1 "safety-net" (mục 4) tự chèn thêm 1 tin hỏi field còn thiếu nếu `!decision.reply.includes('?')` (coi là "AI quên hỏi"). Nếu prompt dạy AI trả 1 câu ở dạng khẳng định/đề nghị không có dấu "?" dù về ý nghĩa vẫn là đang hỏi (vd "...anh/chị cho em biết khu vực... để em gửi giá phù hợp cho mình ạ 😊") → safety-net hiểu nhầm là thiếu câu hỏi, gửi thêm 1 tin trùng lặp ý ngay sau. Mọi ví dụ reply mới thêm vào prompt (cả FB `ai-helper.ts` lẫn Web `webGatherTurn.ts`) PHẢI kết thúc bằng "?" nếu đang hỏi field tiếp theo.
+
+**⚠️ Ràng buộc bắt buộc — `state.tire_size` PHẢI được khoá chắc chắn khi chỉ có ĐÚNG 1 size khớp xe, không phụ thuộc hoàn toàn vào AI tự nhớ:**
+Sau khi `showCarSizeOptions`/`runCarSizeLookup` show 1 size duy nhất + hỏi "xác nhận có phù hợp không" (lưu vào `state.last_shown_car_sizes`), field `tire_size` CHƯA thực sự set — khách có thể xác nhận qua QR (`QR_TIRE_SIZE:`/`V3_TIRE_SIZE:`, bypass AI hoàn toàn) HOẶC qua tin nhắn tự do bất kỳ (AI phải tự suy luận "khách không phản đối size này" để set `tire_size`). Case thứ 2 KHÔNG đáng tin cậy 100% (AI có lúc set, có lúc quên) → nếu quên, `state.tire_size` mãi trống, các field-completeness check (`hasTireSize`/`hasSize`) cứ coi là thiếu mãi dù đã show/hỏi xác nhận rồi. **Fix: code-level fallback** (không chỉ dựa AI) — nếu turn này AI KHÔNG set `tire_size` VÀ KHÔNG nêu `car_model` mới VÀ `last_shown_car_sizes` chỉ có đúng 1 phần tử → tự khoá size đó vào state luôn (coi im lặng/hỏi chuyện khác = không phản đối), rồi xoá `last_shown_car_sizes`. Áp dụng cả 2 bot (`route.ts` Web, `flow-handler.ts` FB `handleGathering`).
+
+**⚠️ Ràng buộc bắt buộc — chỉ coi `car_model` là "xe MỚI" khi nó THỰC SỰ khác `state.car_model` cũ:**
+Hệ quả trực tiếp của bug "AI echo field cũ" (bullet đầu mục này) áp dụng riêng cho `car_model`: logic "khách nêu tên xe mới → xoá `tire_size` (có thể hallucinate) + bắt buộc tra lại DB qua `runCarSizeLookup`/`resolveCarModel`" trước đây chỉ check `decision.updates.car_model` có giá trị hay không — KHÔNG so với `state.car_model` cũ. Bug thật: khách đã xác nhận xong size (`tire_size` đã khoá), lượt sau chỉ gõ "Hà Nội" (cho khu vực) — nhưng AI vẫn ECHO lại `car_model` cũ trong `updates` (dù tin nhắn không hề nhắc xe) → code hiểu nhầm "xe mới", XOÁ OAN `tire_size` vừa khoá + gọi lại `resolveCarModel("Hà Nội")` vô nghĩa → AI resolver trả `car_model=null` → tính là fail_size, bot hỏi lại ảnh/size dù đã xong từ trước. Fix: thêm điều kiện `decision.updates.car_model !== state.car_model` (car_model THỰC SỰ đổi) trước khi trigger nhánh "xe mới". Áp dụng cả 2 bot.
+
 ## 3. Xác định khu vực (Location) — pipeline 3 tầng + retry có giới hạn
 
 Thứ tự thử (dừng ở tầng đầu tiên thành công):
@@ -110,11 +122,18 @@ Khi bot quyết định handoff (`decision.action==='handoff_cskh'`, hoặc fail
 4. Khách trả lời KHÔNG có SĐT nhưng câu chữ trông như hỏi sản phẩm khác (vd đổi size/brand/khu vực) → tiếp tục `handleGathering` bình thường, KHÔNG ép đóng.
 5. **⚠️ Khách trả lời KHÔNG có SĐT và AI (`v3GatherTurn`) LẠI quyết định `handoff_cskh` lần nữa** (nghĩa là chính AI cũng không thấy đây là câu hỏi sản phẩm mới) → **KHÔNG hỏi lại vòng 2** (tránh lặp y nguyên câu xin lỗi mãi mãi) — đóng luồng NGAY qua `handlePhoneInput` (nhánh "không có SĐT": 1 tin ack + end-permanent), giống hệt như khi khách chủ động từ chối cho SĐT.
 
-## 9. CSKH echo detection (chỉ FB, production wrapper)
+## 9. CSKH echo detection (cả FB PROD lẫn V3 — 2 bản độc lập, phải sửa cả 2)
 
 Khi Page Inbox/Business Suite/Pancake gửi tin cho khách (không phải bot) → FB echo về webhook với `app_id` khác bot. Đây là dấu hiệu CSKH người thật đã engage → **pause session vĩnh viễn** cho PSID đó, bot ngừng tự động trả lời.
 
-> Trạng thái ⏳ ĐANG XỬ LÝ (chưa merge tại thời điểm viết file này): phân biệt tin quảng cáo/tự động (Meta "stale thread automation", `notification_messages_*` template) khỏi CSKH người thật trả lời tay — chỉ loại `app_id=263902037430900` khỏi pause-trigger khi xác định được đó là tin **quảng cáo/tự động**, KHÔNG loại trừ toàn bộ app_id (vì app_id này cũng là kênh CSKH thật trả lời qua Page Inbox UI). Xem lịch sử chat để lấy quyết định cuối cùng + code thực tế khi đọc lại file này.
+**Phân biệt tin quảng cáo/tự động khỏi CSKH người thật (đã fix, xem `isAutomatedAdEcho()` — trùng tên, tách riêng ở CẢ `production/flow-handler.ts` LẪN `v3/flow-handler.ts`, KHÔNG import chung vì `production` đã import từ `v3` — import ngược sẽ tạo circular dependency):**
+Meta có tính năng "Recurring Notifications" tự động gửi tin nhắc lại thread cũ (title "Ưu đãi và thông báo", `notification_messages_cta_entry_point: "mm_stale_thread_automation"`) — echo về webhook với **CÙNG app_id=263902037430900** như CSKH người thật trả lời qua Business Suite, nên KHÔNG thể phân biệt qua app_id. Phải nhận diện qua CẤU TRÚC nội dung: chỉ tin tự động mới có field `notification_messages_*` trong `message.attachments[].payload.elements[].buttons[]` — người thật gõ chỉ gửi text/ảnh đơn giản.
+
+Khi phát hiện tin quảng cáo/tự động dạng này:
+- **KHÔNG coi là CSKH engage** — không tạo session mới, không pause.
+- Nếu session **HIỆN ĐANG bị pause** (do CSKH thật xong việc, hoặc do quảng cáo trước đó lỡ trigger trước khi có check này) → `completeSession()` (như `/reset`) để khách chat lại sau đó bot hoạt động bình thường, không bị treo silent oan vĩnh viễn chỉ vì 1 tin quảng cáo. Lưu ý: `completeSession()` KHÔNG tự xoá `is_paused_by_cskh` (chỉ set `is_active=false, step='COMPLETED'`) — không sao vì `getActiveSession()` chỉ query `is_active=true`, session cũ đã inactive sẽ không được tìm thấy nữa; lần chat kế tiếp của khách sẽ tạo session MỚI hoàn toàn (row mới, `is_paused_by_cskh` mặc định false).
+
+**⚠️ Bug phụ phát hiện khi test (đã fix)**: `v3/flow-handler.ts`'s `handleMessengerEventV3Inner` luôn tính `psid = event.sender.id` — với event ECHO (`sender=page, recipient=customer`), giá trị này SAI (= page ID, không phải customer PSID thật), khiến log `[V3 entry] psid=...` gây nhiễu khi debug (không ảnh hưởng logic thật vì nhánh echo tự tính lại `recipient.id` riêng cho mọi thao tác). Đã sửa để tính `psid` echo-aware giống `production/flow-handler.ts` (`isEcho ? recipient.id : sender.id`).
 
 ## 10. Giờ làm việc (production wrapper)
 

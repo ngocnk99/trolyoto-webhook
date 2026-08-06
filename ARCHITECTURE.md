@@ -66,7 +66,7 @@ webhook.controller.ts: processEvents()
 
 1. Cancel timer pending (nudge 15s/45s từ turn trước).
 2. Gọi `v3GatherTurn`.
-3. Apply updates vào `newState` (size ưu tiên regex, brand/tier, `wants_best_quality`, `max_price` — có logic reset riêng, xem mục 5).
+3. Apply updates vào `newState` (size ưu tiên regex, brand/tier, `wants_best_quality`, `max_price` — có logic reset riêng, xem mục 5). Ngay sau khi merge `tire_size`: nếu turn này AI KHÔNG set `tire_size` VÀ KHÔNG nêu `car_model` mới VÀ `state.last_shown_car_sizes` chỉ có đúng 1 phần tử → tự khoá size đó vào `newState.tire_size` (coi im lặng/hỏi chuyện khác = không phản đối size vừa gợi ý), xoá `last_shown_car_sizes`. Xem `follow.md` mục 2 (bugfix 2026-08-06).
 4. **Resolve location** — CHỈ chạy khi `decision.updates.province_name !== state.province_name` (guard `isFreshLocationUpdate`, thêm 2026-07-24). Pipeline chi tiết: `follow.md` mục 3.
 5. Reset fail counters nếu AI extract được gì đó (`aiExtractedAnything`) — TRỪ `fail_location` nếu turn này vừa set `locationAskAgainMsg`/`locationHandoffReason` (không được xoá counter vừa tăng).
 6. Persist state (`updateSession`).
@@ -90,8 +90,9 @@ webhook.controller.ts: processEvents()
 - `changedCoreField` — dùng để quyết định reset `max_price`; so sánh size/brand_tier/selected_brands (qua `JSON.stringify`)/province đều với state cũ
 - `isFreshLocationUpdate` — gate cho toàn bộ khối resolve location (mục 4 bước 4)
 - `sizeChanged` / `brandChanged` / `provinceChanged` → gộp thành `relevantFieldUpdated` — gate cho `dispatchAndShowResults`
+- `carModelChanged` — `!!decision.updates.car_model && decision.updates.car_model !== state.car_model`; gate cho `carWantsOptions` (nhánh "xe mới → xoá `tire_size` + show size options lại")
 
-**`brandChanged` và `changedCoreField` từng SAI** (chỉ check `decision.updates.selected_brands.length > 0`, không so sánh state cũ) → sửa 2026-07-24 sau khi phát hiện qua live-test: khách nói "Cảm ơn" sau khi có kết quả khiến bot tự động fetch + gửi lại y nguyên card sản phẩm. **Nếu thêm field mới vào state (vd 1 tiêu chí lọc mới), PHẢI thêm vào các biến "changed" này theo đúng pattern so sánh — không copy nhầm kiểu check truthy-only.**
+**`brandChanged` và `changedCoreField` từng SAI** (chỉ check `decision.updates.selected_brands.length > 0`, không so sánh state cũ) → sửa 2026-07-24 sau khi phát hiện qua live-test: khách nói "Cảm ơn" sau khi có kết quả khiến bot tự động fetch + gửi lại y nguyên card sản phẩm. **`carWantsOptions` từng SAI theo đúng kiểu tương tự** (chỉ check `decision.updates.car_model` truthy) → sửa 2026-08-06: khách đã xác nhận xong size, lượt sau chỉ gõ tên khu vực nhưng AI vẫn echo lại `car_model` cũ trong `updates` → xoá oan `tire_size` vừa khoá + gọi lại `resolveCarModel` vô nghĩa trên tin nhắn khu vực, xem `follow.md` mục 2. **Nếu thêm field mới vào state (vd 1 tiêu chí lọc mới), PHẢI thêm vào các biến "changed" này theo đúng pattern so sánh — không copy nhầm kiểu check truthy-only.**
 
 ## 6. Chỗ dễ sót khi sửa (checklist)
 

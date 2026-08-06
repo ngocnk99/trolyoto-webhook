@@ -1198,6 +1198,28 @@ async function handleGathering(
   } else if (decision.updates.tire_size) {
     newState.tire_size = decision.updates.tire_size
   }
+
+  // ── Bot vừa show ĐÚNG 1 size khớp car_model + hỏi "xác nhận có phù hợp"
+  // ở lượt trước (state.last_shown_car_sizes), khách tin nhắn NÀY không đổi
+  // xe/không gõ size khác (vd hỏi giá, hỏi off-topic, "ok"/"đúng rồi") → coi
+  // như XÁC NHẬN NGẦM, khoá luôn size đó vào state — KHÔNG phụ thuộc hoàn
+  // toàn vào v3GatherTurn tự nhớ set lại tire_size mỗi turn (nếu AI quên,
+  // state.tire_size mãi trống → hasSize luôn false → cứ hỏi lại "kích cỡ
+  // nào" dù đã show/hỏi xác nhận rồi — bug phát hiện khi test case "Bao
+  // nhiêu một chiếc vậy" sau khi bot gợi ý size xe). Mutate luôn
+  // decision.updates.tire_size để các so sánh sizeChanged/relevantFieldUpdated
+  // phía dưới coi đây như 1 lần cập nhật size hợp lệ (đủ 3 trường thì fetch
+  // ngay). Đồng bộ với src/libs/chat/server/route.ts (Web bot, cùng bugfix).
+  if (
+    !newState.tire_size &&
+    !decision.updates.car_model &&
+    state.last_shown_car_sizes?.length === 1
+  ) {
+    const confirmedSize = state.last_shown_car_sizes[0]
+    newState.tire_size = confirmedSize
+    decision.updates.tire_size = confirmedSize
+    newState.last_shown_car_sizes = []
+  }
   if (
     decision.updates.brand_tier !== undefined &&
     decision.updates.brand_tier !== null
@@ -1610,7 +1632,17 @@ async function handleGathering(
   // "215/60/r16") + có/không space — đồng bộ với parseExplicitTireSize.
   const userExplicitSize =
     /\d{3}\s*[/\s-]?\s*\d{2}[\sA-Z/-]{0,4}\d{2}/i.test(userInput)
-  const carWantsOptions = !!decision.updates.car_model && !userExplicitSize
+  // So sánh với state.car_model CŨ (không chỉ check decision.updates.car_model
+  // truthy) — v3GatherTurn đôi khi ECHO lại đúng car_model đã biết dù khách
+  // tin nhắn này không hề nhắc lại tên xe (vd đang chờ khu vực, khách gõ "Hà
+  // Nội" nhưng AI vẫn trả car_model cũ trong updates) — nếu không check, sẽ
+  // XOÁ OAN tire_size ĐÃ XÁC NHẬN + gọi lại resolveCarModel vô nghĩa với
+  // userInput="Hà Nội" (bug phát hiện khi test case "Bao nhiêu một chiếc
+  // vậy" → xác nhận size → cho khu vực, xem follow.md). Đồng bộ với
+  // src/libs/chat/server/route.ts (Web bot, cùng bugfix).
+  const carModelChanged =
+    !!decision.updates.car_model && decision.updates.car_model !== state.car_model
+  const carWantsOptions = carModelChanged && !userExplicitSize
 
   if (
     hasSize &&
@@ -2940,6 +2972,32 @@ export async function handleMessengerEventV3(
   )
 }
 
+/**
+ * Detect tin QUẢNG CÁO/NHẮC LẠI THREAD CŨ do CHÍNH FACEBOOK tự động gửi
+ * (tính năng "Recurring Notifications" — vd tiêu đề "Ưu đãi và thông báo",
+ * `notification_messages_cta_entry_point: "mm_stale_thread_automation"`) —
+ * echo về CÙNG app_id với admin Business Suite thật (263902037430900), nên
+ * KHÔNG thể phân biệt qua app_id. Phải nhận diện qua CẤU TRÚC nội dung: chỉ
+ * tin tự động mới có field `notification_messages_*` trong buttons — người
+ * thật gõ qua Business Suite chỉ gửi text/ảnh đơn giản, không có cấu trúc
+ * này. Đồng bộ với `isAutomatedAdEcho()` trong production/flow-handler.ts
+ * (duplicate thay vì import chung — import ngược lại sẽ tạo circular dependency
+ * vì production/flow-handler.ts đã import từ file này).
+ */
+function isAutomatedAdEcho(event: MessengerEvent): boolean {
+  const attachments = event.message?.attachments
+  if (!attachments?.length) return false
+  return attachments.some(a => {
+    const elements = a.payload?.elements
+    if (!Array.isArray(elements)) return false
+    return elements.some(el =>
+      (el.buttons ?? []).some(b =>
+        Object.keys(b ?? {}).some(k => k.startsWith('notification_messages_'))
+      )
+    )
+  })
+}
+
 /** Log mô tả ngắn loại event để debug entry points. */
 function describeEvent(event: MessengerEvent): string {
   if (event.message?.is_echo) {
@@ -2972,7 +3030,13 @@ async function handleMessengerEventV3Inner(
   pageId: string
 ): Promise<void> {
   try {
-    const psid = event.sender.id
+    // ECHO event: sender=page, recipient=customer (giống PROD flow-handler.ts)
+    //  → Customer PSID = recipient.id khi is_echo, ngược lại = sender.id. Bug
+    //  cũ: luôn dùng event.sender.id → echo event log/hiển thị SAI psid = page
+    //  ID thay vì customer thật (không ảnh hưởng logic bên dưới vì nhánh echo
+    //  tự tính lại recipient.id riêng, nhưng gây khó debug qua log).
+    const isEcho = event.message?.is_echo === true
+    const psid = isEcho ? (event.recipient?.id ?? '') : (event.sender?.id ?? '')
     console.log(
       `[V3 entry] psid=${psid} pageId=${pageId} → ${describeEvent(event)}`
     )
@@ -2999,6 +3063,30 @@ async function handleMessengerEventV3Inner(
         console.log(`[V3] echo from bot self (app_id=${echoAppId}) → ignore`)
         return
       }
+
+      // Tin quảng cáo/nhắc lại thread tự động do CHÍNH FACEBOOK gửi (KHÔNG
+      // phải admin CSKH thật, dù cùng app_id 263902037430900) → KHÔNG pause.
+      // Nếu session HIỆN ĐANG bị pause (do CSKH thật xong việc, hoặc do
+      // quảng cáo trước đó lỡ trigger trước khi có check này) → complete
+      // session đó (như /reset) để khách chat lại sau bot hoạt động bình
+      // thường, không bị treo silent oan vĩnh viễn chỉ vì 1 tin quảng cáo.
+      if (isAutomatedAdEcho(event)) {
+        const adRecipientPsid = event.recipient.id
+        const latestSession = await getLatestSession(adRecipientPsid, pageId)
+        if (latestSession?.is_paused_by_cskh) {
+          cancelTimer(latestSession.id, 'v3-ad-echo-unpause')
+          await completeSession(latestSession.id)
+          console.log(
+            `[V3] Ad/notification echo app_id=${echoAppId} psid=${adRecipientPsid} → session ${latestSession.id} đang paused → complete (khách chat lại bot sẽ hoạt động bình thường)`
+          )
+        } else {
+          console.log(
+            `[V3] Ad/notification echo app_id=${echoAppId} psid=${adRecipientPsid} → bỏ qua (không phải CSKH thật)`
+          )
+        }
+        return
+      }
+
       // Admin reply (app_id khác hoặc không có) → pause
       const recipientPsid = event.recipient.id
       const activeSession = await getActiveSession(recipientPsid, pageId)

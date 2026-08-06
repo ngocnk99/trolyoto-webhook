@@ -456,7 +456,7 @@ export async function fetchTireSizesByProductSearch(
       if (searchKw.includes('VINFAST') && searchKw.includes('VF')) {
         searchKw = searchKw.replace('VINFAST', '').trim()
       }
-      const { data, error } = await supabaseAmin.rpc('search_products_by_tag', {
+      const { data, error } = await supabaseAmin.rpc('product_search_by_tag', {
         keywords: searchKw,
         category: ['LOP'],
         sort_by: 'quantitysold',

@@ -220,12 +220,21 @@ export interface MessengerEvent {
         | 'location'
         | 'fallback'
         | 'sticker'
+        | 'template'
       payload?: {
         url?: string
         /** Có giá trị khi khách gửi sticker (like 👍, emoji thumb...). Type lúc đó
          *  thường là 'image' (FB đóng gói sticker dưới dạng image) hoặc 'sticker'. */
         sticker_id?: number
         coordinates?: { lat: number; long: number }
+        /** type='template' (echo) — vd tin "Ưu đãi và thông báo" Facebook TỰ GỬI
+         *  (Recurring Notifications / nhắc lại thread cũ), KHÔNG phải người gõ qua
+         *  Business Suite. Nhận diện qua field notification_messages_* trong
+         *  buttons — xem isAutomatedAdEcho() trong production/flow-handler.ts. */
+        template_type?: string
+        elements?: Array<{
+          buttons?: Array<Record<string, unknown>>
+        }>
       }
     }>
   }

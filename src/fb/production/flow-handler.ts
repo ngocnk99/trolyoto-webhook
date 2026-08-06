@@ -35,6 +35,7 @@ import {
   createSession,
   updateSession,
   pauseSessionByCskh,
+  completeSession,
   setBotOwnsThread,
   appendConversationLog
 } from '../session'
@@ -81,6 +82,31 @@ function isEchoFromOtherApp(event: MessengerEvent): boolean {
   const appId = event.message?.app_id
   if (!FB_APP_ID || !appId) return echo === true
   return String(appId) !== String(FB_APP_ID)
+}
+
+/**
+ * Detect tin QUẢNG CÁO/NHẮC LẠI THREAD CŨ do CHÍNH FACEBOOK tự động gửi
+ * (tính năng "Recurring Notifications" — vd tiêu đề "Ưu đãi và thông báo",
+ * `notification_messages_cta_entry_point: "mm_stale_thread_automation"`) —
+ * echo về CÙNG app_id với admin Business Suite thật (263902037430900), nên
+ * KHÔNG thể phân biệt qua app_id. Phải nhận diện qua CẤU TRÚC nội dung: chỉ
+ * tin tự động mới có field `notification_messages_*` trong buttons — người
+ * thật gõ qua Business Suite chỉ gửi text/ảnh đơn giản, không có cấu trúc
+ * này. Coi tin dạng này KHÔNG phải CSKH thật engage — không được pause bot
+ * vì tin này (xem call site).
+ */
+function isAutomatedAdEcho(event: MessengerEvent): boolean {
+  const attachments = event.message?.attachments
+  if (!attachments?.length) return false
+  return attachments.some(a => {
+    const elements = a.payload?.elements
+    if (!Array.isArray(elements)) return false
+    return elements.some(el =>
+      (el.buttons ?? []).some(b =>
+        Object.keys(b ?? {}).some(k => k.startsWith('notification_messages_'))
+      )
+    )
+  })
 }
 
 /** Tóm tắt event để lưu vào conversation_log khi observe-only (không xử lý). */
@@ -213,6 +239,29 @@ export async function handleMessengerEventProduction(
   // sau bot vẫn stay silent vĩnh viễn cho PSID đó).
   if (isEchoFromOtherApp(event)) {
     const appId = event.message?.app_id ?? 'unknown'
+
+    // Tin quảng cáo/nhắc lại thread tự động do CHÍNH FACEBOOK gửi (KHÔNG phải
+    // người thật) → KHÔNG coi là CSKH engage, bỏ qua hoàn toàn — không tạo
+    // session mới, không pause. Nếu session HIỆN ĐANG bị pause (có thể do
+    // đúng CSKH thật đã xong việc, hoặc do quảng cáo trước đó lỡ trigger
+    // pause trước khi có check này) → complete session đó (như /reset) để
+    // khách chat lại sau đó bot hoạt động bình thường, không bị treo silent
+    // oan vĩnh viễn chỉ vì 1 tin quảng cáo.
+    if (isAutomatedAdEcho(event)) {
+      const adSession = await getLatestSession(psid, pageId)
+      if (adSession?.is_paused_by_cskh) {
+        await completeSession(adSession.id)
+        console.log(
+          `[PROD] Ad/notification echo app_id=${appId} psid=${psid} → session ${adSession.id} đang paused → complete (khách chat lại bot sẽ hoạt động bình thường)`
+        )
+      } else {
+        console.log(
+          `[PROD] Ad/notification echo app_id=${appId} psid=${psid} → bỏ qua (không phải CSKH thật)`
+        )
+      }
+      return
+    }
+
     let session =
       (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
     if (!session) {

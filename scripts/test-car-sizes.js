@@ -7,7 +7,7 @@
  *      → AI (gpt-4o-mini) normalize → "VinFast VF8 Plus" + cartype canonical
  *      → toCartypeCodes() sinh variants
  *      → Replace [_-] → space + dedupe → keywords
- *      → Mỗi keyword prefix "LOP " call RPC search_products_by_tag
+ *      → Mỗi keyword prefix "LOP " call RPC product_search_by_tag
  *      → Log products + sizes
  *
  *  Usage:
@@ -211,12 +211,12 @@ async function main() {
     process.exit(1)
   }
 
-  console.log('──> [3] Gọi RPC search_products_by_tag cho từng keyword')
+  console.log('──> [3] Gọi RPC product_search_by_tag cho từng keyword')
   const allProducts = new Map() // id → { size, qty, source_kw }
   for (const kw of keywords) {
     const searchKw = `${kw}`
-    console.log(`    RPC search_products_by_tag(keywords="${searchKw}")`)
-    const { data, error } = await supabase.rpc('search_products_by_tag', {
+    console.log(`    RPC product_search_by_tag(keywords="${searchKw}")`)
+    const { data, error } = await supabase.rpc('product_search_by_tag', {
       keywords: searchKw,
       category: ['LOP'],
       sort_by: 'quantitysold',

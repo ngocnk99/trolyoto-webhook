@@ -427,9 +427,9 @@ export async function fetchTireSizesByCartype(
   return { sizes, productCount: seenProducts.size }
 }
 
-// ── 1f. fetchTireSizesByProductSearch (V3 — qua RPC search_products_by_tag) ────
+// ── 1f. fetchTireSizesByProductSearch (V3 — qua RPC product_search_by_tag) ────
 /**
- * Tìm sản phẩm lốp qua Postgres RPC `search_products_by_tag` (giống như cách
+ * Tìm sản phẩm lốp qua Postgres RPC `product_search_by_tag` (giống như cách
  * web buyer search). Mỗi keyword được prefix `"LOP "` để filter chỉ lấy lốp.
  *
  * Caller truyền nhiều keyword variants → chạy song song mỗi keyword 1 RPC call
@@ -456,7 +456,7 @@ export async function fetchTireSizesByProductSearch(
       if (searchKw.includes('VINFAST') && searchKw.includes('VF')) {
         searchKw = searchKw.replace('VINFAST', '').trim()
       }
-      const { data, error } = await supabaseAmin.rpc('search_products_by_tag', {
+      const { data, error } = await supabaseAmin.rpc('product_search_by_tag', {
         keywords: searchKw,
         category: ['LOP'],
         sort_by: 'quantitysold',

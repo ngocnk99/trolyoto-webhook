@@ -78,7 +78,14 @@ export async function createSession(
 export async function updateSession(
   sessionId: string,
   updates: Partial<
-    Pick<FbSession, 'step' | 'state' | 'is_active' | 'is_paused_by_cskh'>
+    Pick<
+      FbSession,
+      | 'step'
+      | 'state'
+      | 'is_active'
+      | 'is_paused_by_cskh'
+      | 'paused_by_cskh_at'
+    >
   > & {
     is_error?: boolean
     bot_owns_thread?: boolean
@@ -149,21 +156,76 @@ export async function getSessionsOwnedByBot(
  *  - `is_paused_by_cskh = true`   → bot bỏ qua mọi tin nhắn user gửi sau đó
  *  - `is_active = false`          → coi như đã kết thúc phiên (mọi nơi check active đều ignore)
  *  - `step = 'PAUSED_BY_CSKH'`    → marker rõ ràng cho debug
+ *  - `paused_by_cskh_at = now`    → mốc để tự động hết hạn sau `CSKH_PAUSE_EXPIRY_MS`
  *
  * Sau khi pause: dispatcher dùng `getLatestSession` để bắt cả session inactive,
- * nếu thấy is_paused_by_cskh → bot stay silent vĩnh viễn cho PSID đó
- * (không tạo phiên mới, không gửi welcome).
+ * nếu thấy is_paused_by_cskh (VÀ chưa hết hạn — xem `resolveEffectiveSession`)
+ * → bot stay silent cho PSID đó (không tạo phiên mới, không gửi welcome).
  */
 export async function pauseSessionByCskh(sessionId: string): Promise<void> {
   await updateSession(sessionId, {
     is_paused_by_cskh: true,
     is_active: false,
-    step: 'PAUSED_BY_CSKH'
+    step: 'PAUSED_BY_CSKH',
+    paused_by_cskh_at: new Date().toISOString()
   })
 }
 
 export async function completeSession(sessionId: string): Promise<void> {
   await updateSession(sessionId, { is_active: false, step: 'COMPLETED' })
+}
+
+/**
+ * Pause CSKH KHÔNG được tồn tại vĩnh viễn — nếu CSKH pause rồi không quay lại
+ * follow-up thêm lần nào trong `CSKH_PAUSE_EXPIRY_MS` (hiện = 8 tiếng), bot
+ * PHẢI tự động hoạt động lại cho PSID đó, tránh im lặng oan với khách hàng
+ * (bug thật: khách hỏi tiếp sau nhiều ngày, session vẫn `is_paused_by_cskh`
+ * từ lần CSKH engage trước đó → bot không bao giờ trả lời nữa).
+ *
+ * Lưu ý: mỗi lần CSKH thực sự reply thêm (`pauseSessionByCskh` gọi lại) sẽ
+ * làm mới `paused_by_cskh_at` → đồng hồ 8h tính lại từ lần CSKH gần nhất,
+ * KHÔNG phải từ lần pause đầu tiên.
+ */
+export const CSKH_PAUSE_EXPIRY_MS = 8 * 60 * 60 * 1000 // 8 tiếng
+
+export function isPauseExpired(
+  session: Pick<FbSession, 'is_paused_by_cskh' | 'paused_by_cskh_at'>
+): boolean {
+  if (!session.is_paused_by_cskh || !session.paused_by_cskh_at) return false
+  return (
+    Date.now() - new Date(session.paused_by_cskh_at).getTime() >
+    CSKH_PAUSE_EXPIRY_MS
+  )
+}
+
+/**
+ * Gọi NGAY SAU mỗi lần fetch session ở các điểm quyết định "bot có nên im
+ * lặng vì đang pause_by_cskh không" — nếu pause đã hết hạn, tự động unpause
+ * TRONG DB (is_paused_by_cskh=false, is_active=true, step='V3_GATHERING',
+ * paused_by_cskh_at=null) và trả về session đã cập nhật để code gọi tiếp xử
+ * lý như session bình thường (tin nhắn khách lần này được xử lý ngay, không
+ * cần đợi thêm 1 lượt). Trả nguyên session nếu null hoặc chưa hết hạn.
+ */
+export async function resolveEffectiveSession(
+  session: FbSession | null
+): Promise<FbSession | null> {
+  if (!session || !isPauseExpired(session)) return session
+  console.log(
+    `[FB session] pause_by_cskh session=${session.id} đã quá hạn ${CSKH_PAUSE_EXPIRY_MS / 3600000}h (paused_at=${session.paused_by_cskh_at}) → tự động unpause`
+  )
+  await updateSession(session.id, {
+    is_paused_by_cskh: false,
+    is_active: true,
+    step: 'V3_GATHERING',
+    paused_by_cskh_at: null
+  })
+  return {
+    ...session,
+    is_paused_by_cskh: false,
+    is_active: true,
+    step: 'V3_GATHERING',
+    paused_by_cskh_at: null
+  }
 }
 
 /**

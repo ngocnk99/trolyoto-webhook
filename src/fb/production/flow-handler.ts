@@ -27,8 +27,17 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import type { MessengerEvent, ConversationMessage, MessengerEntry } from '../types'
-import { handleMessengerEventV3 } from '../v3/flow-handler'
+import type {
+  MessengerEvent,
+  ConversationMessage,
+  MessengerEntry,
+  FbSession
+} from '../types'
+import {
+  handleMessengerEventV3,
+  dispatchAndShowResults,
+  hasBrandField
+} from '../v3/flow-handler'
 import {
   getActiveSession,
   getLatestSession,
@@ -37,7 +46,8 @@ import {
   pauseSessionByCskh,
   completeSession,
   setBotOwnsThread,
-  appendConversationLog
+  appendConversationLog,
+  resolveEffectiveSession
 } from '../session'
 import { takeThreadControl } from '../handover'
 
@@ -107,6 +117,22 @@ function isAutomatedAdEcho(event: MessengerEvent): boolean {
       )
     )
   })
+}
+
+/**
+ * Lấy session active/latest + tự động unpause nếu `is_paused_by_cskh` đã quá
+ * hạn (`resolveEffectiveSession`, xem session.ts) — PHẢI dùng hàm này (thay
+ * vì gọi trực tiếp `getActiveSession ?? getLatestSession`) ở MỌI điểm quyết
+ * định "bot có nên im lặng vì đang pause_by_cskh" để đảm bảo pause tự hết
+ * hạn sau `CSKH_PAUSE_EXPIRY_MS`, tránh bot im lặng vĩnh viễn cho 1 PSID.
+ */
+async function getEffectiveSession(
+  psid: string,
+  pageId: string
+): Promise<FbSession | null> {
+  const session =
+    (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+  return resolveEffectiveSession(session)
 }
 
 /** Tóm tắt event để lưu vào conversation_log khi observe-only (không xử lý). */
@@ -248,7 +274,9 @@ export async function handleMessengerEventProduction(
     // khách chat lại sau đó bot hoạt động bình thường, không bị treo silent
     // oan vĩnh viễn chỉ vì 1 tin quảng cáo.
     if (isAutomatedAdEcho(event)) {
-      const adSession = await getLatestSession(psid, pageId)
+      const adSession = await resolveEffectiveSession(
+        await getLatestSession(psid, pageId)
+      )
       if (adSession?.is_paused_by_cskh) {
         await completeSession(adSession.id)
         console.log(
@@ -262,8 +290,7 @@ export async function handleMessengerEventProduction(
       return
     }
 
-    let session =
-      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+    let session = await getEffectiveSession(psid, pageId)
     if (!session) {
       session = await createSession(psid, pageId)
       console.log(
@@ -289,6 +316,35 @@ export async function handleMessengerEventProduction(
       ts: new Date().toISOString()
     }
     await appendConversationLog(session.id, logMsg)
+
+    // CSKH nhắc khách "chọn [XEM KHUYẾN MẠI]" (xem giá/khuyến mại/năm SX) —
+    // nếu 2 tin GẦN NHẤT TRƯỚC ĐÓ (session.conversation_log lúc này CHƯA
+    // append logMsg ở trên) không có tin nào gửi card sản phẩm, khách sẽ
+    // không có card để bấm. Nếu state đã đủ 3 trường (size/brand/khu vực) →
+    // tự gửi lại card SP dùng ĐÚNG thông tin mới nhất đã thu thập (query DB
+    // fresh qua dispatchAndShowResults, KHÔNG replay card cũ). Chỉ áp dụng
+    // khi ĐÃ ĐỦ info — nếu thiếu, bỏ qua (không tự ý cskhHandoff/hỏi lại
+    // trong lúc CSKH đang trực tiếp xử lý). Xem follow.md.
+    if (/xem khuyến mại/i.test(event.message?.text ?? '')) {
+      const recentHasCard = session.conversation_log
+        .slice(-2)
+        .some(m => m.type === 'cards')
+      const st = session.state
+      const stateComplete =
+        !!st.tire_size &&
+        hasBrandField(st) &&
+        (!!st.province_code || !!st.ward_code)
+      if (!recentHasCard && stateComplete) {
+        console.log(
+          `[PROD] CSKH nhắc "xem khuyến mại" nhưng 2 tin gần nhất chưa có card → tự gửi lại card SP (state hiện có) session=${session.id}`
+        )
+        await dispatchAndShowResults(psid, session.id, pageId, st, [])
+        // dispatchAndShowResults set is_active=true/step khác để phục vụ luồng
+        // gathering bình thường → re-pause NGAY, tránh bot vô tình "sống lại"
+        // trong lúc CSKH vẫn đang trực tiếp xử lý khách.
+        await pauseSessionByCskh(session.id)
+      }
+    }
     return
   }
 
@@ -312,8 +368,7 @@ export async function handleMessengerEventProduction(
   // ── (3) Standby branch — Pancake đang giữ thread ─────────────────────────
   if (isStandby) {
     // Lấy hoặc tạo session để có chỗ ghi log conversation
-    let session =
-      (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+    let session = await getEffectiveSession(psid, pageId)
 
     // Trong giờ làm việc → chỉ log, không reply, không take.
     if (!isOutOfHours) {
@@ -378,8 +433,7 @@ export async function handleMessengerEventProduction(
   }
 
   // Ngoài giờ — check pause trước khi reply.
-  const session =
-    (await getActiveSession(psid, pageId)) ?? (await getLatestSession(psid, pageId))
+  const session = await getEffectiveSession(psid, pageId)
   if (session?.is_paused_by_cskh) {
     console.log(
       `[PROD] messaging out-of-hours psid=${psid} session=${session.id} pause_by_cskh → skip`

@@ -12,7 +12,8 @@ webhook.controller.ts       Entry point FB webhook (GET verify / POST events), r
   └─ ai-helper.ts               Mọi AI call: v3GatherTurn, resolveCarModel, resolveAddress, analyzeTireImage
 db.ts                        Supabase queries: fetchSpGaraCards, resolveProvinceSync, findWardsByText,
                               MERGED_PROVINCE_ALIASES, getTireSizesForCar
-session.ts                   CRUD `fb_messenger_sessions`: createSession/updateSession/pauseSessionByCskh
+session.ts                   CRUD `fb_messenger_sessions`: createSession/updateSession/pauseSessionByCskh/
+                              resolveEffectiveSession (auto-unpause sau CSKH_PAUSE_EXPIRY_MS=8h, follow.md mục 9)
 handover.ts / handover-cron.ts   Facebook Handover Protocol (take/pass thread control), cron pass-back 8:30
 types.ts                     MessengerStep enum, SessionState, FbSession, ConversationMessage
 debug.controller.ts          Test-only endpoints: simulate-message/simulate-qr/session inspect
@@ -75,6 +76,7 @@ webhook.controller.ts: processEvents()
    2. `decision.action==='handoff_cskh'` → xem `follow.md` mục 8 (có guard chặn lặp ở `AWAITING_PHONE`)
    3. `decision.off_topic_kind==='manufacture_year'` → FAQ cố định, replay card cũ
    3b. `decision.off_topic_kind==='garage_contact'` (hỏi địa chỉ/SĐT gara) → FAQ cố định, replay card cũ — CÙNG SHAPE với manufacture_year, dùng chung `replyFaqWithReplayCard()`. Prompt bắt buộc AI dùng off_topic_kind này thay vì action='handoff_cskh' cho nhóm câu hỏi này (khác với "còn hàng không"/"gai lốp thế nào" — nhóm đó KHÔNG có FAQ cố định nên vẫn đi handoff_cskh, xem mục "KHÁCH HỎI ĐIỀU BẠN KHÔNG CÓ DỮ LIỆU" trong ai-helper.ts).
+   3c. `decision.off_topic_kind==='generic_price_inquiry'` (hỏi giá chung chung, chưa đủ 3 trường) → `handleGenericPriceInquiry()`: tính field còn thiếu deterministically từ `newState` qua `genericPriceInquiryQuestion()` (size→brand→khu vực, KHÔNG dùng `decision.reply`), gửi câu hỏi cố định tương ứng (kèm `V3_BRAND_QRS()` nếu đang hỏi brand). Trả `false`/fallthrough xuống nhánh 7 nếu state THỰC RA đã đủ 3 trường (hiếm). Xem `follow.md` mục 2 (lý do KHÔNG để AI tự soạn câu hỏi field — đã thử, AI đoán sai field 3/3 lần test).
    4. `locationHandoffReason` (fail_location chạm giới hạn) → `cskhHandoff`
    5. `locationAskAgainMsg` → hỏi lại khu vực
    6. `needWardConfirm` (đa khớp ward) → QR chọn ward
@@ -102,6 +104,10 @@ webhook.controller.ts: processEvents()
 - **`cskhHandoff()` không nên có tin nhắn phụ trước nó** — mọi call site nên gọi trực tiếp (không `reply(decision.reply)` trước), xem `follow.md` mục 8.
 - **Ward-fallback fuzzy match** (`findWardsByText`) chỉ được dùng ở nhánh yêu cầu khách xác nhận qua QR (nhiều kết quả) — KHÔNG BAO GIỜ tự động chấp nhận 1 kết quả duy nhất mà không qua `resolveAddress` trước.
 - **`fail_size` / `fail_brand` / `fail_location`** — mỗi field-đang-hỏi có counter riêng, ngưỡng chung `MAX_FAIL_PER_STEP` (hiện = 2). Đừng dùng chung 1 counter cho nhiều field khác nhau.
+- **Khi thêm ví dụ extraction mới vào prompt (ai-helper.ts/webGatherTurn.ts), 1 ví dụ dạng ngắn gọn KHÔNG đủ generalize sang câu hỏi tự nhiên đầy đủ.** Bug thật 2026-08-06: chỉ có ví dụ "michelin vf6" cho quy tắc KẾT HỢP BRAND+CAR → AI bỏ sót brand khi khách hỏi "lốp mít có dùng cho xe i10 không" (brand xen giữa câu hỏi). Với field quan trọng (brand, size), nên thêm ít nhất 1 ví dụ dạng câu hỏi tự nhiên đầy đủ bên cạnh ví dụ ngắn gọn.
+- **KHÔNG giao cho AI tự suy luận "field nào đang thiếu" bằng văn xuôi khi đã có deterministic helper sẵn (`nextMissingTireField`/`hasTireBrand`/`hasLocation`...).** Bug thật 2026-08-06 (xem mục 4.3c): dù prompt có ví dụ tương phản rõ ràng, AI vẫn áp nhầm ví dụ 3/3 lần test khi state thực tế khác ví dụ. Pattern đúng: AI chỉ cần phát tín hiệu phân loại (`off_topic_kind`), CODE tính field còn thiếu + soạn câu hỏi cố định.
+- **`dispatchAndShowResults()`/`hasBrandField()` (v3/flow-handler.ts) nay có `export`** — dùng ở `production/flow-handler.ts` cho feature "tự gửi lại card SP khi CSKH nhắc xem khuyến mại mà chưa có card gần đó" (xem `follow.md` mục 9). Bất kỳ call site MỚI nào gọi `dispatchAndShowResults` từ NGOÀI `handleGathering` bình thường PHẢI nhớ nó tự set `is_active=true` + đổi `step` — nếu gọi trong lúc session đang `is_paused_by_cskh`, PHẢI `pauseSessionByCskh()` lại ngay sau, nếu không bot sẽ vô tình unpause.
+- **Mọi điểm check `session.is_paused_by_cskh` để quyết định bot có im lặng không PHẢI đi qua `resolveEffectiveSession()`/`getEffectiveSession()` (session.ts / production/flow-handler.ts), KHÔNG check thẳng field.** Đây là cơ chế tự hết hạn pause sau 8h (`CSKH_PAUSE_EXPIRY_MS`) — check thẳng field sẽ bỏ sót cơ chế hết hạn, quay lại bug "bot im lặng vĩnh viễn" (xem `follow.md` mục 9). Danh sách chỗ ĐÃ áp dụng đúng (tham khảo khi thêm chỗ mới): `production/flow-handler.ts` — `getEffectiveSession()` (dùng ở nhánh CSKH echo, standby, messaging) + ad-echo branch; `v3/flow-handler.ts` — dispatcher chính (2 chỗ: `getActiveSession` + fallback `getLatestSession`), CSKH-echo branch, ad-echo branch.
 
 ## 7. Testing methodology
 

@@ -29,7 +29,8 @@ import {
   completeSession,
   resetUserSessions,
   appendConversationLog,
-  markSessionError
+  markSessionError,
+  resolveEffectiveSession
 } from '../session'
 import {
   fetchSpGaraCards,
@@ -215,7 +216,7 @@ function brandFilterFromState(state: SessionState): string {
 /** Field 2 (brand/phân khúc/giá/tốt nhất) coi là ĐỦ khi có BẤT KỲ tín hiệu nào:
  *  brand cụ thể, phân khúc, tầm giá, hoặc "tốt nhất". Dùng CHUNG ở mọi nơi check
  *  "đủ field 2" để tránh sót — KHÔNG inline lại điều kiện này ở chỗ khác. */
-function hasBrandField(state: SessionState): boolean {
+export function hasBrandField(state: SessionState): boolean {
   return (
     !!state.brand_tier ||
     (state.selected_brands !== undefined && state.selected_brands.length > 0) ||
@@ -1146,6 +1147,44 @@ async function handleGarageContactFaq(
   )
 }
 
+/**
+ * Khách hỏi GIÁ CHUNG CHUNG (không chê đắt) khi state CHƯA đủ 3 trường
+ * (off_topic_kind='generic_price_inquiry') — hỏi tiếp ĐÚNG field còn thiếu
+ * bằng câu hỏi CỐ ĐỊNH, KHÔNG dùng decision.reply do AI tự soạn. Lý do: AI đã
+ * NHIỀU LẦN đoán sai field đang thiếu khi tự soạn câu hỏi kèm framing giá
+ * (vd nhảy thẳng qua hỏi khu vực dù brand thực ra vẫn còn thiếu) — xem
+ * follow.md bug 2026-08-06. Trả về true nếu đã xử lý (còn thiếu field, đã
+ * reply xong) — false nếu state THỰC RA đã đủ 3 trường (hiếm, do brand/size
+ * vừa được khoá ở bước merge phía trên) → để nhánh fetch phía dưới xử lý tiếp.
+ */
+function genericPriceInquiryQuestion(state: SessionState): string | null {
+  if (!state.tire_size) {
+    return 'Dạ giá lốp còn tùy kích cỡ + thương hiệu + khu vực ạ, anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊'
+  }
+  if (!hasBrandField(state)) {
+    return `Dạ giá lốp tùy theo thương hiệu + khu vực ạ, anh/chị ưu tiên thương hiệu hoặc tầm giá nào để em gửi giá phù hợp cho mình ạ? 😊\n\n${BRAND_TIER_BLOCK}`
+  }
+  if (!state.province_code && !state.ward_code) {
+    return 'Dạ giá lốp tùy theo khu vực + gara ạ, anh/chị ở khu vực nào (vd Hà Nội) để em gửi giá phù hợp cho mình ạ? 😊'
+  }
+  return null
+}
+
+async function handleGenericPriceInquiry(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<boolean> {
+  const question = genericPriceInquiryQuestion(newState)
+  if (!question) return false
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
+  await reply(psid, session.id, question, needBrand ? V3_BRAND_QRS() : undefined)
+  await updateSession(session.id, { state: newState })
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
+  return true
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  V3 Gathering — AI conversational turn
 // ════════════════════════════════════════════════════════════════════════════
@@ -1556,6 +1595,15 @@ async function handleGathering(
   if (decision.off_topic_kind === 'garage_contact') {
     await handleGarageContactFaq(psid, session, pageId, newState)
     return
+  }
+
+  // Khách hỏi giá CHUNG CHUNG khi CHƯA đủ 3 trường — hỏi tiếp field còn thiếu
+  // bằng câu hỏi CỐ ĐỊNH (KHÔNG dùng decision.reply, AI hay đoán sai field).
+  // Nếu state THỰC RA đã đủ 3 trường (hiếm) → false, fallthrough xuống nhánh
+  // fetch phía dưới xử lý bình thường.
+  if (decision.off_topic_kind === 'generic_price_inquiry') {
+    const handled = await handleGenericPriceInquiry(psid, session, pageId, newState)
+    if (handled) return
   }
 
   // resolveAddress không xác định được địa chỉ → handoff CSKH (đã đạt giới
@@ -2587,7 +2635,7 @@ async function showMultiBrandResults(
  * gọi showSpGaraResults trực tiếp phải đổi sang gọi hàm này để tự động dispatch
  * đúng chiến lược (chuẩn / đa thương hiệu / cascade tốt-nhất / cascade xem-hết).
  */
-async function dispatchAndShowResults(
+export async function dispatchAndShowResults(
   psid: string,
   sessionId: string,
   pageId: string,
@@ -2955,7 +3003,8 @@ async function handlePhoneInput(
     step: 'PAUSED_BY_CSKH',
     state: { ...state, phone: phone ?? state.phone },
     is_active: false,
-    is_paused_by_cskh: true
+    is_paused_by_cskh: true,
+    paused_by_cskh_at: new Date().toISOString()
   })
 }
 
@@ -3072,7 +3121,9 @@ async function handleMessengerEventV3Inner(
       // thường, không bị treo silent oan vĩnh viễn chỉ vì 1 tin quảng cáo.
       if (isAutomatedAdEcho(event)) {
         const adRecipientPsid = event.recipient.id
-        const latestSession = await getLatestSession(adRecipientPsid, pageId)
+        const latestSession = await resolveEffectiveSession(
+          await getLatestSession(adRecipientPsid, pageId)
+        )
         if (latestSession?.is_paused_by_cskh) {
           cancelTimer(latestSession.id, 'v3-ad-echo-unpause')
           await completeSession(latestSession.id)
@@ -3087,9 +3138,16 @@ async function handleMessengerEventV3Inner(
         return
       }
 
-      // Admin reply (app_id khác hoặc không có) → pause
+      // Admin reply (app_id khác hoặc không có) → pause. Dùng getLatestSession
+      // fallback + resolveEffectiveSession (không chỉ getActiveSession) — nếu
+      // pause CŨ đã hết hạn (xem CSKH_PAUSE_EXPIRY_MS), CSKH reply THÊM lần
+      // nữa phải tính là 1 lần pause MỚI (đồng hồ 8h reset lại), không bị bỏ
+      // sót chỉ vì session cũ đang is_active=false.
       const recipientPsid = event.recipient.id
-      const activeSession = await getActiveSession(recipientPsid, pageId)
+      const activeSession = await resolveEffectiveSession(
+        (await getActiveSession(recipientPsid, pageId)) ??
+          (await getLatestSession(recipientPsid, pageId))
+      )
       if (activeSession && !activeSession.is_paused_by_cskh) {
         cancelTimer(activeSession.id, 'v3-cskh-takeover')
         await pauseSessionByCskh(activeSession.id)
@@ -3165,7 +3223,9 @@ async function handleMessengerEventV3Inner(
      *  counter, không chạy AI gather — re-ask theo field đang chờ là đủ. */
     const isStickerOnly = hasSticker && !messageText && !payload && !realImage
 
-    const latest = session ? null : await getLatestSession(psid, pageId)
+    const latest = session
+      ? null
+      : await resolveEffectiveSession(await getLatestSession(psid, pageId))
     if (!session && latest?.is_paused_by_cskh) return
 
     // optin/referral (Get Started / ad click / m.me link) → CHỈ tạo session, IM LẶNG.

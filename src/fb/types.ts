@@ -171,6 +171,10 @@ export interface FbSession {
   conversation_log: ConversationMessage[]
   is_active: boolean
   is_paused_by_cskh: boolean
+  /** Thời điểm session bị pause bởi CSKH gần nhất — dùng để tự động hết hạn
+   *  pause sau `CSKH_PAUSE_EXPIRY_MS` (xem session.ts), tránh bot im lặng
+   *  vĩnh viễn cho 1 PSID nếu CSKH không quay lại nữa. Null khi chưa từng pause. */
+  paused_by_cskh_at?: string | null
   /** Có lỗi gửi message gần nhất (vd FB reject 2018300 — bot không giữ thread). */
   is_error?: boolean
   /** Bot đang giữ thread control sau khi gọi take_thread_control thành công.

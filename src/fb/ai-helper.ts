@@ -829,7 +829,11 @@ export interface V3GatherDecision {
   /** Loại câu hỏi off-topic cụ thể (chỉ set khi is_off_topic=true) — dùng để
    *  route sang xử lý riêng (vd FAQ năm sản xuất / địa chỉ-SĐT gara → resend
    *  card cũ đổi nhãn nút). */
-  off_topic_kind?: 'manufacture_year' | 'garage_contact' | null
+  off_topic_kind?:
+    | 'manufacture_year'
+    | 'garage_contact'
+    | 'generic_price_inquiry'
+    | null
 }
 
 const V3_BRAND_TIER_INFO = {
@@ -936,10 +940,10 @@ export async function v3GatherTurn(
             'True khi bạn đang trả lời câu hỏi NGOÀI luồng gathering (vd "có phải bot không", "đặt online à", "địa chỉ bạn ở đâu", "TROLYoto là gì"). Khi true, orchestrator sẽ KHÔNG tính fail counter. False/omit cho các turn gathering thông thường.'
           ),
         off_topic_kind: z
-          .enum(['manufacture_year', 'garage_contact'])
+          .enum(['manufacture_year', 'garage_contact', 'generic_price_inquiry'])
           .nullish()
           .describe(
-            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"). Set "garage_contact" BẤT CỨ KHI NÀO khách hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (vd "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "gara ở đâu", "liên hệ gara sao", "sđt gara là gì") — KHÁC với hỏi địa chỉ/SĐT của TROLYoto (đó là off-topic Loại 2 riêng). Cả 2 trường hợp: kể cả câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường. Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC, KHÔNG set action=\'handoff_cskh\' (hệ thống đã có câu trả lời cố định riêng, không cần chuyển CSKH). Null/omit cho mọi trường hợp khác.'
+            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"). Set "garage_contact" BẤT CỨ KHI NÀO khách hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (vd "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "gara ở đâu", "liên hệ gara sao", "sđt gara là gì") — KHÁC với hỏi địa chỉ/SĐT của TROLYoto (đó là off-topic Loại 2 riêng). Set "generic_price_inquiry" khi khách hỏi GIÁ CHUNG CHUNG (vd "bao nhiêu một chiếc vậy", "giá bao nhiêu", "báo giá giúp em") — KHÔNG chê đắt, chỉ hỏi thông tin — VÀ state CHƯA đủ cả 3 trường size/brand/khu vực (nếu đã đủ 3 trường thì dùng action=\'fetch_results\' bình thường, KHÔNG set field này). 3 trường hợp trên: kể cả câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường (áp dụng cho manufacture_year/garage_contact). Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC, KHÔNG set action=\'handoff_cskh\' (hệ thống đã có câu trả lời cố định riêng/logic tự hỏi field thiếu, không cần chuyển CSKH). Null/omit cho mọi trường hợp khác.'
           )
       }),
       system: `Bạn là TROLY — trợ lý ô tô của TROLYoto (nền tảng mua lốp xe ở Việt Nam).
@@ -1085,6 +1089,10 @@ QUY TẮC TRÍCH XUẤT:
   * BỎ năm/đời ra khỏi car_model (vd "Seltos đời 2021" → car_model='Kia Seltos', KHÔNG kèm 2021).
 
 - KẾT HỢP BRAND + CAR (vd "michelin vf6"): set CẢ HAI — selected_brands=['MICHELIN'] VÀ car_model='VinFast VF6'.
+  QUAN TRỌNG: quy tắc này áp dụng CẢ KHI brand+car nằm trong 1 CÂU HỎI ĐẦY ĐỦ, không chỉ
+  khi gõ liền 2 từ — vd "lốp mít có dùng cho xe i10 không" → PHẢI set CẢ selected_brands=
+  ['MICHELIN'] VÀ car_model='Hyundai Grand i10' (KHÔNG được chỉ set car_model rồi bỏ sót
+  brand chỉ vì câu có dạng câu hỏi/tồn tại từ khác xen giữa).
 
 - VIẾT TẮT/CÁCH GỌI TÊN HÃNG LỐP — chuyển về tên CHUẨN HOA:
   * MICHELIN: "michelin", "michellin", "mít", "míc", "mit", "mic", "mix", "ma sờ lin", "mi sờ lin", "mì sờ lăng"
@@ -1148,19 +1156,17 @@ TẦM GIÁ (max_price_vnd) — nhận diện khi khách nêu ngưỡng giá bằ
   * Khách hỏi GIÁ CHUNG CHUNG — KHÔNG chê đắt, chỉ đơn thuần hỏi "bao nhiêu tiền"/"giá
     sao" (vd "bao nhiêu một chiếc vậy", "giá bao nhiêu", "nhiêu tiền vậy", "giá thế
     nào", "báo giá giúp em") — PHÂN BIỆT RÕ với "chê giá cao" ở trên: khách này KHÔNG hề
-    phàn nàn/yêu cầu lọc giá, chỉ đang hỏi thông tin. max_price_vnd=null (hỏi giá KHÔNG
-    có nghĩa khách muốn lọc theo 1 ngưỡng giá).
-    - CHƯA đủ 3 trường (size/brand/khu vực) → TUYỆT ĐỐI KHÔNG hỏi "mức giá dưới bao
-      nhiêu" (khách không hề nêu ý muốn lọc giá, hỏi vậy là sai ý). Thay vào đó reply
-      giải thích ngắn gọn cần thêm thông tin để báo giá chính xác + hỏi tiếp field CÒN
-      THIẾU tiếp theo (size→brand→khu vực), y hệt turn gathering bình thường. Coi 1
-      kích cỡ VỪA ĐƯỢC GỢI Ý ở lượt trước (bot vừa hỏi "xác nhận có phù hợp không") là
-      ĐÃ CÓ khi xét field nào còn thiếu — KHÔNG hỏi lại xác nhận size (tránh vòng lặp
-      thừa khi khách đang hỏi giá chứ không phải từ chối size đó). Vd đã có size (đang
-      chờ xác nhận) + brand, còn thiếu khu vực → reply: "Dạ giá lốp tùy theo khu vực +
-      gara ạ, anh/chị ở khu vực nào (vd Hà Nội) để em gửi giá phù hợp cho mình ạ? 😊"
-      (LUÔN kết thúc bằng dấu "?" — reply không có "?" sẽ bị hệ thống coi là "AI quên
-      hỏi field thiếu" và tự chèn thêm 1 tin hỏi lại KHU VỰC dư thừa, trùng lặp ý).
+    phàn nàn/yêu cầu lọc giá, chỉ đang hỏi thông tin. max_price_vnd=null LUÔN (hỏi giá
+    KHÔNG có nghĩa khách muốn lọc theo 1 ngưỡng giá).
+    - ĐÃ ĐỦ 3 trường (size/brand/khu vực) → action='fetch_results' bình thường (khách
+      hỏi giá lúc đã đủ info → cứ tìm SP thật để trả lời, không cần hỏi lại).
+    - CHƯA đủ 3 trường → set is_off_topic=true VÀ off_topic_kind='generic_price_inquiry'
+      CÙNG LÚC, action='continue'. Reply KHÔNG cần tự soạn câu hỏi field tiếp theo — HỆ
+      THỐNG sẽ tự xác định field nào đang thiếu (size→brand→khu vực, coi 1 kích cỡ VỪA
+      ĐƯỢC GỢI Ý ở lượt trước là ĐÃ CÓ) và tự chèn câu hỏi cố định phù hợp, GHI ĐÈ lên
+      reply bạn soạn — bạn chỉ cần để reply là 1 câu ngắn bất kỳ (vd "Dạ để em kiểm tra
+      giúp mình ạ 😊"), KHÔNG cố đoán/soạn câu hỏi field thiếu (dễ hỏi sai field nếu chỉ
+      dựa văn cảnh mà không tính chính xác field nào thực sự thiếu trong STATE).
     - ĐÃ ĐỦ 3 trường → action='fetch_results' bình thường (khách hỏi giá lúc đã đủ info
       → cứ tìm SP thật để trả lời, không cần hỏi lại).
   * CỰC KỲ QUAN TRỌNG: các con số THUỘC VỀ TIN NHẮN HỆ THỐNG/MARKETING trong LỊCH SỬ
@@ -1254,19 +1260,23 @@ VÍ DỤ REPLY ĐÚNG (ngắn + LUÔN có câu hỏi khi còn thiếu + xưng "e
 - (Thiếu size, khách mới chào) "Dạ anh/chị cho em biết kích cỡ lốp nhé ạ? Ví dụ: 185/60R15 😊"
 - (Khách gõ "vinfast 3" hoặc "vf6") → car_model='VinFast VF3' (hoặc 'VinFast VF6'), reply: "Dạ em tra cứu kích cỡ phù hợp ạ 😊" (KHÔNG hỏi size — hệ thống tự đưa list)
 - (Khách gõ "michelin vf6") → selected_brands=['MICHELIN'], car_model='VinFast VF6', reply: "Dạ ghi nhận Michelin ạ 👍\\n\\nEm tra cứu kích cỡ cho xe VF6 ngay ạ 😊" (KHÔNG hỏi size text)
+- (Khách hỏi "lốp mít có dùng cho xe i10 không") → selected_brands=['MICHELIN'] VÀ car_model='Hyundai Grand i10' (CẢ HAI, dù brand nằm giữa câu hỏi chứ không gõ liền với tên xe), reply: "Dạ ghi nhận Michelin ạ 👍\\n\\nEm tra cứu kích cỡ cho xe Hyundai Grand i10 ngay ạ 😊"
 - (Vừa nhận size, thiếu brand) "Dạ ghi nhận 175/75R16 ạ 👍\\n\\nAnh/chị ưu tiên thương hiệu hoặc tầm giá nào không để TROLYoto giúp mình tìm sản phẩm ưng ý ạ? 😊" (hệ thống sẽ tự đưa QR list các brand phổ biến)
 - (Vừa nhận brand, thiếu province) "Dạ ghi nhận thương hiệu cân bằng ạ 👍\\n\\nAnh/chị ở KHU VỰC THUỘC TỈNH/THÀNH nào để em tìm đại lý gần nhất ạ?\\nVí dụ: 'Cầu Giấy, Hà Nội' hoặc 'TP. Vinh, Nghệ An' 😊"
 - (Vừa nhận province, đủ 3 trường) "Dạ em tìm sản phẩm phù hợp ngay ạ 😊" (action=fetch_results)
 - (Khách vừa nhận SP xong, nhắn "Giá cao quá" — KHÔNG kèm số, dù trước đó hệ thống có nhắc "TRỢ GIÁ tới 800K") → max_price_vnd=null, action='continue', "Dạ anh/chị mong muốn tìm mức giá dưới bao nhiêu để em tìm giúp mình ạ? 😊" (KHÔNG tự lấy số 800K trong lịch sử làm mức giá khách muốn)
-- (Bot vừa gợi ý size xe + hỏi "xác nhận có phù hợp không", có brand rồi, CHƯA có khu vực, khách hỏi "Bao nhiêu một chiếc vậy" — hỏi giá chung chung, KHÔNG chê đắt) → max_price_vnd=null, action='continue', "Dạ giá lốp tùy theo khu vực + gara ạ, anh/chị ở khu vực nào (vd Hà Nội) để em gửi giá phù hợp cho mình ạ? 😊" (KHÔNG hỏi "mức giá dưới bao nhiêu" — khách không hề nêu ý muốn lọc giá; KHÔNG hỏi lại xác nhận size vì size đã gợi ý rồi; LUÔN kết "?" tránh bị hệ thống chèn thêm tin hỏi lại trùng lặp)
+- (Bot vừa gợi ý size xe + hỏi "xác nhận có phù hợp không", khách hỏi "Bao nhiêu một chiếc vậy" — hỏi giá chung chung, KHÔNG chê đắt, CHƯA đủ 3 trường bất kể còn thiếu brand hay khu vực) → max_price_vnd=null, is_off_topic=true, off_topic_kind='generic_price_inquiry', action='continue', reply="Dạ để em kiểm tra giúp mình ạ 😊" (KHÔNG tự soạn câu hỏi field thiếu — hệ thống tự xác định + ghi đè bằng câu hỏi đúng field)
 
 VÍ DỤ REPLY SAI (TUYỆT ĐỐI TRÁNH):
 - ❌ Khách nhắn "giá cao quá" (không kèm số) → tự set max_price_vnd=800000 (lấy nhầm từ tin nhắn "TRỢ GIÁ tới 800K" trong lịch sử) rồi action tiếp tục fetch → ĐÚNG: max_price_vnd=null, hỏi lại khách muốn mức giá dưới bao nhiêu.
-- ❌ Khách hỏi "Bao nhiêu một chiếc vậy" (hỏi giá chung chung, chưa đủ 3 trường) → hiểu nhầm thành "chê giá cao", hỏi lại "mức giá dưới bao nhiêu" → ĐÚNG: khách chỉ đang hỏi thông tin, KHÔNG muốn lọc giá — giải thích cần thêm field còn thiếu (vd khu vực) để báo giá chính xác, hỏi tiếp field đó.
+- ❌ Khách hỏi "Bao nhiêu một chiếc vậy" (hỏi giá chung chung, chưa đủ 3 trường) → hiểu nhầm thành "chê giá cao", hỏi lại "mức giá dưới bao nhiêu" → ĐÚNG: max_price_vnd=null, off_topic_kind='generic_price_inquiry' — khách chỉ đang hỏi thông tin, KHÔNG muốn lọc giá.
+- ❌ Cùng case trên nhưng TỰ soạn reply hỏi field thiếu (vd tự đoán "anh/chị ở khu vực nào") thay vì chỉ set off_topic_kind='generic_price_inquiry' → rủi ro đoán SAI field đang thiếu (vd brand thực ra vẫn còn thiếu) → ĐÚNG: để hệ thống tự xác định + hỏi đúng field.
 - ❌ "Dạ TROLY đã ghi nhận..." → ĐÚNG: "Dạ em đã ghi nhận..." (xưng "em", không xưng "TROLY" làm chủ ngữ)
 - ❌ "TROLY chưa hiểu..." / "Em chưa hiểu thông tin ạ" → ĐÚNG: "Để em hỗ trợ chính xác hơn, anh/chị gửi giúp em..." (tích cực, hành động)
 - ❌ "Dạ TROLY đã ghi nhận thương hiệu cân bằng ạ 😊" (chỉ ack, KHÔNG hỏi province → khách bị treo)
 - ❌ Khách gõ "michelin vf6" → chỉ extract brand, hỏi "cho biết kích cỡ lốp" (BỎ SÓT car_model — đáng lẽ system phải tra size cho VF6)
+- ❌ Khách hỏi "lốp mít có dùng cho xe i10 không" → chỉ extract car_model='Hyundai Grand i10', BỎ SÓT selected_brands=['MICHELIN'] chỉ vì brand nằm giữa câu hỏi thay vì gõ liền tên xe → ĐÚNG: phải set CẢ HAI.
+- ❌ Chỉ có size (đang chờ xác nhận), brand CŨNG CHƯA CÓ, khách hỏi "Bao nhiêu một chiếc vậy" → reply hỏi thẳng "anh/chị ở khu vực nào..." (nhảy qua bỏ sót brand, dựa máy móc theo ví dụ "đã có brand" ở trên) → ĐÚNG: phải hỏi BRAND trước vì brand thực sự chưa có trong state.
 - ❌ Khách hỏi "còn hàng không"/"gai lốp thế nào"/"giá đã bao gồm thay+cân bằng động chưa" → reply "Dạ em không thể kiểm tra/cung cấp thông tin..." rồi action=continue → ĐÚNG: action='handoff_cskh', cskh_reason mô tả câu hỏi (KHÔNG tự trả lời từ chối).`,
       prompt: `STATE đã thu thập:
 ${collectedSummary}

@@ -1598,15 +1598,6 @@ async function handleGathering(
     return
   }
 
-  // Khách hỏi giá CHUNG CHUNG khi CHƯA đủ 3 trường — hỏi tiếp field còn thiếu
-  // bằng câu hỏi CỐ ĐỊNH (KHÔNG dùng decision.reply, AI hay đoán sai field).
-  // Nếu state THỰC RA đã đủ 3 trường (hiếm) → false, fallthrough xuống nhánh
-  // fetch phía dưới xử lý bình thường.
-  if (decision.off_topic_kind === 'generic_price_inquiry') {
-    const handled = await handleGenericPriceInquiry(psid, session, pageId, newState)
-    if (handled) return
-  }
-
   // resolveAddress không xác định được địa chỉ → handoff CSKH (đã đạt giới
   // hạn hỏi lại) hoặc hỏi lại (chưa đạt). Priority cao hơn fetch_results/ward
   // confirm — chưa có địa chỉ hợp lệ thì chưa thể làm gì tiếp.
@@ -1928,6 +1919,19 @@ async function handleGathering(
     // hỏi field "size" → schedule nudge nếu state vẫn thiếu.
     maybeScheduleInfoNudge(psid, sessionId, pageId, newState)
     return
+  }
+
+  // Khách hỏi giá CHUNG CHUNG khi CHƯA đủ 3 trường — hỏi tiếp field còn thiếu
+  // bằng câu hỏi CỐ ĐỊNH (KHÔNG dùng decision.reply, AI hay đoán sai field).
+  // Nếu state THỰC RA đã đủ 3 trường (hiếm) → false, fallthrough xuống Branch 2.
+  // PHẢI đặt SAU Branch 1 (car lookup) — bug thật: khách gõ "kia morning giá
+  // bao tiền" (vừa nêu XE MỚI vừa hỏi giá) → nếu check field này TRƯỚC car
+  // lookup, off_topic_kind='generic_price_inquiry' chặn mất car_model lookup,
+  // bot hỏi lại field chung chung thay vì "tra cứu kích cỡ cho xe X" đúng ra
+  // phải làm. Đặt sau Branch 1 đảm bảo xe mới luôn được ưu tiên xử lý trước.
+  if (decision.off_topic_kind === 'generic_price_inquiry') {
+    const handled = await handleGenericPriceInquiry(psid, session, pageId, newState)
+    if (handled) return
   }
 
   // ── Branch 2: gửi reply AI bình thường, có thể kèm brand QRs + tier block

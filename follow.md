@@ -154,6 +154,18 @@ Fix (CHỈ ở `production/flow-handler.ts`, trong đúng block log CSKH echo m�
 
 State thiếu (chưa đủ 3 trường) → KHÔNG làm gì thêm ngoài log — không tự ý `cskhHandoff`/hỏi lại (CSKH đang trực tiếp xử lý, bot chen vào lúc này là sai).
 
+## 9b. Session tự tách khi "nguội" >24h (cả FB lẫn Web — 2 bản độc lập, phải sửa cả 2)
+
+Vấn đề: `conversation_log`/`history` được feed thẳng vào AI làm ngữ cảnh (`recentHistory()`/`getHistoryForAi()`). Nếu 1 session/state kéo dài nhiều ngày (khách chat rồi biến mất, quay lại sau nhiều ngày với nhu cầu HOÀN TOÀN khác) — log cũ không liên quan có thể khiến AI hiểu nhầm ngữ cảnh (vd tưởng khách vẫn đang hỏi về xe/sản phẩm cũ).
+
+Fix: nếu khoảng cách giữa tin nhắn MỚI và hoạt động GẦN NHẤT trong session/state > `SESSION_SPLIT_GAP_MS` (24 tiếng, cùng giá trị cả 2 bot) → **tách session mới**:
+- **Giữ nguyên** field "ĐÃ THU THẬP" thật sự (tire_size, brand_tier, selected_brands, max_price, wants_best_quality, province_code/name, ward_code/name, car_model — FB có thêm `phone`) — khách không phải cung cấp lại từ đầu.
+- **XOÁ SẠCH** conversation_log/history cũ + mọi field ephemeral/turn-scoped gắn với 1 tin nhắn CỤ THỂ trong log cũ (fail_size/fail_brand/fail_location, car_model_attempts, last_shown_car_sizes, info_nudge_sent, has_shown_results/shown_tire_results, shown_garage_codes, shown_garage_min_price, awaiting...) — giữ lại các field này sau khi log đã bị xoá sẽ gây khớp nhầm (vd `last_shown_car_sizes` trỏ tới 1 tin bot hỏi xác nhận size mà giờ khách không còn thấy trong history nữa).
+
+**FB** (`fb-webhook-server/src/fb/session.ts` — `SESSION_SPLIT_GAP_MS`, `isSessionStale`, `splitStaleSession`): dùng `session.updated_at` (bump bởi MỌI hoạt động — khác với `paused_by_cskh_at` ở mục 9, ở đây ta MUỐN mọi hoạt động đều tính, không cần tách riêng field). Session cũ được đánh dấu `is_active=false, step='COMPLETED'` (giữ lại, không xoá — vẫn tra cứu được), tạo session MỚI (`createSession` + state đã lọc). Gọi ở `v3/flow-handler.ts`, NGAY SAU khi fetch session qua `getActiveSession` — TRƯỚC pause-check (mục 9) và trước mọi xử lý khác. Production wrapper KHÔNG cần sửa riêng vì luôn delegate xử lý thật sự qua `handleMessengerEventV3`.
+
+**Web** (`src/libs/chat/server/stateMachine.ts` — cùng `SESSION_SPLIT_GAP_MS`, `isChatSessionStale`, `splitStaleChatSession`): dùng entry cuối trong `state.history[].ts` (Web không có session row DB, state hoàn toàn client-held qua localStorage). Không có "session cũ" để đánh dấu — chỉ cấp `chatId` MỚI (qua `nanoid()`, truyền vào từ `route.ts` vì `stateMachine.ts` là pure helpers không có side-effect random). Gọi ở ĐẦU `handleChatTurn()`, TRƯỚC MỌI xử lý khác (kể cả trước phone-detect/QR shortcut).
+
 ## 10. Giờ làm việc (production wrapper)
 
 `FROM_TIME`→`END_TIME` (default 18:00→08:30, overnight) là khung **bot được hoạt động**. Trong giờ CSKH (ngoài khung bot) → bot SILENT hoàn toàn (kể cả đang giữ thread). `/reset` và whitelist PSID (`PROD_TEST_PSIDS`) bypass gate để test bất cứ lúc nào.

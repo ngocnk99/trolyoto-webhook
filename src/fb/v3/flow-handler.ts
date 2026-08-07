@@ -30,7 +30,8 @@ import {
   resetUserSessions,
   appendConversationLog,
   markSessionError,
-  resolveEffectiveSession
+  resolveEffectiveSession,
+  splitStaleSession
 } from '../session'
 import {
   fetchSpGaraCards,
@@ -3202,6 +3203,11 @@ async function handleMessengerEventV3Inner(
     }
 
     let session: FbSession | null = await getActiveSession(psid, pageId)
+    // Session "nguội" (>24h không hoạt động) → tách session mới, chuyển
+    // nguyên field đã thu thập (size/brand/khu vực...) nhưng conversation_log
+    // bắt đầu lại từ đầu (tránh log cũ feed vào AI gây nhầm lẫn ngữ cảnh).
+    // KHÔNG ảnh hưởng pause-check dưới đây: session mới luôn is_paused_by_cskh=false.
+    if (session) session = await splitStaleSession(session)
     if (session?.is_paused_by_cskh) return
 
     let messageText = event.message?.text?.trim() ?? ''

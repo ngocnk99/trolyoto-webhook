@@ -229,6 +229,67 @@ export async function resolveEffectiveSession(
 }
 
 /**
+ * Khoảng cách tối đa giữa 2 tin nhắn TRONG CÙNG 1 session — quá mốc này,
+ * session bị coi là "nguội" (stale) và PHẢI tách sang session mới khi khách
+ * nhắn tiếp, thay vì tiếp tục cộng dồn vào `conversation_log` cũ. Lý do:
+ * `conversation_log` được feed thẳng vào AI (`recentHistory()`) làm ngữ cảnh
+ * — nếu 1 session kéo dài nhiều ngày/tuần, log cũ (đã hoàn toàn không liên
+ * quan tới nhu cầu HIỆN TẠI của khách) có thể khiến AI hiểu nhầm ngữ cảnh.
+ */
+export const SESSION_SPLIT_GAP_MS = 24 * 60 * 60 * 1000 // 24 tiếng
+
+export function isSessionStale(session: Pick<FbSession, 'updated_at'>): boolean {
+  return Date.now() - new Date(session.updated_at).getTime() > SESSION_SPLIT_GAP_MS
+}
+
+/**
+ * Field "thông tin ĐÃ THU THẬP" — PHẢI chuyển nguyên vẹn sang session mới khi
+ * tách. KHÔNG bao gồm field ephemeral/turn-scoped (fail counter,
+ * car_model_attempts, last_shown_car_sizes, shown_*, cskh_reason,
+ * size_suggestions...) — những field đó gắn chặt với 1 tin nhắn CỤ THỂ trong
+ * log cũ (vd `last_shown_car_sizes` trỏ tới 1 tin bot hỏi "xác nhận size"
+ * mà giờ không còn trong log mới) — giữ lại sẽ gây khớp nhầm/nhầm lẫn ngữ
+ * cảnh, đúng thứ session-split này cố tránh.
+ */
+function pickCarryOverState(state: SessionState): SessionState {
+  return {
+    car_model: state.car_model,
+    tire_size: state.tire_size,
+    brand_tier: state.brand_tier,
+    selected_brands: state.selected_brands,
+    max_price: state.max_price,
+    wants_best_quality: state.wants_best_quality,
+    province_code: state.province_code,
+    province_name: state.province_name,
+    ward_code: state.ward_code,
+    ward_name: state.ward_name,
+    phone: state.phone
+  }
+}
+
+/**
+ * Nếu session hiện tại đã nguội (>`SESSION_SPLIT_GAP_MS`, xem `isSessionStale`)
+ * → tách sang session MỚI: các field "đã thu thập" (`pickCarryOverState`)
+ * được chuyển nguyên vẹn, nhưng `conversation_log` bắt đầu lại từ đầu (tránh
+ * log rác cũ feed vào AI). Session cũ được đánh dấu `COMPLETED` (giữ lại,
+ * không xoá — vẫn tra cứu/debug được qua `getLatestSession`).
+ *
+ * Trả về session MỚI nếu đã tách, hoặc nguyên session gốc nếu chưa đủ nguội.
+ * Gọi NGAY SAU khi fetch session active, TRƯỚC khi dùng cho bất kỳ xử lý gì.
+ */
+export async function splitStaleSession(session: FbSession): Promise<FbSession> {
+  if (!isSessionStale(session)) return session
+  const carriedState = pickCarryOverState(session.state)
+  console.log(
+    `[FB session] session=${session.id} nguội quá ${SESSION_SPLIT_GAP_MS / 3600000}h (updated_at=${session.updated_at}) → tách session mới, chuyển state: ${JSON.stringify(carriedState)}`
+  )
+  await updateSession(session.id, { is_active: false, step: 'COMPLETED' })
+  const fresh = await createSession(session.psid, session.page_id)
+  await updateSession(fresh.id, { step: 'V3_GATHERING', state: carriedState })
+  return { ...fresh, step: 'V3_GATHERING', state: carriedState }
+}
+
+/**
  * Append một tin nhắn vào conversation_log.
  * Nếu `message.step` không được truyền, sẽ auto-fill bằng `step` hiện tại của session.
  */

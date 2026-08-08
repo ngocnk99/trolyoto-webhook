@@ -1422,7 +1422,33 @@ async function handleGathering(
     // "text" chỉ là TÍN HIỆU (khách CÓ nhắc gì đó về khu vực), không phải dữ liệu
     // đáng tin — giống hệt cách resolveCarModel chỉ dùng userInput gốc, không dùng
     // car_model đã bị v3GatherTurn rút gọn.
-    const resolvedDeterministically = tryResolveDeterministic(userInput)
+    let resolvedDeterministically = tryResolveDeterministic(userInput)
+
+    // Trước khi tin AI resolveAddress — thử khớp trực tiếp theo TÊN WARD
+    // (ward.json, dữ liệu thật) trên userInput gốc. Nếu khớp NHIỀU ward (khác
+    // nơi/tỉnh) → đây là bằng chứng CỤ THỂ có nhiều địa danh trùng tên thật,
+    // hỏi khách xác nhận qua QR NGAY, bỏ qua AI hoàn toàn — tránh AI tự
+    // "giải quyết hộ" sự mập mờ này bằng cách đoán 1 đáp án SAI nghe hợp lý.
+    // Bug thật: khách gõ "Hà Đông" (quận cũ, nay thuộc Hà Nội, cũng là tên 1
+    // xã ở Hải Phòng) → resolveAddress (AI) đọc/đoán nhầm thành "Đông Hà"
+    // (TP Quảng Trị, ĐẢO NGƯỢC âm tiết của "Hà Đông") vì 2 tên na ná nhau —
+    // trả về với confidence đủ cao nên được chấp nhận thẳng, khách KHÔNG có
+    // cơ hội sửa. ward.json vốn đã có cả 2 "Hà Đông" thật (Hà Nội + Hải
+    // Phòng) — chỉ cần tra thẳng là thấy ngay sự mập mờ, không cần AI đoán.
+    // CHỈ can thiệp khi >1 khớp (bằng chứng ambiguous rõ ràng) — giữ nguyên
+    // case 0 hoặc 1 khớp đi qua AI như cũ (không đổi hành vi các case đó,
+    // tuân thủ đúng rule "không tự động chấp nhận 1 match mờ" đã có).
+    if (!resolvedDeterministically) {
+      const directWardMatches = findWardsByText(userInput, 11)
+      if (directWardMatches.length > 1) {
+        newState.province_name = userInput
+        needWardConfirm = directWardMatches
+        resolvedDeterministically = true
+        console.log(
+          `[V3 gather] direct ward name match "${userInput}" → ${directWardMatches.length} candidates → hỏi khách xác nhận, bỏ qua AI resolveAddress`
+        )
+      }
+    }
 
     if (!resolvedDeterministically) {
       try {

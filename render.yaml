@@ -34,3 +34,15 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # ── Cache outbox consumer (src/cache/cache-outbox-cron.ts) ──────────
+      # Đọc bảng cache_invalidation_outbox rồi gọi buyer /api/revalidate để
+      # giá mới lên web ngay, thay vì chờ hết cache ISR 1 giờ.
+      # Phải TRÙNG với REVALIDATE_SECRET trong env của project buyer trên
+      # Vercel — lệch là buyer trả 401 và consumer retry vô ích.
+      - key: REVALIDATE_SECRET
+        sync: false
+      - key: BUYER_ORIGIN
+        value: https://trolyoto.com
+      # Các biến dưới đây đều có mặc định hợp lý trong code, chỉ đặt khi cần
+      # chỉnh: CACHE_OUTBOX_INTERVAL_MS (30000), CACHE_OUTBOX_BATCH (500),
+      # CACHE_OUTBOX_QUIET_FROM (0), CACHE_OUTBOX_QUIET_TO (7).

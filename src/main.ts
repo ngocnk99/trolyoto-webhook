@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { startHandoverCron } from './fb/handover-cron'
+import { startCacheOutboxCron } from './cache/cache-outbox-cron'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -39,6 +40,11 @@ async function bootstrap() {
 
   // Cron: hàng ngày lúc END_TIME (vd 08:30 VN) → pass thread control trả Primary.
   startHandoverCron()
+
+  // Đọc cache_invalidation_outbox → gọi buyer /api/revalidate, để giá mới lên
+  // web ngay thay vì chờ hết cache 1 giờ. Chạy ở đây vì service always-on trên
+  // Render. Xem src/cache/cache-outbox-cron.ts.
+  startCacheOutboxCron()
 }
 
 bootstrap().catch(e => {

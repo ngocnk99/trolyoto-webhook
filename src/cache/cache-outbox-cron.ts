@@ -88,12 +88,55 @@ function buildBody(paths: string[]) {
   return { paths, tags: ['market-listing'] }
 }
 
+/**
+ * Trạng thái nội bộ, phơi ra qua GET /version.
+ *
+ * Có mặt vì lần deploy đầu gặp đúng tình huống không nhìn thấy gì: outbox
+ * đọng 357 dòng với attempts=0 suốt 76 phút, tức consumer chưa từng gọi
+ * cache_outbox_claim, nhưng từ bên ngoài không phân biệt được là "Render chưa
+ * deploy code mới" hay "đã deploy nhưng thiếu REVALIDATE_SECRET nên thoát sớm".
+ * Mấy trường dưới đây trả lời dứt điểm câu đó mà không cần mở log Render.
+ */
+const stats = {
+  startedAt: new Date().toISOString(),
+  running: false,
+  lastRunAt: null as string | null,
+  lastSkipReason: null as string | null,
+  lastSuccessAt: null as string | null,
+  lastError: null as string | null,
+  runs: 0,
+  batches: 0,
+  pathsFlushed: 0
+}
+
+export function getCacheOutboxStatus() {
+  return {
+    ...stats,
+    // Chỉ báo CÓ/KHÔNG, tuyệt đối không trả giá trị secret.
+    hasRevalidateSecret: Boolean(REVALIDATE_SECRET),
+    buyerOrigin: BUYER_ORIGIN,
+    intervalMs: INTERVAL_MS,
+    batchSize: BATCH_SIZE,
+    quietHoursVN: `${QUIET_FROM}h-${QUIET_TO}h`,
+    isQuietNow: isQuietHours(),
+    nowVNHour: nowVNHour()
+  }
+}
+
 async function flushOnce(): Promise<void> {
+  stats.runs++
+  stats.lastRunAt = new Date().toISOString()
+
   if (!REVALIDATE_SECRET) {
+    stats.lastSkipReason = 'REVALIDATE_SECRET chưa set'
     console.warn('[cache-outbox] REVALIDATE_SECRET chưa set → skip')
     return
   }
-  if (isQuietHours()) return
+  if (isQuietHours()) {
+    stats.lastSkipReason = 'dang trong khung nghi dem'
+    return
+  }
+  stats.lastSkipReason = null
 
   // Claim qua RPC chứ không SELECT rồi UPDATE: cần "chọn lô + tăng attempts"
   // nguyên tử. supabase-js không diễn đạt được `attempts = attempts + 1`, nên
@@ -130,6 +173,7 @@ async function flushOnce(): Promise<void> {
     if (!res.ok) {
       const text = await res.text()
       const msg = `HTTP ${res.status}: ${text.slice(0, 300)}`
+      stats.lastError = msg
       console.error('[cache-outbox] revalidate thất bại —', msg)
       // KHÔNG đánh dấu processed_at → lượt sau retry.
       await supabaseAmin
@@ -154,12 +198,17 @@ async function flushOnce(): Promise<void> {
       return
     }
 
+    stats.lastSuccessAt = now
+    stats.lastError = null
+    stats.batches++
+    stats.pathsFlushed += paths.length
     console.log(
       `[cache-outbox] đã xoá cache ${paths.length} trang` +
         ` — ${batch.length} dòng outbox`
     )
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
+    stats.lastError = msg
     console.error('[cache-outbox] gọi /api/revalidate lỗi:', msg)
     await supabaseAmin
       .from(TABLE)
@@ -179,6 +228,7 @@ export function startCacheOutboxCron(): void {
       `nghỉ ${QUIET_FROM}h–${QUIET_TO}h giờ VN, đích ${BUYER_ORIGIN}`
   )
 
+  stats.running = true
   timer = setInterval(() => {
     flushOnce().catch(e =>
       console.error('[cache-outbox] lỗi ngoài dự kiến:', e)
@@ -190,5 +240,6 @@ export function stopCacheOutboxCron(): void {
   if (timer) {
     clearInterval(timer)
     timer = null
+    stats.running = false
   }
 }

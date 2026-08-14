@@ -236,7 +236,7 @@ export async function resolveCarModel(params: {
 ── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM ──
 * TOYOTA:    Vios, Innova, Fortuner, Camry, Altis/Corolla Altis, Wigo, Yaris, Corolla Cross, Veloz, Avanza, Hilux, Land Cruiser, Raize, Rush
 * HYUNDAI:   Accent, Grand i10, Tucson, Santa Fe, Elantra, Kona, Creta, Stargazer, Custin, Palisade
-* KIA:       Seltos, Morning, Sonet, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
+* KIA:       Seltos, Morning, Sonet, Carens, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
 * MAZDA:     CX-3, CX-5, CX-8, CX-30, Mazda 2, Mazda 3, Mazda 6, BT-50
 * HONDA:     City, Civic, CR-V, HR-V, Accord, Brio, Jazz, BR-V
 * FORD:      Ranger, Everest, EcoSport, Focus, Territory, Explorer, Transit
@@ -255,6 +255,14 @@ export async function resolveCarModel(params: {
 * ISUZU:     D-Max, mu-X
 * WULING:    Mini EV, Hongguang
 
+── PHÂN BIỆT MODEL DỄ NHẦM (CỰC QUAN TRỌNG) ──
+* Kia Carens (MPV cỡ nhỏ/vừa) KHÁC Kia Carnival (MPV cỡ lớn) — 2 model HOÀN
+  TOÀN KHÁC NHAU dù tên gần giống (cùng bắt đầu "Car..."). "Carens" TỪNG BỊ bỏ
+  sót khỏi danh sách khiến AI đoán nhầm sang "Carnival" chỉ vì âm gần giống —
+  giờ cả 2 đều có trong danh sách, PHẢI phân biệt đúng theo âm tiết khách gõ
+  ("ca ren"/"caren"/"carens" → Carens; "carnival"/"ca ni van" → Carnival),
+  KHÔNG mặc định chọn model "quen thuộc hơn" khi 2 tên đều khớp na ná.
+
 ── XỬ LÝ PHÁT ÂM/GÕ TIẾNG VIỆT KHÔNG CHUẨN (CỰC QUAN TRỌNG) ──
 Khách Việt Nam thường TÁCH ÂM TIẾT khi gõ/phát âm tên xe nước ngoài, hoặc gõ
 theo cách nghe được. Hãy GHÉP LẠI các âm tiết rời rạc và so khớp NGỮ ÂM (phát
@@ -264,6 +272,7 @@ chính xác. Ví dụ:
 * "pho tu nơ" / "pho tuy nơ" → "Fortuner" (Toyota)
 * "cờ rốt xì" / "cờ rốt" → "Cross" (vd "Corolla Cross")
 * "i ét" / "i ét mười" → "i10" (Hyundai Grand i10)
+* "ca ren" / "caren" / "ca rèn" → "Carens" (Kia) — KHÔNG phải "Carnival"
 * "xe lô ra tô" → không khớp gì trong danh sách → car_model=null
 
 ── GỢI Ý TỪ QUỐC GIA XUẤT XỨ (nếu khách có nhắc) ──
@@ -1032,7 +1041,7 @@ QUY TẮC TRÍCH XUẤT:
   ── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM ──
   * TOYOTA:    Vios, Innova, Fortuner, Camry, Altis, Wigo, Yaris, Corolla Cross, Veloz, Avanza, Hilux, Land Cruiser, Raize, Rush
   * HYUNDAI:   Accent, Grand i10, Tucson, Santa Fe, Elantra, Kona, Creta, Stargazer, Custin, Palisade
-  * KIA:       Seltos, Morning, Sonet, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
+  * KIA:       Seltos, Morning, Sonet, Carens, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
   * MAZDA:     CX-3, CX-5, CX-8, CX-30, Mazda 2, Mazda 3, Mazda 6, BT-50
   * HONDA:     City, Civic, CR-V, HR-V, Accord, Brio, Jazz, BR-V
   * FORD:      Ranger, Everest, EcoSport, Focus, Territory, Explorer, Transit
@@ -1064,6 +1073,7 @@ QUY TẮC TRÍCH XUẤT:
   * "elantra" → Hyundai Elantra
   * "seltos"/"seltot"/"selto" → Kia Seltos    "morning" → Kia Morning
   * "sonet" → Kia Sonet           "carnival" → Kia Carnival
+  * "carens"/"ca ren"/"caren" → Kia Carens (KHÁC Kia Carnival — đừng lẫn chỉ vì âm gần giống)
   * "sorento" → Kia Sorento       "k3"/"k5" → Kia K3/K5
   * "cerato" → Kia Cerato         "sportage" → Kia Sportage
   * "xpander" → Mitsubishi Xpander    "outlander" → Mitsubishi Outlander

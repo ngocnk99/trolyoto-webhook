@@ -1366,22 +1366,16 @@ async function handleGathering(
     // phòng cho case nhiều lượt chat (địa chỉ nhắc ở lượt trước, userInput
     // lượt này không lặp lại, vd khách chỉ trả lời "ok" sau khi đã cho địa chỉ).
     const tryResolveDeterministic = (candidate: string): boolean => {
-      const alias = resolveMergedProvinceAlias(candidate)
-      if (alias) {
-        newState.province_code = alias.provinceCode
-        newState.province_name = alias.provinceName
-        newState.ward_code = alias.wardCode ?? undefined
-        newState.ward_name = alias.wardName ?? undefined
-        newState.fail_location = 0
-        console.log(
-          `[V3 gather] merged-province alias "${candidate}" → ${
-            alias.wardCode
-              ? `ward ${alias.wardCode} (${alias.path})`
-              : `province ${alias.provinceCode} (${alias.provinceName}, không có ward cụ thể)`
-          }`
-        )
-        return true
-      }
+      // Thử resolveProvinceSync (tỉnh/TP HIỆN HÀNH) TRƯỚC resolveMergedProvinceAlias
+      // (tỉnh cũ đã sáp nhập). Bug thật: "Hà Đông Hà Nội" (khách ghép quận+TP theo
+      // đúng format bot gợi ý "Cầu Giấy, Hà Nội") — stripVn ra "ha dong ha noi",
+      // TÌNH CỜ chứa substring "dong ha" (ghép từ cuối "đông" + đầu "hà nội") →
+      // khớp NHẦM alias key 'dong ha' (Đông Hà, Quảng Trị) nếu check alias trước,
+      // dù "Hà Nội" — tín hiệu tỉnh HIỆN HÀNH, rõ ràng, không mập mờ — cũng có mặt
+      // ngay trong cùng input. Ưu tiên resolveProvinceSync trước loại bỏ hẳn nhóm
+      // lỗi này: nếu khớp được 1 tỉnh hiện hành cụ thể, KHÔNG có lý do gì để vẫn
+      // đi xét alias tỉnh cũ (alias chỉ hữu ích khi input KHÔNG khớp tỉnh hiện
+      // hành nào, vd "Thái Bình" đã sáp nhập nên tự nhiên không khớp resolveProvinceSync).
       const r = resolveProvinceSync(candidate)
       if (r.code) {
         newState.province_code = r.code
@@ -1407,6 +1401,22 @@ async function handleGathering(
             `[V3 gather] ${wardsInText.length} wards match within province → keep province only`
           )
         }
+        return true
+      }
+      const alias = resolveMergedProvinceAlias(candidate)
+      if (alias) {
+        newState.province_code = alias.provinceCode
+        newState.province_name = alias.provinceName
+        newState.ward_code = alias.wardCode ?? undefined
+        newState.ward_name = alias.wardName ?? undefined
+        newState.fail_location = 0
+        console.log(
+          `[V3 gather] merged-province alias "${candidate}" → ${
+            alias.wardCode
+              ? `ward ${alias.wardCode} (${alias.path})`
+              : `province ${alias.provinceCode} (${alias.provinceName}, không có ward cụ thể)`
+          }`
+        )
         return true
       }
       return false

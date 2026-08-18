@@ -233,7 +233,9 @@ export async function resolveCarModel(params: {
       }),
       system: `Bạn là chuyên gia nhận diện tên xe ô tô bán tại Việt Nam từ text tiếng Việt của khách hàng (chat/nhắn tin, có thể gõ tắt, sai chính tả, hoặc phiên âm tiếng Việt không chuẩn).
 
-── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM ──
+── DANH SÁCH HÃNG + MODEL PHỔ BIẾN TẠI VIỆT NAM (CHỈ LÀ VÍ DỤ MINH HOẠ, KHÔNG
+   PHẢI DANH SÁCH ĐẦY ĐỦ — đọc kỹ "QUY TẮC BẮT BUỘC" bên dưới, KHÔNG được hiểu
+   nhầm đây là whitelist duy nhất được phép nhận diện) ──
 * TOYOTA:    Vios, Innova, Fortuner, Camry, Altis/Corolla Altis, Wigo, Yaris, Corolla Cross, Veloz, Avanza, Hilux, Land Cruiser, Raize, Rush
 * HYUNDAI:   Accent, Grand i10, Tucson, Santa Fe, Elantra, Kona, Creta, Stargazer, Custin, Palisade
 * KIA:       Seltos, Morning, Sonet, Carens, Carnival, Sorento, K3, K5, Cerato, Sportage, Rondo, Soluto
@@ -273,7 +275,7 @@ chính xác. Ví dụ:
 * "cờ rốt xì" / "cờ rốt" → "Cross" (vd "Corolla Cross")
 * "i ét" / "i ét mười" → "i10" (Hyundai Grand i10)
 * "ca ren" / "caren" / "ca rèn" → "Carens" (Kia) — KHÔNG phải "Carnival"
-* "xe lô ra tô" → không khớp gì trong danh sách → car_model=null
+* "xe lô ra tô" → không phải tên xe thật nào (gõ lung tung/vô nghĩa) → car_model=null
 
 ── GỢI Ý TỪ QUỐC GIA XUẤT XỨ (nếu khách có nhắc) ──
 * "hàn quốc"/"hàn" → ưu tiên Hyundai, Kia
@@ -285,18 +287,32 @@ chính xác. Ví dụ:
 
 ── QUY TẮC BẮT BUỘC ──
 * Trả tên CHUẨN "<Hãng> <Model>" (vd "Hyundai Santa Fe"), KHÔNG kèm năm/đời.
-* CHỈ trả car_model khi confidence ≥ 0.6. Nếu không đủ tin cậy (model không
-  khớp ngữ âm/ngữ nghĩa với BẤT KỲ tên nào trong danh sách, kể cả sau khi thử
-  ghép âm tiết) → car_model=null, brand=null, confidence thấp. TUYỆT ĐỐI
-  KHÔNG bịa ra 1 model không tồn tại trong danh sách (vd KHÔNG được trả "Toyota San" —
-  "San" không phải model Toyota nào cả).
-* ĐẶC BIỆT THẬN TRỌNG với input NGẮN/CỘT SỐNG YẾU (vd chỉ có 1 âm tiết mơ hồ +
-  năm, như "San 2017" — KHÔNG có thêm ngữ cảnh nào khác): KHÔNG được cố "chọn
-  đại" 1 model gần giống chỉ để có câu trả lời. "San" một mình KHÔNG đủ căn cứ
-  để suy ra "Fortuner"/bất kỳ model nào — trường hợp này BẮT BUỘC car_model=null,
-  confidence thấp (vd 0.2-0.4), để hệ thống hỏi khách rõ hơn thay vì đoán liều.
-  Chỉ tự tin (≥0.6) khi có ít nhất 1 tín hiệu ngữ âm RÕ RÀNG khớp 1 model cụ
-  thể, hoặc có thêm ngữ cảnh hỗ trợ (quốc gia, hãng, đặc điểm xe).
+* Danh sách phía trên CHỈ là ví dụ minh hoạ các hãng/model PHỔ BIẾN tại Việt
+  Nam để bạn nắm văn phong/format trả lời — KHÔNG PHẢI toàn bộ xe đang lưu
+  hành. Khách có thể hỏi về BẤT KỲ xe THẬT SỰ TỒN TẠI nào khác (xe nhập, xe ít
+  phổ biến hơn, model không kịp liệt kê hết...) — vd "Toyota Alphard", "Honda
+  Odyssey", "Peugeot 408", "Kia Rio", "Toyota Land Cruiser Prado" — ĐỀU LÀ XE
+  THẬT, PHẢI nhận diện đúng bằng kiến thức chung của bạn về xe ô tô, TUYỆT ĐỐI
+  KHÔNG vì không thấy trong danh sách ví dụ mà trả car_model=null, và CÀNG
+  KHÔNG được ép về 1 model GẦN GIỐNG đang có trong danh sách chỉ vì nó "quen
+  thuộc hơn" (đây chính là lỗi từng xảy ra thật: "Carens" bị ép nhầm thành
+  "Carnival" vì lúc đó "Carens" chưa được liệt kê ví dụ — gốc rễ vấn đề không
+  phải thiếu 1 dòng ví dụ, mà là hiểu sai rằng danh sách ví dụ = giới hạn nhận
+  diện).
+* CHỈ trả car_model=null khi câu KHÔNG đủ căn cứ để xác định bất kỳ xe THẬT
+  nào — hoặc vì input quá mơ hồ/thiếu tín hiệu (vd "San 2017" — "San" một mình
+  không phải tên xe, không đủ căn cứ suy ra "Fortuner" hay bất kỳ model nào),
+  hoặc vì input rõ ràng không phải tên xe có thật (bịa/gõ lung tung, vd "xe lô
+  ra tô"). Phân biệt RÕ 2 case: (a) "không khớp danh sách ví dụ" — KHÔNG đủ lý
+  do để trả null nếu bạn THỰC SỰ biết đó là xe gì; (b) "không đủ căn cứ xác
+  định xe THẬT nào" — mới là lý do hợp lệ để trả null.
+* CHỈ trả car_model khi confidence ≥ 0.6 — tự tin khi có tín hiệu RÕ RÀNG
+  (tên hãng+model đầy đủ, hoặc ngữ âm gần đúng khớp 1 xe cụ thể bạn biết chắc
+  tồn tại, hoặc có thêm ngữ cảnh hỗ trợ như quốc gia/đặc điểm xe). Confidence
+  thấp (0.2-0.4) khi mơ hồ, để hệ thống hỏi khách rõ hơn thay vì đoán liều.
+* TUYỆT ĐỐI KHÔNG bịa ra 1 model KHÔNG THẬT SỰ TỒN TẠI trên thị trường ô tô
+  (vd KHÔNG được trả "Toyota San" — "San" không phải model Toyota nào cả, dù
+  đứng một mình hay ghép với năm).
 * Nếu có exclude-list (model đã thử và SAI) trong phần prompt bên dưới → KHÔNG
   ĐƯỢC trả lại các model đó, bắt buộc tìm phương án KHÁC dựa trên toàn bộ ngữ
   cảnh (kể cả gợi ý quốc gia, âm tiết gần đúng khác trong câu).`,
@@ -1125,10 +1141,25 @@ QUY TẮC TRÍCH XUẤT:
   * TBB: "tbb", "ti bi bi"
   * WESTLAKE: "westlake", "goét lếch", "oét lếch"
   * OTANI: "otani", "ô ta ni", "o ta ni"
+  * ADVENZA: "advenza", "avenza", "ad venza" (hãng lốp CÓ THẬT, KHÁC HẲN Kumho —
+    dễ bị đoán nhầm chỉ vì gần giống "Advance" hoặc nghe lạ tai, xem quy tắc dưới)
   → Khi khách gõ alias trên (kể cả viết tắt 2-3 ký tự) → selected_brands = [TÊN CHUẨN HOA].
   → Vd: "lốp mít cho vios" → selected_brands=['MICHELIN'], car_model='Toyota Vios'.
   → Vd: "han cốc" → selected_brands=['HANKOOK'].
   → Vd: "tôi muốn đăn lốp" → selected_brands=['DUNLOP'].
+
+  ── TUYỆT ĐỐI TRÁNH — KHÔNG ép brand LẠ thành brand QUEN THUỘC ──
+  Danh sách alias trên CHỈ để xử lý biến thể PHÁT ÂM/VIẾT TẮT của các hãng PHỔ
+  BIẾN — KHÔNG PHẢI danh sách đầy đủ mọi hãng lốp đang bán. Cửa hàng có bán
+  nhiều hãng KHÁC không kịp liệt kê hết (vd American, Bosch, Dayton, Enimac,
+  GS...). Bug thật: khách gõ "Advenza"/"Avenza" (hãng có thật, KHÔNG PHẢI
+  Kumho) → AI tự ý đổi thành "KUMHO" vì không nhận ra tên lạ, đoán liều sang
+  hãng quen thuộc gần giống để "có câu trả lời". TUYỆT ĐỐI KHÔNG làm vậy: khi
+  khách gõ RÕ RÀNG 1 tên hãng cụ thể (dù không quen thuộc, không có trong danh
+  sách alias) → giữ NGUYÊN VĂN tên đó (chuẩn hoá viết hoa, vd "Advenza" →
+  "ADVENZA"), KHÔNG tự ý đổi sang brand khác chỉ vì nghe gần giống hoặc quen
+  thuộc hơn. CHỈ set null/bỏ qua khi câu THỰC SỰ không nhắc tên hãng nào rõ
+  ràng (mơ hồ/không phải tên hãng), KHÔNG PHẢI vì tên hãng đó lạ/chưa biết.
 
 - QUY TẮC selected_brands — CỰC QUAN TRỌNG:
   selected_brands chỉ chứa brand được nhắc trong TIN NHẮN HIỆN TẠI của khách. KHÔNG bao giờ thêm brand đã có sẵn trong state cũ.

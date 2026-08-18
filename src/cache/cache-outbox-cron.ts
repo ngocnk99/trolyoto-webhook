@@ -33,6 +33,29 @@ const TABLE = 'cache_invalidation_outbox'
 const BUYER_ORIGIN = process.env.BUYER_ORIGIN ?? 'https://trolyoto.com'
 const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET ?? ''
 const INTERVAL_MS = Number(process.env.CACHE_OUTBOX_INTERVAL_MS ?? 30_000)
+
+/**
+ * KHOANG CACH TOI THIEU giua 2 lan goi /api/revalidate — mac dinh 5 phut.
+ *
+ * VI SAO CAN, tach rieng khoi INTERVAL_MS:
+ * Moi lan goi la mot lan xoa cache tren Vercel, va moi trang bi xoa se phai
+ * dung lai o luot truy cap tiep theo = mot ISR WRITE. Neu gia doi lien tuc
+ * (vd cron DB chay lien tuc, hoac gara sua hang loat) thi voi chu ky poll 30s
+ * ta se xoa cache 120 lan moi gio — moi lan keo theo mot dot dung lai.
+ *
+ * Chan cung o day thay vi chi nang INTERVAL_MS, de neu sau nay ai do ha
+ * CACHE_OUTBOX_INTERVAL_MS xuong cho "phan hoi nhanh" thi van khong the ban
+ * lien tuc. Poll van chay day (30s) nen dong outbox duoc phat hien som, chi
+ * la doi cho du khoang cach roi moi goi.
+ *
+ * Danh doi: gia moi len web cham nhat 5 phut thay vi 30 giay.
+ */
+const MIN_FLUSH_GAP_MS = Number(
+  process.env.CACHE_OUTBOX_MIN_GAP_MS ?? 300_000
+)
+
+/** Thoi diem goi /api/revalidate thanh cong gan nhat (epoch ms). */
+let lastFlushAt = 0
 const BATCH_SIZE = Number(process.env.CACHE_OUTBOX_BATCH ?? 500)
 
 /** Bỏ qua dòng đã thử quá nhiều lần để 1 dòng độc không chặn cả hàng đợi. */
@@ -116,6 +139,8 @@ export function getCacheOutboxStatus() {
     hasRevalidateSecret: Boolean(REVALIDATE_SECRET),
     buyerOrigin: BUYER_ORIGIN,
     intervalMs: INTERVAL_MS,
+    minFlushGapMs: MIN_FLUSH_GAP_MS,
+    lastFlushAt: lastFlushAt ? new Date(lastFlushAt).toISOString() : null,
     batchSize: BATCH_SIZE,
     quietHoursVN: `${QUIET_FROM}h-${QUIET_TO}h`,
     isQuietNow: isQuietHours(),
@@ -136,6 +161,15 @@ async function flushOnce(): Promise<void> {
     stats.lastSkipReason = 'dang trong khung nghi dem'
     return
   }
+
+  // Chan tan suat: xem chu thich MIN_FLUSH_GAP_MS. Kiem TRUOC khi claim de
+  // khong tang `attempts` mot cach vo ich trong luc dang cho.
+  const sinceLast = Date.now() - lastFlushAt
+  if (lastFlushAt && sinceLast < MIN_FLUSH_GAP_MS) {
+    stats.lastSkipReason = `cho du ${Math.ceil((MIN_FLUSH_GAP_MS - sinceLast) / 1000)}s nua cho du khoang cach toi thieu`
+    return
+  }
+
   stats.lastSkipReason = null
 
   // Claim qua RPC chứ không SELECT rồi UPDATE: cần "chọn lô + tăng attempts"
@@ -198,6 +232,7 @@ async function flushOnce(): Promise<void> {
       return
     }
 
+    lastFlushAt = Date.now()
     stats.lastSuccessAt = now
     stats.lastError = null
     stats.batches++
@@ -224,7 +259,7 @@ export function startCacheOutboxCron(): void {
   if (timer) return
 
   console.log(
-    `[cache-outbox] bật — mỗi ${INTERVAL_MS}ms, lô ${BATCH_SIZE}, ` +
+    `[cache-outbox] bật — poll ${INTERVAL_MS}ms, cách tối thiểu ${MIN_FLUSH_GAP_MS}ms, lô ${BATCH_SIZE}, ` +
       `nghỉ ${QUIET_FROM}h–${QUIET_TO}h giờ VN, đích ${BUYER_ORIGIN}`
   )
 

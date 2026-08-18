@@ -45,4 +45,19 @@ services:
         value: https://trolyoto.com
       # Các biến dưới đây đều có mặc định hợp lý trong code, chỉ đặt khi cần
       # chỉnh: CACHE_OUTBOX_INTERVAL_MS (30000), CACHE_OUTBOX_BATCH (500),
-      # CACHE_OUTBOX_QUIET_FROM (0), CACHE_OUTBOX_QUIET_TO (7).
+      # CACHE_OUTBOX_QUIET_FROM (0), CACHE_OUTBOX_QUIET_TO (7),
+      # CACHE_OUTBOX_MIN_GAP_MS (300000 = 5 phút).
+      #
+      # CACHE_OUTBOX_MIN_GAP_MS là khoảng cách TỐI THIỂU giữa 2 lần gọi
+      # /api/revalidate, tách riêng khỏi INTERVAL_MS. Mỗi lần gọi là một đợt
+      # trang bị xoá cache, và mỗi trang bị xoá phải dựng lại ở lượt truy cập
+      # sau = một ISR write tính tiền. Hạ số này xuống là đánh đổi trực tiếp
+      # bằng hoá đơn Vercel. Dòng chờ không bị mất, chỉ hoãn tới lô sau.
+
+    # LƯU Ý: `name` dưới đây quyết định hostname <name>.onrender.com. Service
+    # thật đang chạy KHÔNG khớp tên này — trolyoto-fb-webhook.onrender.com trả
+    # 404 kèm `x-render-routing: no-server` ở cả /healthz, tức không có service
+    # nào ở đó, trong khi consumer vẫn xử lý outbox bình thường. Nhiều khả năng
+    # service được tạo tay chứ không qua blueprint. Lấy URL thật ở Render
+    # dashboard rồi sửa `name` cho khớp, nếu không lần "New + Blueprint" sau sẽ
+    # dựng ra một service THỨ HAI chạy song song — 2 consumer cùng đọc outbox.

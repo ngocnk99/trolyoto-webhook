@@ -141,6 +141,11 @@ export function getCacheOutboxStatus() {
     intervalMs: INTERVAL_MS,
     minFlushGapMs: MIN_FLUSH_GAP_MS,
     lastFlushAt: lastFlushAt ? new Date(lastFlushAt).toISOString() : null,
+    // Mốc sớm nhất được phép xoá cache lần kế. Nếu lastSkipReason đang là
+    // "hoãn ..." thì dòng vẫn nằm trong outbox chờ tới mốc này, chưa mất.
+    nextFlushEligibleAt: lastFlushAt
+      ? new Date(lastFlushAt + MIN_FLUSH_GAP_MS).toISOString()
+      : null,
     batchSize: BATCH_SIZE,
     quietHoursVN: `${QUIET_FROM}h-${QUIET_TO}h`,
     isQuietNow: isQuietHours(),
@@ -162,11 +167,21 @@ async function flushOnce(): Promise<void> {
     return
   }
 
-  // Chan tan suat: xem chu thich MIN_FLUSH_GAP_MS. Kiem TRUOC khi claim de
-  // khong tang `attempts` mot cach vo ich trong luc dang cho.
+  // Chặn tần suất — đây là HOÃN LẠI, không phải bỏ qua.
+  //
+  // Return ở đây xảy ra TRƯỚC khi gọi cache_outbox_claim, nên không dòng nào
+  // bị đụng vào: `processed_at` vẫn NULL, `attempts` không tăng. setInterval
+  // vẫn chạy đều mỗi INTERVAL_MS nên vòng loop kế tiếp kiểm lại điều kiện
+  // này, và tới vòng đầu tiên đủ 5 phút thì gom TẤT CẢ dòng dồn lại trong
+  // lúc chờ ra xoá một lượt. Không dòng nào bị mất.
+  //
+  // Bắt buộc phải kiểm TRƯỚC claim: nếu kiểm sau, mỗi vòng poll trong lúc chờ
+  // sẽ đốt một lần `attempts`, và với INTERVAL_MS=30s thì chỉ 2,5 phút là dòng
+  // chạm MAX_ATTEMPTS rồi bị bỏ hẳn — lúc đó mới đúng là "bỏ qua hoàn toàn".
   const sinceLast = Date.now() - lastFlushAt
   if (lastFlushAt && sinceLast < MIN_FLUSH_GAP_MS) {
-    stats.lastSkipReason = `cho du ${Math.ceil((MIN_FLUSH_GAP_MS - sinceLast) / 1000)}s nua cho du khoang cach toi thieu`
+    const waitS = Math.ceil((MIN_FLUSH_GAP_MS - sinceLast) / 1000)
+    stats.lastSkipReason = `hoãn ${waitS}s cho đủ khoảng cách tối thiểu (dòng vẫn nằm nguyên trong outbox)`
     return
   }
 
@@ -218,6 +233,14 @@ async function flushOnce(): Promise<void> {
       return
     }
 
+    // Cache ĐÃ bị xoá xong tại đây. Đặt mốc NGAY, trước bước ghi dấu bên
+    // dưới: thứ mà MIN_FLUSH_GAP_MS đo là thời điểm xoá cache thật, không
+    // phải thời điểm ghi sổ thành công. Bản đầu đặt mốc ở cuối hàm nên khi
+    // bước ghi `processed_at` lỗi, hàm return với mốc cũ → 30s sau bộ chặn
+    // tưởng chưa từng xoá, claim lại đúng lô đó và xoá cache lần nữa. Đúng
+    // kiểu bắn dồn mà biến này sinh ra để chặn.
+    lastFlushAt = Date.now()
+
     const now = new Date().toISOString()
     const { error: markErr } = await supabaseAmin
       .from(TABLE)
@@ -232,7 +255,6 @@ async function flushOnce(): Promise<void> {
       return
     }
 
-    lastFlushAt = Date.now()
     stats.lastSuccessAt = now
     stats.lastError = null
     stats.batches++

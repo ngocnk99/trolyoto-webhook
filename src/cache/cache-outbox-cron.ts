@@ -16,9 +16,22 @@
  *  VÌ SAO CHẠY Ở ĐÂY: service này always-on trên Render (không cold start),
  *  nên poll được liên tục — khác Vercel cron vốn chỉ tới phút.
  *
- *  NGHỈ ĐÊM 00:00–07:00 giờ VN: lưu lượng rất thấp, và `revalidate = 3600`
- *  bên buyer vẫn tự làm mới trang trong vòng 1 giờ. Nên sai số ban đêm vẫn
- *  bị chặn ở 1 giờ — đúng bằng trường hợp xấu nhất ban ngày.
+ *  NGHỈ ĐÊM 00:00–07:00 giờ VN: lưu lượng rất thấp nên không xoá cache.
+ *
+ *  !! LẬP LUẬN AN TOÀN BAN ĐẦU CỦA KHUNG NGHỈ NÀY ĐÃ LỖI THỜI !!
+ *  Bản đầu ghi: "`revalidate = 3600` bên buyer vẫn tự làm mới trang trong
+ *  vòng 1 giờ, nên sai số ban đêm vẫn bị chặn ở 1 giờ". Điều đó ĐÚNG khi
+ *  viết, nhưng từ commit 52702ed9 các trang sản phẩm đã lên
+ *  `revalidate = 86400` ((market)/{lop,ac-quy,noi-ngoai-that}/[slug]/layout.tsx),
+ *  và 20260820 nâng nốt /garage/[slug] lên 86400. Không còn lưới 1 giờ nào cả.
+ *
+ *  Hệ quả THỰC TẾ hiện nay: giá đổi lúc 00:05 nằm nguyên trong outbox tới
+ *  07:00 mới được xoá cache — sai giá tối đa ~7 giờ chứ không phải 1 giờ.
+ *  Đây là ĐÁNH ĐỔI CHƯA ĐƯỢC QUYẾT LẠI sau khi nâng revalidate, không phải
+ *  thiết kế có chủ ý. Muốn đóng khe này thì thu hẹp hoặc bỏ hẳn khung nghỉ
+ *  (CACHE_OUTBOX_QUIET_FROM / _TO) — đổi lại là vài đợt ISR Write ban đêm,
+ *  vốn rẻ vì lưu lượng đêm thấp nên ít PoP phải dựng lại.
+ *  Xem buyer/docs/vercel-cost-cache-plan.md mục 15.4.
  *
  *  AN TOÀN KHI CHẠY TRÙNG: revalidatePath là idempotent, xoá 2 lần cùng 1
  *  trang không khác gì xoá 1 lần. Nên chủ ý KHÔNG dùng khoá phân tán; kịch
@@ -102,13 +115,24 @@ function isQuietHours(): boolean {
  * trùng ngay từ lúc ghi, nên số trang trong một lô bị chặn bởi số trang THỰC
  * SỰ đổi, không phải số dòng bị UPDATE.
  *
- * `tags: ['market-listing']` đi kèm mọi lô để xoá luôn các trang DANH SÁCH
- * (/lop, /ac-quy, ...) — chúng không có `target_path` riêng trong outbox vì
- * không gắn với một slug nào. Đã đo: revalidateTag('market-listing') đưa /lop
- * từ HIT -> MISS -> HIT đúng như mong đợi.
+ * `tags: ['market-listing']` xoá luôn các trang DANH SÁCH (/lop, /ac-quy, ...)
+ * — chúng không có `target_path` riêng trong outbox vì không gắn với một slug
+ * nào. Đã đo: revalidateTag('market-listing') đưa /lop từ HIT -> MISS -> HIT
+ * đúng như mong đợi.
+ *
+ * NHƯNG CHỈ KÈM KHI LÔ CÓ ÍT NHẤT MỘT TRANG SẢN PHẨM.
+ *
+ * Từ 20260820_cache_outbox_garage_page.sql, outbox còn mang cả đường dẫn
+ * `/garage/<slug>` (đổi tên/SEO của gara). Một lô chỉ toàn đường dẫn gara mà
+ * vẫn gửi kèm tag này thì mỗi lần gara sửa tên lại xoá cache TOÀN BỘ trang
+ * danh sách market — những trang chẳng liên quan gì, và mỗi lần xoá là một
+ * đợt ISR Write ở mọi PoP. Đúng thứ chi phí mà cả kế hoạch này nhắm vào.
  */
+const PRODUCT_PATH_RE = /^\/(lop|ac-quy|noi-ngoai-that)\//
+
 function buildBody(paths: string[]) {
-  return { paths, tags: ['market-listing'] }
+  const hasProductPath = paths.some(p => PRODUCT_PATH_RE.test(p))
+  return hasProductPath ? { paths, tags: ['market-listing'] } : { paths }
 }
 
 /**

@@ -980,6 +980,41 @@ export function findWardsByText(text: string, limit = 13): WardMatch[] {
   return matches
 }
 
+/** Mã tỉnh Hà Nội trong province.json/PROVINCE_MAP. */
+const HANOI_PROVINCE_CODE = '01'
+
+/**
+ * Khi 1 tên ward khớp NHIỀU tỉnh/TP khác nhau (`findWardsByText` trả >1 kết
+ * quả) — thị trường khách hàng chính là Hà Nội, nên nếu ĐÚNG 1 trong các match
+ * đó thuộc Hà Nội, ưu tiên chọn LUÔN ward đó thay vì bắt khách xác nhận qua
+ * QR. Vd khách gõ "Hoàng Mai" → khớp cả "Hoàng Mai, Hà Nội" lẫn "Hoàng Mai,
+ * Huế" (tên khác, trùng tên xã) → coi như khách muốn "Hoàng Mai, Hà Nội".
+ * CHỈ áp dụng khi Hà Nội xuất hiện ĐÚNG 1 lần trong danh sách match — nếu bản
+ * thân Hà Nội cũng có ≥2 ward trùng tên thì vẫn còn mập mờ THẬT SỰ (khác quận/
+ * huyện cũ trong cùng Hà Nội), phải hỏi lại khách như cũ, không đoán bừa.
+ *
+ * `queryText` bắt buộc để verify match Hà Nội là THẬT (khớp trực tiếp trên
+ * TÊN ward, không qua `path`) — `findWardsByText` fuzzy-match trên CẢ path
+ * ("<ward>, <tỉnh>"), nên 2 từ ở ranh giới ward/tỉnh có thể VÔ TÌNH ghép thành
+ * substring trùng khớp 1 địa danh khác hoàn toàn (cùng bản chất bug "Hà Đông Hà
+ * Nội" → "Đông Hà, Quảng Trị" đã fix trước đó, xem follow.md mục 3). Vd khách
+ * gõ "Đông Hà" (ý nói Đông Hà, Quảng Trị) → 1 trong các match do path-collision
+ * lại là "Phù Đổng, Hà Nội" (stripVn("Phù Đổng, Hà Nội")="phu dong ha noi" VÔ
+ * TÌNH chứa "dong ha") — nếu tin match này mù quáng sẽ auto-pick SAI hoàn toàn
+ * sang 1 ward Hà Nội không liên quan. Yêu cầu needle khớp trực tiếp trong TÊN
+ * ward (không phải path) mới coi là match Hà Nội THẬT.
+ */
+export function pickHanoiWardIfUnambiguous(
+  wards: WardMatch[],
+  queryText: string
+): WardMatch | null {
+  const needle = stripVn(queryText)
+  const hanoiMatches = wards.filter(
+    w => w.parent_code === HANOI_PROVINCE_CODE && needle && stripVn(w.name).includes(needle)
+  )
+  return hanoiMatches.length === 1 ? hanoiMatches[0] : null
+}
+
 /**
  * Bản đồ tỉnh CŨ (đã sáp nhập 2025, không còn trong province.json) → ward đại
  * diện CÙNG TÊN trong tỉnh MỚI (thường là khu vực trung tâm/tỉnh lỵ cũ vẫn

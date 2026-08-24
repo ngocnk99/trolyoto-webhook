@@ -41,6 +41,7 @@ import {
   fetchTireSizesByCarTags,
   fetchTireSizesByProductSearch,
   findWardsByText,
+  pickHanoiWardIfUnambiguous,
   getWardParentCode,
   getWardByCode,
   type SpGaraCard,
@@ -1451,12 +1452,28 @@ async function handleGathering(
     if (!resolvedDeterministically) {
       const directWardMatches = findWardsByText(userInput, 11)
       if (directWardMatches.length > 1) {
-        newState.province_name = userInput
-        needWardConfirm = directWardMatches
-        resolvedDeterministically = true
-        console.log(
-          `[V3 gather] direct ward name match "${userInput}" → ${directWardMatches.length} candidates → hỏi khách xác nhận, bỏ qua AI resolveAddress`
-        )
+        // Nhiều tỉnh/TP trùng tên ward nhưng ĐÚNG 1 trong số đó thuộc Hà Nội
+        // (thị trường khách hàng chính) → ưu tiên chọn luôn, không hỏi lại.
+        // Xem giải thích đầy đủ tại pickHanoiWardIfUnambiguous (db.ts).
+        const hanoiPick = pickHanoiWardIfUnambiguous(directWardMatches, userInput)
+        if (hanoiPick) {
+          newState.province_code = hanoiPick.parent_code
+          newState.province_name = resolveProvinceSync('Hà Nội').name ?? 'Hà Nội'
+          newState.ward_code = hanoiPick.code
+          newState.ward_name = hanoiPick.name
+          newState.fail_location = 0
+          resolvedDeterministically = true
+          console.log(
+            `[V3 gather] direct ward name match "${userInput}" → ${directWardMatches.length} candidates, ưu tiên Hà Nội → ward ${hanoiPick.code} (${hanoiPick.name}), bỏ qua QR xác nhận`
+          )
+        } else {
+          newState.province_name = userInput
+          needWardConfirm = directWardMatches
+          resolvedDeterministically = true
+          console.log(
+            `[V3 gather] direct ward name match "${userInput}" → ${directWardMatches.length} candidates → hỏi khách xác nhận, bỏ qua AI resolveAddress`
+          )
+        }
       }
     }
 
@@ -1520,12 +1537,25 @@ async function handleGathering(
             }
           }
           if (wards.length > 1) {
-            newState.province_name = text
-            needWardConfirm = wards
-            resolvedOk = true
-            console.log(
-              `[V3 gather] resolveAddress fail → ward fallback ${wards.length} candidates, hỏi khách xác nhận`
-            )
+            const hanoiPick = pickHanoiWardIfUnambiguous(wards, text)
+            if (hanoiPick) {
+              newState.province_code = hanoiPick.parent_code
+              newState.province_name = resolveProvinceSync('Hà Nội').name ?? 'Hà Nội'
+              newState.ward_code = hanoiPick.code
+              newState.ward_name = hanoiPick.name
+              newState.fail_location = 0
+              resolvedOk = true
+              console.log(
+                `[V3 gather] resolveAddress fail → ward fallback ${wards.length} candidates, ưu tiên Hà Nội → ward ${hanoiPick.code} (${hanoiPick.name}), bỏ qua QR xác nhận`
+              )
+            } else {
+              newState.province_name = text
+              needWardConfirm = wards
+              resolvedOk = true
+              console.log(
+                `[V3 gather] resolveAddress fail → ward fallback ${wards.length} candidates, hỏi khách xác nhận`
+              )
+            }
           }
         }
 

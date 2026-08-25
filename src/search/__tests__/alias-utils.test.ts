@@ -82,6 +82,17 @@ test('loại alias trùng bản chuẩn hoặc alias đã là norm chuẩn', () 
   assert.equal(out.length, 0)
 })
 
+test('loại alias là cả câu (> 5 từ) — không ai gõ lại y hệt', () => {
+  const out = validateAliases(
+    [
+      { alias: 'lốp TBB mình định thay 4 quả cho xe', canonical: 'Lốp Bridgestone', type: 'SAN_PHAM', confidence: 0.9 },
+      { alias: 'lốp tbb', canonical: 'Lốp Bridgestone', type: 'SAN_PHAM', confidence: 0.9 }
+    ],
+    DICT
+  )
+  assert.deepEqual(out.map(x => x.alias_norm), ['lop tbb'])
+})
+
 test('loại confidence thấp / type sai / trùng cặp', () => {
   const out = validateAliases(
     [

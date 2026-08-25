@@ -75,6 +75,8 @@ export interface ValidatedAlias extends AiAliasCandidate {
 }
 
 const SIZE_RE = /^lop \d{3}\/\d{2}r\d{2}c?$/
+/** Alias phải là CỤM NGẮN khách sẽ gõ lại ("lop mit", "bigertone"), không phải cả câu. */
+export const MAX_ALIAS_TOKENS = 5
 
 /**
  * Lọc kết quả AI trước khi ghi DB:
@@ -100,6 +102,7 @@ export function validateAliases(
     const alias_norm = normalizeText(c.alias)
     const canonical_norm = normalizeText(c.canonical)
     if (alias_norm.length < 2 || alias_norm.length > 80) continue
+    if (alias_norm.split(' ').length > MAX_ALIAS_TOKENS) continue
     if (!canonical_norm || alias_norm === canonical_norm) continue
     if (dictionaryNorms.has(alias_norm)) continue
     if (!dictionaryNorms.has(canonical_norm) && !SIZE_RE.test(canonical_norm)) continue

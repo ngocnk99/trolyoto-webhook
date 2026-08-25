@@ -90,13 +90,24 @@ interface Vocabulary {
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
 
-async function readState(key: string): Promise<string | null> {
+/** Bảng chưa apply migration GĐ3 → chỉ dry-run mới được phép coi như rỗng. */
+function isMissingTable(err: { message?: string } | null): boolean {
+  return !!err?.message && /does not exist|schema cache/i.test(err.message)
+}
+
+async function readState(key: string, dryRun = false): Promise<string | null> {
   const { data, error } = await supabaseAmin
     .from('search_alias_state')
     .select('value')
     .eq('key', key)
     .maybeSingle()
-  if (error) throw new Error(`state read ${key}: ${error.message}`)
+  if (error) {
+    if (dryRun && isMissingTable(error)) {
+      console.warn('[search-alias] dry-run: chưa có bảng search_alias_state → coi như chưa có watermark')
+      return null
+    }
+    throw new Error(`state read ${key}: ${error.message}`)
+  }
   return (data as { value: string } | null)?.value ?? null
 }
 
@@ -148,7 +159,7 @@ async function loadVocabulary(): Promise<Vocabulary> {
 }
 
 /** alias_norm đã có dòng trong search_alias (mọi status) → không hỏi AI lại. */
-async function loadKnownAliases(): Promise<Map<string, { id: number; status: string }>> {
+async function loadKnownAliases(dryRun = false): Promise<Map<string, { id: number; status: string }>> {
   const map = new Map<string, { id: number; status: string }>()
   for (let page = 0; page < 20; page++) {
     const { data, error } = await supabaseAmin
@@ -156,7 +167,13 @@ async function loadKnownAliases(): Promise<Map<string, { id: number; status: str
       .select('id, alias_norm, status')
       .order('id', { ascending: true })
       .range(page * 1000, (page + 1) * 1000 - 1)
-    if (error) throw new Error(`search_alias: ${error.message}`)
+    if (error) {
+      if (dryRun && isMissingTable(error)) {
+        console.warn('[search-alias] dry-run: chưa có bảng search_alias → coi như chưa có alias')
+        return map
+      }
+      throw new Error(`search_alias: ${error.message}`)
+    }
     const rows = (data ?? []) as Array<{ id: number; alias_norm: string; status: string }>
     for (const r of rows) map.set(r.alias_norm, { id: r.id, status: r.status })
     if (rows.length < 1000) break
@@ -243,7 +260,7 @@ function buildSystemPrompt(v: Vocabulary): string {
     '1. `canonical` PHẢI copy nguyên văn một dòng trong danh sách bên dưới, HOẶC là cỡ lốp đúng dạng "Lốp 205/55R16" (3 số/2 số R 2 số).',
     '2. Chỉ tạo alias khi câu khách gõ KHÁC bản chuẩn: lỗi chính tả ("bigertone" → Lốp Bridgestone, "huyndai" → Lốp Hyundai Accent nếu có dòng xe), tiếng lóng ("lốp mít" → Lốp Michelin), viết tắt, cỡ lốp gõ tự do ("205 55 16", "205/56/15" → Lốp 205/55R16 / Lốp 205/56R15).',
     '3. BỎ QUA (không đưa vào kết quả): chào hỏi, cảm ơn, địa chỉ/khu vực, số điện thoại, hỏi giá chung chung không có sản phẩm, câu đã đúng chính tả và trùng bản chuẩn, câu không liên quan ô tô.',
-    '4. Câu có nhiều ý (vd "lốp mít 185 65 15 ở hà nội") → tách thành nhiều alias riêng cho từng cụm có nghĩa ("lốp mít" → Lốp Michelin; "185 65 15" → Lốp 185/65R15). KHÔNG đưa phần địa chỉ.',
+    '4. `alias` là CỤM NGẮN (tối đa 5 từ) đúng phần khách gõ sai/lóng/tự do — KHÔNG BAO GIỜ là cả câu. Câu có nhiều ý (vd "lốp mít 185 65 15 ở hà nội cho xe santafe") → tách thành nhiều alias riêng: "lốp mít" → Lốp Michelin; "185 65 15" → Lốp 185/65R15; "xe santafe" → Lốp Hyundai SantaFe. KHÔNG đưa phần địa chỉ, số lượng ("4 quả"), ý định ("mình định thay").',
     '5. `confidence`: 0.9+ khi chắc chắn (lỗi chính tả rõ, lóng phổ biến); 0.5–0.8 khi suy đoán; dưới 0.5 thì bỏ.',
     '6. `type`: SAN_PHAM cho lốp/ắc quy/phụ kiện; DICH_VU cho việc sửa/thay/bảo dưỡng/kiểm tra.',
     '',
@@ -282,7 +299,8 @@ async function upsertAliases(
     .from('search_alias')
     .select('id, alias_norm, canonical_q, confidence, evidence_count, evidence, status')
     .in('alias_norm', keys)
-  if (error) throw new Error(`search_alias read: ${error.message}`)
+  if (error && !(dryRun && isMissingTable(error)))
+    throw new Error(`search_alias read: ${error.message}`)
   const existing = new Map<string, any>()
   for (const r of (existingRows ?? []) as any[])
     existing.set(`${r.alias_norm}|${normalizeText(r.canonical_q)}`, r)
@@ -367,13 +385,13 @@ export async function runAliasMining(opts: { dryRun?: boolean } = {}): Promise<M
   running = true
   try {
     const watermark =
-      (await readState(STATE_KEY_WATERMARK)) ??
+      (await readState(STATE_KEY_WATERMARK, dryRun)) ??
       new Date(Date.now() - FIRST_RUN_LOOKBACK_DAYS * 86_400_000).toISOString()
     result.watermarkBefore = watermark
 
     const [vocab, known, fromSessions, fromLog] = await Promise.all([
       loadVocabulary(),
-      loadKnownAliases(),
+      loadKnownAliases(dryRun),
       loadSessionPhrases(watermark),
       loadQueryLogPhrases()
     ])

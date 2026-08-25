@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { startHandoverCron } from './fb/handover-cron'
 import { startCacheOutboxCron } from './cache/cache-outbox-cron'
+import { startSearchAliasCron } from './search/search-alias-cron'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -45,6 +46,11 @@ async function bootstrap() {
   // web ngay thay vì chờ hết cache 1 giờ. Chạy ở đây vì service always-on trên
   // Render. Xem src/cache/cache-outbox-cron.ts.
   startCacheOutboxCron()
+
+  // Task search-suggest-v2 GĐ3: đêm 01:30 VN mining alias tìm kiếm từ
+  // conversation_log + search_query_log bằng gpt-4o-mini → search_alias.
+  // Xem src/search/search-alias-cron.ts.
+  startSearchAliasCron()
 }
 
 bootstrap().catch(e => {

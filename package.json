@@ -9,7 +9,8 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "lint": "eslint \"src/**/*.ts\" --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:alias": "tsc src/search/alias-utils.ts src/search/__tests__/alias-utils.test.ts --outDir .test-dist --rootDir src --module commonjs --target es2020 --esModuleInterop --skipLibCheck && node --test .test-dist/search/__tests__/alias-utils.test.js"
   },
   "dependencies": {
     "@ai-sdk/openai": "^0.0.9",

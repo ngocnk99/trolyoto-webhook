@@ -130,9 +130,49 @@ function isQuietHours(): boolean {
  */
 const PRODUCT_PATH_RE = /^\/(lop|ac-quy|noi-ngoai-that)\//
 
+/**
+ * TÁCH TẦN SUẤT CỦA TAG KHỎI TẦN SUẤT CỦA PATH — mặc định 30 phút.
+ *
+ * VÌ SAO TÁCH: hai thứ này phục vụ hai loại trang khác nhau và không cần
+ * chung một nhịp.
+ *
+ *   `paths`  -> xoá đúng /lop/<slug-san-pham> đã đổi giá. Hẹp, rẻ, cần NGAY.
+ *   `tags`   -> revalidateTag('market-listing') xoá MỌI trang mang tag đó:
+ *               /lop, /ac-quy và toàn bộ trang brand/dòng xe
+ *               (/lop/michelin, /lop/vinfast-vf8...). Rộng và đắt.
+ *
+ * Với MIN_FLUSH_GAP_MS = 5 phút và khung chạy 17 giờ/ngày, tag đang bị bắn tới
+ * ~204 lần/ngày. Đo trên log production 25/08/2026, GET /lop/vinfast-vf8:
+ *
+ *     Cache TTL: 1s   Reason: Tag-based deletion
+ *     Tags: setting-view, market-listing
+ *     ISR Function Invocation x2 (423ms + 396ms), Fluid 411 + 415 MB
+ *     Response finished in 1.5s   ISR Cache updated
+ *
+ * Tức nhóm trang brand/dòng xe gần như không bao giờ được ở yên trong cache,
+ * bất kể route khai `revalidate = 86400`. Đây là nguồn chính của ISR Writes.
+ *
+ * ĐÁNH ĐỔI: giá mới lên trang DANH SÁCH chậm nhất 30 phút thay vì 5 phút.
+ * Trang CHI TIẾT không bị ảnh hưởng — nó được xoá theo `paths` chính xác, vẫn
+ * 5 phút như cũ. Và `MARKET_LISTING_REVALIDATE = 3600` bên buyer vẫn là lưới
+ * cuối, nên sai số trần vẫn là 1 giờ.
+ *
+ * CỐ Ý KHÔNG nâng hằng số 3600 đó lên 86400: nó là thứ duy nhất chặn sai số
+ * trong khung nghỉ đêm 00:00-07:00, lúc consumer không chạy.
+ */
+const MIN_TAG_GAP_MS = Number(process.env.CACHE_OUTBOX_MIN_TAG_GAP_MS ?? 1_800_000)
+
+/** Thời điểm gửi kèm tag `market-listing` gần nhất (epoch ms). */
+let lastTagAt = 0
+
+/**
+ * Chỉ kèm tag khi lô CÓ trang sản phẩm VÀ đã đủ khoảng cách kể từ lần gửi
+ * tag trước. Lô toàn đường dẫn gara (`/garage/<slug>`) không bao giờ cần tag.
+ */
 function buildBody(paths: string[]) {
   const hasProductPath = paths.some(p => PRODUCT_PATH_RE.test(p))
-  return hasProductPath ? { paths, tags: ['market-listing'] } : { paths }
+  const tagDue = Date.now() - lastTagAt >= MIN_TAG_GAP_MS
+  return hasProductPath && tagDue ? { paths, tags: ['market-listing'] } : { paths }
 }
 
 /**
@@ -164,6 +204,11 @@ export function getCacheOutboxStatus() {
     buyerOrigin: BUYER_ORIGIN,
     intervalMs: INTERVAL_MS,
     minFlushGapMs: MIN_FLUSH_GAP_MS,
+    // Nhịp RIÊNG của tag `market-listing` — xem MIN_TAG_GAP_MS. Nếu ISR Writes
+    // vẫn cao, so hai mốc này trước: `lastTagAt` mới là thứ xoá cả nhóm trang
+    // brand/dòng xe, `lastFlushAt` chỉ xoá từng đường dẫn.
+    minTagGapMs: MIN_TAG_GAP_MS,
+    lastTagAt: lastTagAt ? new Date(lastTagAt).toISOString() : null,
     lastFlushAt: lastFlushAt ? new Date(lastFlushAt).toISOString() : null,
     // Mốc sớm nhất được phép xoá cache lần kế. Nếu lastSkipReason đang là
     // "hoãn ..." thì dòng vẫn nằm trong outbox chờ tới mốc này, chưa mất.
@@ -264,6 +309,11 @@ async function flushOnce(): Promise<void> {
     // tưởng chưa từng xoá, claim lại đúng lô đó và xoá cache lần nữa. Đúng
     // kiểu bắn dồn mà biến này sinh ra để chặn.
     lastFlushAt = Date.now()
+    // Chỉ tính mốc khi lô NÀY thật sự có kèm tag. Đặt ở đây (sau khi biết
+    // request thành công) chứ không đặt trong buildBody: dựng body xong mà
+    // request lỗi thì tag chưa hề được xoá, ghi mốc sẽ khoá mất 30 phút kế
+    // tiếp cho một lần xoá không xảy ra.
+    if ('tags' in body) lastTagAt = lastFlushAt
 
     const now = new Date().toISOString()
     const { error: markErr } = await supabaseAmin

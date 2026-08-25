@@ -944,8 +944,9 @@ export async function v3GatherTurn(
           ),
         reply: z
           .string()
+          .nullish()
           .describe(
-            'Tin nhắn TROLY gửi khách, tiếng Việt tự nhiên, polite (xưng "em"/"TROLY", gọi "anh/chị"). 1-2 emoji 😊👍.'
+            'Tin nhắn TROLY gửi khách, tiếng Việt tự nhiên, polite (xưng "em"/"TROLY", gọi "anh/chị"). 1-2 emoji 😊👍. Null/omit CHỈ khi action=\'handoff_cskh\' (hệ thống tự gửi message chuyển CSKH cố định riêng, không dùng field này) — mọi action khác BẮT BUỘC phải có.'
           ),
         action: z
           .enum(['continue', 'fetch_results', 'handoff_cskh'])
@@ -1384,7 +1385,13 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         max_price: normalizedMaxPrice,
         wants_best_quality: object.wants_best_quality ?? null
       },
-      reply: object.reply,
+      // object.reply có thể null khi action='handoff_cskh' (schema cho phép
+      // omit — xem mô tả field). Coerce về '' để mọi call site downstream
+      // (.includes('?'), nối chuỗi BRAND_TIER_BLOCK...) không throw khi
+      // action khác lại lỡ thiếu reply — safety-net "AI quên hỏi field"
+      // (flow-handler.ts, check !decision.reply.includes('?')) tự động phủ
+      // luôn case rỗng này bằng câu hỏi field thiếu kế tiếp.
+      reply: object.reply ?? '',
       action: object.action,
       cskh_reason: object.cskh_reason ?? null,
       is_off_topic: object.is_off_topic ?? false,

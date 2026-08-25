@@ -3093,30 +3093,60 @@ export async function handleMessengerEventV3(
 }
 
 /**
- * Detect tin QUẢNG CÁO/NHẮC LẠI THREAD CŨ do CHÍNH FACEBOOK tự động gửi
- * (tính năng "Recurring Notifications" — vd tiêu đề "Ưu đãi và thông báo",
- * `notification_messages_cta_entry_point: "mm_stale_thread_automation"`) —
- * echo về CÙNG app_id với admin Business Suite thật (263902037430900), nên
- * KHÔNG thể phân biệt qua app_id. Phải nhận diện qua CẤU TRÚC nội dung: chỉ
- * tin tự động mới có field `notification_messages_*` trong buttons — người
- * thật gõ qua Business Suite chỉ gửi text/ảnh đơn giản, không có cấu trúc
- * này. Đồng bộ với `isAutomatedAdEcho()` trong production/flow-handler.ts
+ * Detect tin ECHO TỰ ĐỘNG — KHÔNG phải CSKH người thật engage — 2 dạng đã
+ * biết, cả 2 đều echo về CÙNG app_id với admin Business Suite thật
+ * (263902037430900) nên KHÔNG thể phân biệt qua app_id, phải nhận diện qua
+ * CẤU TRÚC/NỘI DUNG:
+ *
+ * 1. "Recurring Notifications" — Facebook tự động nhắc lại thread cũ (vd
+ *    tiêu đề "Ưu đãi và thông báo", `notification_messages_cta_entry_point:
+ *    "mm_stale_thread_automation"`) — chỉ tin dạng này mới có field
+ *    `notification_messages_*` trong `buttons`.
+ * 2. "Trả lời tức thì" (Instant Reply) — tính năng auto-greeting mặc định
+ *    của Meta Business Suite, bắn NGAY khi có hội thoại mới, luôn đúng 1
+ *    khuôn "Xin chào {tên khách}! Bạn có thắc mắc nào cần trao đổi thêm với
+ *    chúng tôi không?" (chỉ tên thay đổi, phần còn lại KHÔNG BAO GIỜ đổi).
+ *    Phát hiện 2026-08-25 qua log DB thật: 41/41 lần xuất hiện khớp y hệt
+ *    cấu trúc câu — khác hẳn văn phong CSKH người thật gõ tay (có lỗi chính
+ *    tả, nội dung theo đúng ngữ cảnh khách hỏi). 81% tin echo app_id Business
+ *    Suite trả lời trong <10 giây kể từ tin đầu của khách — quá nhanh so với
+ *    người thật, phần lớn rơi vào đúng mẫu này. Trước fix: check cũ (dạng 1)
+ *    CHỈ bắt tin có attachment/buttons — mẫu Instant Reply là TEXT THUẦN nên
+ *    lọt qua hoàn toàn, khiến bot bị pause oan dù CHƯA có CSKH thật nào
+ *    engage (khách bị "im lặng" oan ngay từ tin đầu tiên).
+ *
+ * Người thật gõ qua Business Suite chỉ gửi text tự do/ảnh đơn giản theo đúng
+ * ngữ cảnh — không khớp cấu trúc/khuôn mẫu cố định nào ở trên.
+ *
+ * Đồng bộ với `isAutomatedAdEcho()` trong production/flow-handler.ts
  * (duplicate thay vì import chung — import ngược lại sẽ tạo circular dependency
  * vì production/flow-handler.ts đã import từ file này).
  */
 function isAutomatedAdEcho(event: MessengerEvent): boolean {
   const attachments = event.message?.attachments
-  if (!attachments?.length) return false
-  return attachments.some(a => {
-    const elements = a.payload?.elements
-    if (!Array.isArray(elements)) return false
-    return elements.some(el =>
-      (el.buttons ?? []).some(b =>
-        Object.keys(b ?? {}).some(k => k.startsWith('notification_messages_'))
+  const hasNotificationButton =
+    !!attachments?.length &&
+    attachments.some(a => {
+      const elements = a.payload?.elements
+      if (!Array.isArray(elements)) return false
+      return elements.some(el =>
+        (el.buttons ?? []).some(b =>
+          Object.keys(b ?? {}).some(k => k.startsWith('notification_messages_'))
+        )
       )
-    )
-  })
+    })
+  if (hasNotificationButton) return true
+
+  const text = event.message?.text?.trim()
+  if (text && INSTANT_REPLY_GREETING_RE.test(text)) return true
+
+  return false
 }
+
+/** Khuôn cố định của "Trả lời tức thì" (Instant Reply) mặc định Meta Business
+ *  Suite — verify qua log thật, xem docstring `isAutomatedAdEcho()`. */
+const INSTANT_REPLY_GREETING_RE =
+  /^Xin chào .+?!\s*Bạn có thắc mắc nào cần trao đổi thêm với chúng tôi không\?$/
 
 /** Log mô tả ngắn loại event để debug entry points. */
 function describeEvent(event: MessengerEvent): string {
@@ -3199,11 +3229,11 @@ async function handleMessengerEventV3Inner(
           cancelTimer(latestSession.id, 'v3-ad-echo-unpause')
           await completeSession(latestSession.id)
           console.log(
-            `[V3] Ad/notification echo app_id=${echoAppId} psid=${adRecipientPsid} → session ${latestSession.id} đang paused → complete (khách chat lại bot sẽ hoạt động bình thường)`
+            `[V3] Automated echo (ad/instant-reply) app_id=${echoAppId} psid=${adRecipientPsid} → session ${latestSession.id} đang paused → complete (khách chat lại bot sẽ hoạt động bình thường)`
           )
         } else {
           console.log(
-            `[V3] Ad/notification echo app_id=${echoAppId} psid=${adRecipientPsid} → bỏ qua (không phải CSKH thật)`
+            `[V3] Automated echo (ad/instant-reply) app_id=${echoAppId} psid=${adRecipientPsid} → bỏ qua (không phải CSKH thật)`
           )
         }
         return

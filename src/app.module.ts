@@ -16,7 +16,7 @@ import { SearchEmbeddingController } from './search/search-embedding.controller'
     DebugController,
     SearchAliasController,
     TilesController,
-    MetaCapiController
+    MetaCapiController,
     SearchEmbeddingController
   ]
 })

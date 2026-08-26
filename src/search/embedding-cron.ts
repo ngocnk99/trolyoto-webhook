@@ -16,8 +16,6 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { openai } from '@ai-sdk/openai'
-import { embedMany } from 'ai'
 import { supabaseAmin } from '../fb/supabase'
 import { chunk } from './alias-utils'
 
@@ -26,6 +24,26 @@ const RUN_AT = process.env.SEARCH_EMBED_CRON_TIME ?? '03:00'
 const BATCH = Number(process.env.SEARCH_EMBED_BATCH ?? 200)
 const MAX_ROWS = Number(process.env.SEARCH_EMBED_MAX_ROWS ?? 3000)
 const ENABLED = (process.env.SEARCH_EMBED_CRON_ENABLED ?? '1') !== '0'
+
+/**
+ * Gọi thẳng OpenAI REST /v1/embeddings: @ai-sdk/openai ^0.0.9 của repo này chưa có
+ * `openai.embedding()`, và nâng SDK chỉ vì embedding là không đáng (ai-helper.ts đang
+ * chạy ổn định trên bản cũ). fetch có sẵn từ Node 18.
+ */
+export async function openaiEmbed(texts: string[]): Promise<number[][]> {
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) throw new Error('OPENAI_API_KEY missing')
+  const res = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: MODEL, input: texts })
+  })
+  if (!res.ok) throw new Error(`openai embeddings HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  const json = (await res.json()) as { data: Array<{ index: number; embedding: number[] }> }
+  const out: number[][] = new Array(texts.length)
+  for (const d of json.data) out[d.index] = d.embedding
+  return out
+}
 
 const FACET_LABEL: Record<string, string> = {
   brand: 'hãng',
@@ -90,10 +108,7 @@ export async function runEmbeddingBackfill(opts: { dryRun?: boolean } = {}): Pro
 
     for (const batch of chunk(rows, BATCH)) {
       const texts = batch.map(r => embeddingText(r.display, r.facet, r.type))
-      const { embeddings } = await embedMany({
-        model: openai.embedding(MODEL) as any,
-        values: texts
-      })
+      const embeddings = await openaiEmbed(texts)
       result.batches += 1
       if (dryRun) {
         result.embedded += batch.length
@@ -127,8 +142,8 @@ export async function runEmbeddingBackfill(opts: { dryRun?: boolean } = {}): Pro
 
 /** Embed 1 câu (dùng cho probe/test; buyer có route riêng). */
 export async function embedQuery(text: string): Promise<number[]> {
-  const { embeddings } = await embedMany({ model: openai.embedding(MODEL) as any, values: [text] })
-  return embeddings[0]
+  const [vec] = await openaiEmbed([text])
+  return vec
 }
 
 export function getSearchEmbeddingStatus() {

@@ -13,6 +13,7 @@ import { installAiUsageLogging } from './ai/usage-log'
 // src/ai/usage-log.ts. Chạy ở module scope, trước bootstrap(), vì cron trong
 // bootstrap() cũng gọi AI.
 installAiUsageLogging()
+import { startSearchEmbeddingCron } from './search/embedding-cron'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -71,6 +72,9 @@ async function bootstrap() {
   // (qua event_id), và đơn không mất khi trình duyệt chặn pixel.
   // Xem src/meta/capi-outbox-cron.ts.
   startMetaCapiCron()
+  // GĐ4: 03:00 VN embed delta của search_dictionary (OpenAI text-embedding-3-small)
+  // cho tầng semantic. Xem src/search/embedding-cron.ts.
+  startSearchEmbeddingCron()
 }
 
 bootstrap().catch(e => {

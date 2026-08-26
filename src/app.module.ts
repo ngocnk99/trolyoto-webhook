@@ -6,6 +6,7 @@ import { VersionController } from './version.controller'
 import { SearchAliasController } from './search/search-alias.controller'
 import { TilesController } from './tiles/tiles.controller'
 import { MetaCapiController } from './meta/capi.controller'
+import { SearchEmbeddingController } from './search/search-embedding.controller'
 
 @Module({
   controllers: [
@@ -16,6 +17,7 @@ import { MetaCapiController } from './meta/capi.controller'
     SearchAliasController,
     TilesController,
     MetaCapiController
+    SearchEmbeddingController
   ]
 })
 export class AppModule {}

@@ -327,8 +327,10 @@ async function upsertAliases(
       reviewed_at = now
       autoApproved += 1
     }
+    // KHÔNG đưa `id` vào upsert: cột là GENERATED ALWAYS AS IDENTITY → Postgres từ chối
+    // "cannot insert a non-DEFAULT value into column id" (bug lộ ở lượt chạy Render đầu
+    // tiên 26/08 khi đã có dòng cũ). ON CONFLICT (alias_norm, canonical_q) tự khớp dòng cũ.
     rows.push({
-      ...(prev ? { id: prev.id } : {}),
       alias: sample,
       alias_norm: v.alias_norm,
       canonical_q: prev?.canonical_q ?? v.canonical,

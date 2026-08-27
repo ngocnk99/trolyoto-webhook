@@ -4,6 +4,7 @@ import { DebugController } from './fb/debug.controller'
 import { HealthController } from './health.controller'
 import { VersionController } from './version.controller'
 import { SearchAliasController } from './search/search-alias.controller'
+import { TilesController } from './tiles/tiles.controller'
 
 @Module({
   controllers: [
@@ -11,7 +12,8 @@ import { SearchAliasController } from './search/search-alias.controller'
     VersionController,
     WebhookController,
     DebugController,
-    SearchAliasController
+    SearchAliasController,
+    TilesController
   ]
 })
 export class AppModule {}

@@ -35,6 +35,8 @@ import {
 } from '../session'
 import {
   fetchSpGaraCards,
+  fetchPriorityGaraCards,
+  fetchNationalGaraCards,
   resolveProvinceSync,
   resolveMergedProvinceAlias,
   getMinPriceForTireSize,
@@ -312,6 +314,21 @@ function buildSearchIntro(_state: SessionState): string {
   return (
     'Dạ TROLYoto đã tìm được sản phẩm phù hợp 😊\n' +
     '👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!'
+  )
+}
+
+/**
+ * Intro khi kết quả đến từ TIER 3 (gara ưu tiên) hoặc TIER 4 (toàn bộ gara) —
+ * tức là KHÔNG thuộc khu vực khách. TUYỆT ĐỐI KHÔNG dùng `buildSearchIntro`
+ * ("gara gần mình") ở đây — kết quả nằm ở tỉnh KHÁC, câu đó sẽ là câu SAI
+ * khách có thể tự nhận ra. Văn phong gần với câu CSKH người thật hay dùng khi
+ * tự tay gợi ý gara tỉnh khác (xem follow.md mục 4).
+ */
+function buildPriorityGarageIntro(): string {
+  return (
+    'Dạ khu vực của mình hiện chưa có đại lý còn hàng cho sản phẩm này ạ 😔\n' +
+    'TROLYoto xin giới thiệu một số ĐẠI LÝ CHÍNH HÃNG ở khu vực khác để anh/chị tham khảo ạ 😊\n' +
+    '👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và thông tin gara nhé!'
   )
 }
 
@@ -1251,9 +1268,18 @@ async function handleGathering(
   // decision.updates.tire_size để các so sánh sizeChanged/relevantFieldUpdated
   // phía dưới coi đây như 1 lần cập nhật size hợp lệ (đủ 3 trường thì fetch
   // ngay). Đồng bộ với src/libs/chat/server/route.ts (Web bot, cùng bugfix).
+  //
+  // ⚠️ Điều kiện PHẢI là "không có car_model MỚI" (khác state.car_model cũ),
+  // KHÔNG PHẢI "không có car_model nào cả" — bug thật (audit 2026-08-27): AI
+  // có thể ECHO lại y nguyên car_model cũ trong decision.updates cùng lúc với
+  // off_topic_kind='generic_price_inquiry' (đúng kiểu echo mục 2 đã cảnh báo,
+  // cũng là lý do sinh ra carModelChanged bên dưới) — nếu chỉ check "không có
+  // car_model", 1 echo như vậy sẽ vô tình HUỶ khoá size, bot hỏi lại đúng size
+  // vừa show dù khách chưa hề đổi ý.
   if (
     !newState.tire_size &&
-    !decision.updates.car_model &&
+    (!decision.updates.car_model ||
+      decision.updates.car_model === state.car_model) &&
     state.last_shown_car_sizes?.length === 1
   ) {
     const confirmedSize = state.last_shown_car_sizes[0]
@@ -1620,6 +1646,33 @@ async function handleGathering(
     return
   }
 
+  // FAQ "lốp sản xuất năm nào" — reply cố định + replay card gần nhất, KHÔNG
+  // dùng decision.reply do AI sinh (field này bắt buộc câu chữ nguyên văn).
+  // Chỉ check off_topic_kind (KHÔNG kèm is_off_topic) — is_off_topic đã biết
+  // không đáng tin cậy 100% (AI đôi khi set off_topic_kind đúng nhưng quên set
+  // is_off_topic=true cùng lúc); off_topic_kind tự nó đã là tín hiệu đủ chắc.
+  //
+  // ⚠️ PHẢI đặt CẢ 2 FAQ này TRƯỚC check `handoff_cskh` bên dưới — bug thật
+  // (audit 2026-08-27): prompt cấm AI set ĐỒNG THỜI `off_topic_kind='garage_contact'`
+  // VÀ `action='handoff_cskh'`, nhưng đó CHÍNH XÁC là kiểu "tin AI tuân thủ
+  // prompt tuyệt đối" mà file này đã nhiều lần từ chối tin ở chỗ khác (vd
+  // is_off_topic ở dưới). Nếu AI lỡ set cả 2, thứ tự CŨ (handoff trước) sẽ
+  // return trước khi kịp chạm 2 FAQ này → tái hiện đúng bug follow.md mục 4 đã
+  // ghi ("khách hỏi 'có số điện thoại gara không' bị chuyển thẳng CSKH thay vì
+  // trả lời FAQ có sẵn"). FAQ có câu trả lời cố định, chắc chắn đúng hơn 1
+  // quyết định handoff có thể là AI hiểu sai — nên luôn ưu tiên FAQ trước.
+  if (decision.off_topic_kind === 'manufacture_year') {
+    await handleManufactureYearFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // FAQ "địa chỉ/SĐT gara" — cùng shape với FAQ năm sản xuất ở trên (reply cố
+  // định + replay card gần nhất, đổi nhãn nút khác).
+  if (decision.off_topic_kind === 'garage_contact') {
+    await handleGarageContactFaq(psid, session, pageId, newState)
+    return
+  }
+
   if (decision.action === 'handoff_cskh') {
     // Đã từng hỏi SĐT rồi (cskhHandoff trước đó đặt step=AWAITING_PHONE) mà
     // khách trả lời tiếp vẫn không có SĐT + AI lại quyết định handoff lần nữa
@@ -1644,23 +1697,6 @@ async function handleGathering(
       newState,
       decision.cskh_reason ?? 'AI v3GatherTurn'
     )
-    return
-  }
-
-  // FAQ "lốp sản xuất năm nào" — reply cố định + replay card gần nhất, KHÔNG
-  // dùng decision.reply do AI sinh (field này bắt buộc câu chữ nguyên văn).
-  // Chỉ check off_topic_kind (KHÔNG kèm is_off_topic) — is_off_topic đã biết
-  // không đáng tin cậy 100% (AI đôi khi set off_topic_kind đúng nhưng quên set
-  // is_off_topic=true cùng lúc); off_topic_kind tự nó đã là tín hiệu đủ chắc.
-  if (decision.off_topic_kind === 'manufacture_year') {
-    await handleManufactureYearFaq(psid, session, pageId, newState)
-    return
-  }
-
-  // FAQ "địa chỉ/SĐT gara" — cùng shape với FAQ năm sản xuất ở trên (reply cố
-  // định + replay card gần nhất, đổi nhãn nút khác).
-  if (decision.off_topic_kind === 'garage_contact') {
-    await handleGarageContactFaq(psid, session, pageId, newState)
     return
   }
 
@@ -1796,7 +1832,22 @@ async function handleGathering(
   //  - ≥2 lần fail: cskhHandoff
   //  - Nếu chưa có tin bot nào trong session → prepend welcome intro vào tin retry
   //    (welcome chỉ xuất hiện ở case khách nhắn không khớp luồng nào)
-  if (!aiExtractedAnything && wasAsking && !decision.is_off_topic) {
+  //
+  // ⚠️ PHẢI check CẢ `decision.off_topic_kind`, KHÔNG CHỈ `is_off_topic` — bug
+  // thật (audit 2026-08-27): `is_off_topic` đã biết KHÔNG đáng tin cậy 100%
+  // (AI đôi khi set đúng `off_topic_kind` nhưng quên set `is_off_topic=true`
+  // cùng lúc, xem comment ở nhánh FAQ routing phía dưới). Nếu chỉ check
+  // `is_off_topic`, 1 tin "giá bao nhiêu" thiếu cờ đó sẽ bị nhánh fail này
+  // NUỐT MẤT (tăng fail_X + return) TRƯỚC KHI kịp chạm tới
+  // `handleGenericPriceInquiry` (nằm PHÍA DƯỚI, sau Branch 1 + fetch) — 2 FAQ
+  // kia (manufacture_year/garage_contact) được bảo vệ vì check TRƯỚC nhánh
+  // này, generic_price_inquiry thì không, chỉ vì đứng SAU về vị trí code.
+  if (
+    !aiExtractedAnything &&
+    wasAsking &&
+    !decision.is_off_topic &&
+    !decision.off_topic_kind
+  ) {
     const failKey =
       wasAsking === 'size'
         ? 'fail_size'
@@ -2078,6 +2129,8 @@ async function showSpGaraResults(
     let cards: SpGaraCard[] = []
     let usedFallbackProvince = false
     let usedFallbackBrand = false
+    let usedPriorityGarage = false
+    let usedNationalFallback = false
 
     const maxFinalPriceFloor = state.max_price ?? undefined
 
@@ -2144,6 +2197,60 @@ async function showSpGaraResults(
       }
     }
 
+    // 4. Hết cách theo KHU VỰC (ward → tỉnh → bỏ brand) → thử danh sách gara
+    //    ƯU TIÊN (bảng priority_garage, cache RAM). CHỈ nới vị trí; size/brand/
+    //    giá giữ nguyên. Thử brand đúng yêu cầu trước, rồi mới bỏ brand — cùng
+    //    thứ tự với 2 bước theo khu vực ở trên.
+    if (cards.length === 0) {
+      cards = await fetchPriorityGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      if (cards.length === 0 && brandFilter !== '__skip_brand__') {
+        cards = await fetchPriorityGaraCards({
+          tireSize,
+          tireBrand: '__skip_brand__',
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
+        })
+        if (cards.length > 0) usedFallbackBrand = true
+      }
+      usedPriorityGarage = cards.length > 0
+      console.log(
+        `[V3 showSpGara] priority garage fallback → ${cards.length} cards${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}`
+      )
+    }
+
+    // 5. Vẫn không có gì → TOÀN BỘ gara, bỏ hẳn ràng buộc vị trí. Đây là bước
+    //    cuối cùng trước khi chuyển CSKH — vẫn giữ nguyên size/brand/giá.
+    if (cards.length === 0) {
+      cards = await fetchNationalGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      if (cards.length === 0 && brandFilter !== '__skip_brand__') {
+        cards = await fetchNationalGaraCards({
+          tireSize,
+          tireBrand: '__skip_brand__',
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
+        })
+        if (cards.length > 0) usedFallbackBrand = true
+      }
+      usedNationalFallback = cards.length > 0
+      console.log(
+        `[V3 showSpGara] national fallback (no location) → ${cards.length} cards${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}`
+      )
+    }
+
     const head = buildSummaryHead(state, updatedFields)
 
     if (cards.length === 0) {
@@ -2157,8 +2264,8 @@ async function showSpGaraResults(
           ...state,
           cskh_reason:
             brandFilter !== '__skip_brand__'
-              ? `Không có gara cho size ${tireSize} (brand="${brandFilter}", đã thử cả all brand) ở ${locationLabel}`
-              : `Không có gara cho size ${tireSize} ở ${locationLabel}`
+              ? `Không có gara cho size ${tireSize} (brand="${brandFilter}", đã thử cả all brand) ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
+              : `Không có gara cho size ${tireSize} ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
         }
       })
       await reply(psid, sessionId, msg1)
@@ -2171,21 +2278,30 @@ async function showSpGaraResults(
       return
     }
 
-    // Có SP → intro (gộp 1 tin — kèm ghi chú brand fallback nếu có, tránh 2
-    // tin liên tiếp cùng mở đầu "TROLYoto tìm/đã tìm được..." trùng ý).
-    const msgFound = usedFallbackBrand
-      ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
-      : buildSearchIntro(state)
+    // Có SP → intro. Tier 3/4 (kết quả KHÔNG thuộc khu vực khách) PHẢI dùng
+    // buildPriorityGarageIntro() — buildSearchIntro ("gara gần mình") sẽ SAI
+    // hoàn toàn trong case này, khách dễ tự nhận ra và mất niềm tin.
+    const msgFound =
+      usedPriorityGarage || usedNationalFallback
+        ? buildPriorityGarageIntro()
+        : usedFallbackBrand
+          ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
+          : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
-    const displayLabel = usedFallbackProvince
-      ? (state.province_name ?? locationLabel)
-      : locationLabel
+    // displayLabel KHÔNG được lấy state.province_name/locationLabel (khu vực
+    // KHÁCH) khi tier 3/4 đã chạy — kết quả nằm ở tỉnh khác hoàn toàn.
+    const displayLabel =
+      usedPriorityGarage || usedNationalFallback
+        ? '(gara ưu tiên — khu vực khác)'
+        : usedFallbackProvince
+          ? (state.province_name ?? locationLabel)
+          : locationLabel
     await sendCards(
       psid,
       sessionId,
       cards.map(buildSpGaraCard),
-      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedFallbackBrand ? ' (brand fallback)' : ''}`
+      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedFallbackBrand ? ' (brand fallback)' : ''}${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}`
     )
 
     const shownCodes = cards
@@ -2200,7 +2316,7 @@ async function showSpGaraResults(
         ...state,
         shown_garage_codes: shownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false,
+        shown_national: usedPriorityGarage || usedNationalFallback,
         has_shown_results: true
       }
     })
@@ -2276,7 +2392,12 @@ function resolveFetchStrategy(state: SessionState): FetchStrategy {
 async function fetchBestQualityCascade(
   tireSize: string,
   state: SessionState
-): Promise<{ cards: SpGaraCard[]; usedFallbackProvince: boolean }> {
+): Promise<{
+  cards: SpGaraCard[]
+  usedFallbackProvince: boolean
+  usedPriorityGarage: boolean
+  usedNationalFallback: boolean
+}> {
   const wardCode = state.ward_code ?? null
   const provinceCode =
     state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
@@ -2308,11 +2429,50 @@ async function fetchBestQualityCascade(
         `[V3 cascade best] loc=${loc.isWard ? `ward:${loc.wardCode}` : `province:${loc.provinceCode}`} tier=${tier} → ${cards.length} cards`
       )
       if (cards.length > 0) {
-        return { cards, usedFallbackProvince: !loc.isWard && !!wardCode }
+        return {
+          cards,
+          usedFallbackProvince: !loc.isWard && !!wardCode,
+          usedPriorityGarage: false,
+          usedNationalFallback: false
+        }
       }
     }
   }
-  return { cards: [], usedFallbackProvince: false }
+
+  // Hết cách theo khu vực (mọi tier × ward/tỉnh) → tier 3 (gara ưu tiên) rồi
+  // tier 4 (toàn bộ gara), cùng thứ tự tier premium→...→all như trên.
+  for (const tier of TIER_CASCADE_ORDER) {
+    const brandFilter =
+      tier === 'all' ? '__skip_brand__' : BRAND_TIERS[tier].brands.join('|')
+    const cards = await fetchPriorityGaraCards({
+      tireSize,
+      tireBrand: brandFilter,
+      limit: 3,
+      sortBy: 'lowest_price',
+      maxFinalPriceFloor
+    })
+    if (cards.length > 0) {
+      console.log(`[V3 cascade best] tier=${tier} → priority garage ${cards.length} cards`)
+      return { cards, usedFallbackProvince: false, usedPriorityGarage: true, usedNationalFallback: false }
+    }
+  }
+  for (const tier of TIER_CASCADE_ORDER) {
+    const brandFilter =
+      tier === 'all' ? '__skip_brand__' : BRAND_TIERS[tier].brands.join('|')
+    const cards = await fetchNationalGaraCards({
+      tireSize,
+      tireBrand: brandFilter,
+      limit: 3,
+      sortBy: 'lowest_price',
+      maxFinalPriceFloor
+    })
+    if (cards.length > 0) {
+      console.log(`[V3 cascade best] tier=${tier} → national fallback ${cards.length} cards`)
+      return { cards, usedFallbackProvince: false, usedPriorityGarage: false, usedNationalFallback: true }
+    }
+  }
+
+  return { cards: [], usedFallbackProvince: false, usedPriorityGarage: false, usedNationalFallback: false }
 }
 
 /**
@@ -2325,7 +2485,12 @@ async function fetchBestQualityCascade(
 async function fetchViewAllCascade(
   tireSize: string,
   state: SessionState
-): Promise<{ cards: SpGaraCard[]; usedFallbackProvince: boolean }> {
+): Promise<{
+  cards: SpGaraCard[]
+  usedFallbackProvince: boolean
+  usedPriorityGarage: boolean
+  usedNationalFallback: boolean
+}> {
   const wardCode = state.ward_code ?? null
   const provinceCode =
     state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
@@ -2402,7 +2567,40 @@ async function fetchViewAllCascade(
     collected.push(...cards)
   }
 
-  return { cards: collected.slice(0, 3), usedFallbackProvince }
+  // Vẫn trống (kể cả sau all-brand fallback ở trên) → tier 3 rồi tier 4.
+  let usedPriorityGarage = false
+  let usedNationalFallback = false
+  if (collected.length === 0) {
+    let cards = await fetchPriorityGaraCards({
+      tireSize,
+      tireBrand: '__skip_brand__',
+      limit: 3,
+      sortBy: 'lowest_price',
+      maxFinalPriceFloor
+    })
+    usedPriorityGarage = cards.length > 0
+    if (cards.length === 0) {
+      cards = await fetchNationalGaraCards({
+        tireSize,
+        tireBrand: '__skip_brand__',
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      usedNationalFallback = cards.length > 0
+    }
+    console.log(
+      `[V3 cascade viewAll] priority=${usedPriorityGarage} national=${usedNationalFallback} → ${cards.length} cards`
+    )
+    collected.push(...cards)
+  }
+
+  return {
+    cards: collected.slice(0, 3),
+    usedFallbackProvince,
+    usedPriorityGarage,
+    usedNationalFallback
+  }
 }
 
 /**
@@ -2438,7 +2636,7 @@ async function showCascadeResults(
   }
 
   try {
-    const { cards, usedFallbackProvince } =
+    const { cards, usedFallbackProvince, usedPriorityGarage, usedNationalFallback } =
       kind === 'best_quality'
         ? await fetchBestQualityCascade(tireSize, state)
         : await fetchViewAllCascade(tireSize, state)
@@ -2453,7 +2651,7 @@ async function showCascadeResults(
         step: 'AWAITING_PHONE',
         state: {
           ...state,
-          cskh_reason: `Không có gara cho size ${tireSize} (cascade ${kind}) ở ${locationLabel}`
+          cskh_reason: `Không có gara cho size ${tireSize} (cascade ${kind}) ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
         }
       })
       await reply(psid, sessionId, msg1)
@@ -2466,17 +2664,23 @@ async function showCascadeResults(
       return
     }
 
-    const msgFound = buildSearchIntro(state)
+    const msgFound =
+      usedPriorityGarage || usedNationalFallback
+        ? buildPriorityGarageIntro()
+        : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
-    const displayLabel = usedFallbackProvince
-      ? (state.province_name ?? locationLabel)
-      : locationLabel
+    const displayLabel =
+      usedPriorityGarage || usedNationalFallback
+        ? '(gara ưu tiên — khu vực khác)'
+        : usedFallbackProvince
+          ? (state.province_name ?? locationLabel)
+          : locationLabel
     await sendCards(
       psid,
       sessionId,
       cards.map(buildSpGaraCard),
-      `${cards.length} SP+gara ở ${displayLabel} (${kind}${usedFallbackProvince ? ', ward fallback' : ''})`
+      `${cards.length} SP+gara ở ${displayLabel} (${kind}${usedFallbackProvince ? ', ward fallback' : ''}${usedPriorityGarage ? ', PRIORITY GARAGE' : ''}${usedNationalFallback ? ', NATIONAL FALLBACK' : ''})`
     )
 
     // "Xem hết" (view_all, không tiêu chí brand cụ thể) → thêm nút [Xem tất
@@ -2514,7 +2718,7 @@ async function showCascadeResults(
         ...state,
         shown_garage_codes: shownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false,
+        shown_national: usedPriorityGarage || usedNationalFallback,
         has_shown_results: true
       }
     })
@@ -2543,7 +2747,13 @@ async function fetchMultiBrandResults(
   tireSize: string,
   state: SessionState
 ): Promise<
-  Array<{ brand: string; cards: SpGaraCard[]; usedFallbackProvince: boolean }>
+  Array<{
+    brand: string
+    cards: SpGaraCard[]
+    usedFallbackProvince: boolean
+    usedPriorityGarage: boolean
+    usedNationalFallback: boolean
+  }>
 > {
   const wardCode = state.ward_code ?? null
   const provinceCode =
@@ -2555,6 +2765,8 @@ async function fetchMultiBrandResults(
     brand: string
     cards: SpGaraCard[]
     usedFallbackProvince: boolean
+    usedPriorityGarage: boolean
+    usedNationalFallback: boolean
   }> = []
 
   for (const brand of brands) {
@@ -2583,9 +2795,35 @@ async function fetchMultiBrandResults(
       })
       usedFallbackProvince = !!wardCode
     }
-    console.log(`[V3 multiBrand] brand=${brand} → ${cards.length} cards`)
+    // Hết cách theo khu vực CHO ĐÚNG HÃNG NÀY → tier 3 rồi tier 4, vẫn giữ
+    // nguyên brand (multi-brand không có bước "bỏ lọc brand" như standard).
+    let usedPriorityGarage = false
+    let usedNationalFallback = false
+    if (cards.length === 0) {
+      cards = await fetchPriorityGaraCards({
+        tireSize,
+        tireBrand: brand,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      usedPriorityGarage = cards.length > 0
+      if (cards.length === 0) {
+        cards = await fetchNationalGaraCards({
+          tireSize,
+          tireBrand: brand,
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
+        })
+        usedNationalFallback = cards.length > 0
+      }
+    }
+    console.log(
+      `[V3 multiBrand] brand=${brand} → ${cards.length} cards${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}`
+    )
     if (cards.length > 0) {
-      results.push({ brand, cards, usedFallbackProvince })
+      results.push({ brand, cards, usedFallbackProvince, usedPriorityGarage, usedNationalFallback })
     }
   }
   return results
@@ -2652,17 +2890,23 @@ async function showMultiBrandResults(
 
     const allShownCodes: string[] = []
     const allPrices: number[] = []
+    let anyUsedPriorityOrNational = false
     for (let i = 0; i < results.length; i++) {
-      const { brand, cards, usedFallbackProvince } = results[i]
-      const displayLabel = usedFallbackProvince
-        ? (state.province_name ?? locationLabel)
-        : locationLabel
+      const { brand, cards, usedFallbackProvince, usedPriorityGarage, usedNationalFallback } =
+        results[i]
+      if (usedPriorityGarage || usedNationalFallback) anyUsedPriorityOrNational = true
+      const displayLabel =
+        usedPriorityGarage || usedNationalFallback
+          ? '(gara ưu tiên — khu vực khác)'
+          : usedFallbackProvince
+            ? (state.province_name ?? locationLabel)
+            : locationLabel
       await reply(psid, sessionId, `🔹 ${brand}`)
       await sendCards(
         psid,
         sessionId,
         cards.map(buildSpGaraCard),
-        `${cards.length} SP+gara ${brand} ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}`
+        `${cards.length} SP+gara ${brand} ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}`
       )
       allShownCodes.push(
         ...cards.map(c => c.garageCode).filter((c): c is string => !!c)
@@ -2680,7 +2924,7 @@ async function showMultiBrandResults(
         ...state,
         shown_garage_codes: allShownCodes,
         shown_garage_min_price: minPrice,
-        shown_national: false,
+        shown_national: anyUsedPriorityOrNational,
         has_shown_results: true
       }
     })

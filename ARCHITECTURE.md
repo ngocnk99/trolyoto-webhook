@@ -10,8 +10,9 @@ webhook.controller.ts       Entry point FB webhook (GET verify / POST events), r
   │    └─ v3/flow-handler.ts      LOGIC CHÍNH — state machine hội thoại (handleGathering, dispatch, ...)
   ├─ flow-handler.ts (V2, legacy) Không dùng cho page production, giữ cho session cũ trong DB
   └─ ai-helper.ts               Mọi AI call: v3GatherTurn, resolveCarModel, resolveAddress, analyzeTireImage
-db.ts                        Supabase queries: fetchSpGaraCards, resolveProvinceSync, findWardsByText,
-                              MERGED_PROVINCE_ALIASES, getTireSizesForCar
+db.ts                        Supabase queries: fetchSpGaraCards, fetchPriorityGaraCards, fetchNationalGaraCards,
+                              resolveProvinceSync, findWardsByText, MERGED_PROVINCE_ALIASES, getTireSizesForCar
+priorityGarage.ts             Cache RAM bảng `priority_garage` (setInterval 30 phút) — tier 3 cascade fetch (follow.md mục 4)
 session.ts                   CRUD `fb_messenger_sessions`: createSession/updateSession/pauseSessionByCskh/
                               resolveEffectiveSession (auto-unpause sau CSKH_PAUSE_EXPIRY_MS=8h, follow.md mục 9)
 handover.ts / handover-cron.ts   Facebook Handover Protocol (take/pass thread control), cron pass-back 8:30
@@ -26,9 +27,11 @@ ai/webGatherTurn.ts           ~ v3GatherTurn
 ai/resolveCarModel.ts         ~ resolveCarModel (FB ai-helper.ts)
 ai/resolveAddress.ts          ~ resolveAddress (FB ai-helper.ts)
 db/locationResolve.ts         ~ db.ts location functions (resolveLocation, resolveLocationWithAi)
-db/tireDb.ts                  ~ db.ts tire/garage queries
+tireDb.ts                     ~ db.ts tire/garage queries — LƯU Ý: nằm trực tiếp trong src/libs/chat/,
+                               KHÔNG có subfolder db/ (khác locationResolve.ts/serviceGara.ts, vốn ở db/)
 types/chatTypes.ts            ~ types.ts (WebChatState ~ SessionState)
 ```
+`apis/cache/priorityGarages.ts` (ngoài `src/libs/chat/`, ở `src/apis/cache/`) — tương đương `priorityGarage.ts` FB, dùng `unstable_cache revalidate:1800` thay vì `setInterval` (Next.js/Vercel không có tiến trình nền dài hạn).
 Không có khái niệm `MessengerStep`/session step ở Web — trạng thái hội thoại nằm trong `WebChatState.awaiting` + `action` trả về mỗi turn (`continue`/`show_ward_confirm`/`handoff_cskh`/...).
 
 ## 2. Vòng đời 1 tin nhắn (FB)
@@ -109,7 +112,8 @@ webhook.controller.ts: processEvents()
 - **`dispatchAndShowResults()`/`hasBrandField()` (v3/flow-handler.ts) nay có `export`** — dùng ở `production/flow-handler.ts` cho feature "tự gửi lại card SP khi CSKH nhắc xem khuyến mại mà chưa có card gần đó" (xem `follow.md` mục 9). Bất kỳ call site MỚI nào gọi `dispatchAndShowResults` từ NGOÀI `handleGathering` bình thường PHẢI nhớ nó tự set `is_active=true` + đổi `step` — nếu gọi trong lúc session đang `is_paused_by_cskh`, PHẢI `pauseSessionByCskh()` lại ngay sau, nếu không bot sẽ vô tình unpause.
 - **Mọi điểm check `session.is_paused_by_cskh` để quyết định bot có im lặng không PHẢI đi qua `resolveEffectiveSession()`/`getEffectiveSession()` (session.ts / production/flow-handler.ts), KHÔNG check thẳng field.** Đây là cơ chế tự hết hạn pause sau 8h (`CSKH_PAUSE_EXPIRY_MS`) — check thẳng field sẽ bỏ sót cơ chế hết hạn, quay lại bug "bot im lặng vĩnh viễn" (xem `follow.md` mục 9). Danh sách chỗ ĐÃ áp dụng đúng (tham khảo khi thêm chỗ mới): `production/flow-handler.ts` — `getEffectiveSession()` (dùng ở nhánh CSKH echo, standby, messaging) + ad-echo branch; `v3/flow-handler.ts` — dispatcher chính (2 chỗ: `getActiveSession` + fallback `getLatestSession`), CSKH-echo branch, ad-echo branch.
 - **Thứ tự nhánh trong `handleGathering()`/`runGatherTurn()` PHẢI ưu tiên "thông tin thật trích được" TRƯỚC "off_topic_kind fallback".** Bug thật 2026-08-07: `off_topic_kind==='generic_price_inquiry'` từng check TRƯỚC Branch 1 (car lookup) → 1 turn vừa có tên xe mới vừa hỏi giá bị chặn mất car lookup, dù AI trích đúng car_model trong `decision.updates`. Đã chuyển xuống SAU Branch 1 + sau fetch-khi-đủ-3-trường (xem thứ tự đầy đủ ở mục 4 phía trên) — mọi `off_topic_kind` MỚI thêm sau này cũng nên đặt cuối cùng (chỉ là fallback), trừ khi có lý do rõ ràng cần ưu tiên cao hơn (như `manufacture_year`/`garage_contact`, vốn luôn override vì có câu trả lời cố định không đụng tới field nào).
-- **Thêm field mới vào `SessionState`/`WebChatState` → cân nhắc luôn có nên đưa vào `pickCarryOverState()` không** (`session.ts` mục FB, `stateMachine.ts` mục Web — xem `follow.md` mục 9b). Field "đã thu thập" thật (khách cung cấp, còn đúng lâu dài) → thêm vào allowlist. Field ephemeral/turn-scoped (gắn với 1 tin nhắn cụ thể, vd list vừa show/fail counter/flag đã gửi nudge) → KHÔNG thêm, để bị xoá khi session tách sau 24h — mặc định AN TOÀN hơn nếu quên: field mới không trong allowlist sẽ bị coi là ephemeral (mất khi tách), không phải ngược lại.
+- **Thêm field mới vào `SessionState`/`WebChatState` → cân nhắc luôn có nên đưa vào `pickCarryOverState()` không** (`session.ts` mục FB, `stateMachine.ts` mục Web — xem `follow.md` mục 9b). Field "đã thu thập" thật (khách cung cấp, còn đúng lâu dài) → thêm vào allowlist. Field ephemeral/turn-scoped (gắn với 1 tin nhắn cụ thể, vd list vừa show/fail counter/flag đã gửi nudge) → KHÔNG thêm, để bị xoá khi session tách sau 24h — mặc định AN TOÀN hơn nếu quên: field mới không trong allowlist sẽ bị coi là ephemeral (mất khi tách), không phải ngược lại. `shown_national` (thêm 2026-08-27, xem `follow.md` mục 4) KHÔNG có trong allowlist ở CẢ 2 bot — cố ý, cùng lý do với `has_shown_results`.
+- **Cascade fetch SP+gara bị DUPLICATE ở 4 hàm/bot** (`showSpGaraResults`, `fetchBestQualityCascade`, `fetchViewAllCascade`, `fetchMultiBrandResults` bên FB; 4 hàm tương ứng bên Web `route.ts`) — KHÔNG có 1 điểm tổng hợp chung. Thêm 1 tầng fallback mới vào pipeline tìm SP+gara (như tier 3 "gara ưu tiên"/tier 4 "toàn bộ gara" — xem `follow.md` mục 4) BẮT BUỘC phải sửa ĐỦ CẢ 8 chỗ (4 hàm × 2 bot), mỗi hàm tự trả thêm flag riêng (`usedPriorityGarage`/`usedNationalFallback`) rồi thread qua đúng hàm render tương ứng (`showCascadeResults`/`showMultiBrandResults` FB; `runFetchCascadeOffers`/`runFetchMultiBrandOffers` Web) để copy/label/`shown_national` phản ánh đúng — sót 1 chỗ sẽ khiến case đó vẫn hiện câu "gara gần mình" SAI khi kết quả thực ra ở tỉnh khác.
 
 ## 7. Testing methodology
 

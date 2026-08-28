@@ -30,6 +30,7 @@ import { supabaseAmin } from './supabase'
 import provinceJson from '../province.json'
 import wardJson from '../ward.json'
 import { extractProvinceFromAddress } from './ai-helper'
+import { getPriorityGarageCodes } from './priorityGarage'
 
 // ── Public TYPES (input/output contracts) ─────────────────────────────────────
 
@@ -534,6 +535,20 @@ export async function fetchGarageOffers(params: {
   provinceCode: string | null
   /** V3: filter theo ward_code (chính xác hơn province). Ưu tiên hơn provinceCode nếu có. */
   wardCode?: string | null
+  /**
+   * Tier 3 trong cascade tìm SP+gara (xem `fetchPriorityGaraCards`) — CHỈ nới
+   * ràng buộc VỊ TRÍ, KHÔNG phải "search tự do": query CHỈ xét gara có `code`
+   * nằm trong danh sách này (bảng `priority_garage`).
+   */
+  restrictGarageCodes?: string[]
+  /**
+   * Tier 4 (xem `fetchNationalGaraCards`) — cờ BẮT BUỘC phải set `true` tường
+   * minh mới cho phép bỏ HẲN ràng buộc vị trí (không province, không ward,
+   * không restrictGarageCodes). Thiết kế cố ý KHÔNG suy luận "không truyền gì
+   * = search toàn bộ", để 1 call site cũ lỡ quên truyền provinceCode/wardCode
+   * (bug thật) vẫn bị chặn ở guard bên dưới thay vì âm thầm search cả nước.
+   */
+  allowNationwide?: boolean
   maxGaragesPerTire?: number
   sortBy?: GarageSortBy
   excludeGarageCodes?: string[]
@@ -543,6 +558,8 @@ export async function fetchGarageOffers(params: {
     productadminIds,
     provinceCode,
     wardCode,
+    restrictGarageCodes,
+    allowNationwide = false,
     maxGaragesPerTire = 3,
     sortBy = 'lowest_price',
     excludeGarageCodes = [],
@@ -551,10 +568,14 @@ export async function fetchGarageOffers(params: {
 
   if (!productadminIds.length) return []
 
-  // V3 yêu cầu BẮT BUỘC có province_code HOẶC ward_code — không bao giờ search all
-  if (!provinceCode && !wardCode) {
+  // V3 yêu cầu BẮT BUỘC có province_code HOẶC ward_code — TRỪ khi đây là tier 3
+  // (đã giới hạn vào danh sách gara ƯU TIÊN qua restrictGarageCodes) hoặc tier 4
+  // (caller CHỦ Ý set allowNationwide=true — KHÔNG suy luận ngầm từ việc thiếu
+  // tham số, xem docstring allowNationwide). Không bao giờ "vô tình" search
+  // rộng chỉ vì 1 call site quên truyền vị trí.
+  if (!provinceCode && !wardCode && !restrictGarageCodes?.length && !allowNationwide) {
     console.warn(
-      '[FB db] fetchGarageOffers SKIP — yêu cầu provinceCode hoặc wardCode'
+      '[FB db] fetchGarageOffers SKIP — yêu cầu provinceCode/wardCode/restrictGarageCodes/allowNationwide'
     )
     return []
   }
@@ -599,7 +620,8 @@ export async function fetchGarageOffers(params: {
           slug,
           information,
           province_code,
-          ward_code
+          ward_code,
+          is_test
         )
       `
     )
@@ -614,6 +636,19 @@ export async function fetchGarageOffers(params: {
     pQuery = pQuery.eq('garage.ward_code', wardCode)
   } else if (provinceCode) {
     pQuery = pQuery.eq('garage.province_code', provinceCode)
+  } else if (restrictGarageCodes?.length) {
+    // Tier 3 — không lọc theo vị trí, chỉ giới hạn vào danh sách gara ƯU TIÊN.
+    pQuery = pQuery.in('garage.code', restrictGarageCodes)
+  }
+  // else: allowNationwide=true, không thêm điều kiện gì — tier 4, toàn bộ gara.
+
+  // Tier 4 (không lọc vị trí lẫn danh sách gara) — BẮT BUỘC .limit() ở tầng
+  // parent query (`product`, KHÔNG có limit nào trước đây vì luôn được bound
+  // bởi vị trí) để tránh kéo hàng nghìn dòng vào Node memory chỉ vì 1 size
+  // hiếm không tỉnh nào có hàng. Loại bỏ gara is_test — tier ưu tiên (3) không
+  // cần vì đã curate tay, nhưng tier 4 show gara BẤT KỲ nên phải lọc.
+  if (allowNationwide) {
+    pQuery = pQuery.eq('garage.is_test', false).limit(500)
   }
 
   const { data: prows, error: pErr } = await pQuery
@@ -736,43 +771,61 @@ export async function fetchSpGaraCards(params: {
   provinceCode: string | null
   /** V3: ưu tiên ward_code hơn province_code. Khi có ward_code → filter theo ward. */
   wardCode?: string | null
+  /** Tier 3 — xem `fetchGarageOffers`/`fetchPriorityGaraCards`. */
+  restrictGarageCodes?: string[]
+  /** Tier 4 — xem `fetchGarageOffers`/`fetchNationalGaraCards`. */
+  allowNationwide?: boolean
   limit?: number
   sortBy?: GarageSortBy
   excludeGarageCodes?: string[]
   maxFinalPriceFloor?: number
+  /**
+   * Ghi đè cap mặc định (10, hoặc 30 khi có maxFinalPriceFloor) của
+   * `fetchTireCatalog` ở bước 1. BẮT BUỘC truyền cao hơn (vd 30) cho tier 3 —
+   * chỉ có 4 gara ưu tiên nên cửa sổ catalog phải rộng hơn nhiều mới đủ cơ
+   * hội tìm ra 1 sản phẩm 1 trong 4 gara đó thực sự có bán, thay vì chỉ xét
+   * 10 SP rẻ nhất rồi kết luận nhầm là "không có hàng".
+   */
+  catalogLimit?: number
 }): Promise<SpGaraCard[]> {
   const {
     tireSize,
     tireBrand,
     provinceCode,
     wardCode,
+    restrictGarageCodes,
+    allowNationwide = false,
     limit = 3,
     sortBy = 'lowest_price',
     excludeGarageCodes,
-    maxFinalPriceFloor
+    maxFinalPriceFloor,
+    catalogLimit
   } = params
 
-  // BẮT BUỘC có province_code HOẶC ward_code
-  if (!provinceCode && !wardCode) {
+  // BẮT BUỘC có province_code/ward_code — TRỪ tier 3 (restrictGarageCodes) và
+  // tier 4 (allowNationwide=true tường minh). Xem docstring cùng tên ở
+  // `fetchGarageOffers` — lý do KHÔNG suy luận ngầm từ việc thiếu tham số.
+  if (!provinceCode && !wardCode && !restrictGarageCodes?.length && !allowNationwide) {
     console.warn(
-      '[DB fetchSpGaraCards] SKIP — yêu cầu provinceCode hoặc wardCode'
+      '[DB fetchSpGaraCards] SKIP — yêu cầu provinceCode/wardCode/restrictGarageCodes/allowNationwide'
     )
     return []
   }
 
   console.log(
-    `[DB fetchSpGaraCards] params: size="${tireSize}" brand="${tireBrand}" provinceCode="${provinceCode}" wardCode="${wardCode}" limit=${limit} sortBy=${sortBy}`
+    `[DB fetchSpGaraCards] params: size="${tireSize}" brand="${tireBrand}" provinceCode="${provinceCode}" wardCode="${wardCode}" restrictGarageCodes=${restrictGarageCodes ? `[${restrictGarageCodes.join(',')}]` : 'none'} allowNationwide=${allowNationwide} limit=${limit} sortBy=${sortBy}`
   )
 
   // 1. Lấy danh sách SP theo size+brand (rộng để có đủ gara map qua).
   //    Khi có lọc theo giá (maxFinalPriceFloor) → nới cap lên 30, tránh trường
   //    hợp top-10 mặc định toàn hàng đắt bị lọc sạch trong khi catalog vẫn còn
-  //    SP rẻ hơn ở ngoài top-10 (theo lastprice ASC).
+  //    SP rẻ hơn ở ngoài top-10 (theo lastprice ASC). catalogLimit (nếu có)
+  //    thắng cả 2 mặc định trên — xem docstring tham số.
   const { items, productadminIds } = await fetchTireCatalog({
     tireSize,
     tireBrand,
     skip: 0,
-    limit: typeof maxFinalPriceFloor === 'number' ? 30 : 10
+    limit: catalogLimit ?? (typeof maxFinalPriceFloor === 'number' ? 30 : 10)
   })
   console.log(
     `[DB fetchSpGaraCards] fetchTireCatalog → ${items.length} products (sizeKey=${toSizeKey(tireSize)})`
@@ -780,11 +833,13 @@ export async function fetchSpGaraCards(params: {
   if (productadminIds.length === 0) return []
   const productMap = new Map(items.map(p => [p.id, p]))
 
-  // 2. Lấy gara theo productIds + (ward_code hoặc province_code)
+  // 2. Lấy gara theo productIds + (ward_code hoặc province_code hoặc tier 3/4)
   const groups = await fetchGarageOffers({
     productadminIds,
     provinceCode,
     wardCode,
+    restrictGarageCodes,
+    allowNationwide,
     maxGaragesPerTire: 3,
     sortBy,
     excludeGarageCodes,
@@ -830,6 +885,57 @@ export async function fetchSpGaraCards(params: {
   })
 }
 
+/**
+ * TIER 3 trong cascade tìm SP+gara — "gara ƯU TIÊN": chỉ nới ràng buộc VỊ TRÍ,
+ * giữ nguyên size/brand/giá. CHỈ gọi khi mọi bước theo khu vực (ward → tỉnh)
+ * đã trả về 0 kết quả. Danh sách gara đọc từ cache RAM (`priorityGarage.ts`,
+ * refresh 30 phút/lần) — KHÔNG thêm round-trip DB nào vào lượt chat này.
+ *
+ * `catalogLimit` mặc định 30 (không phải 10 như tier 1/2) — xem docstring
+ * tham số cùng tên ở `fetchSpGaraCards`.
+ */
+export async function fetchPriorityGaraCards(params: {
+  tireSize: string
+  tireBrand: string
+  limit?: number
+  sortBy?: GarageSortBy
+  excludeGarageCodes?: string[]
+  maxFinalPriceFloor?: number
+}): Promise<SpGaraCard[]> {
+  const codes = getPriorityGarageCodes()
+  if (codes.length === 0) return []
+  return fetchSpGaraCards({
+    ...params,
+    provinceCode: null,
+    wardCode: null,
+    restrictGarageCodes: codes,
+    catalogLimit: 30
+  })
+}
+
+/**
+ * TIER 4 (cuối cùng) — "toàn bộ gara, KHÔNG so vị trí": bỏ HẲN ràng buộc vị
+ * trí lẫn danh sách gara ưu tiên, giữ nguyên size/brand/giá. CHỈ gọi khi tier
+ * 1+2+3 đều trả về 0. `fetchGarageOffers` tự thêm `.limit(500)` + loại gara
+ * `is_test` khi `allowNationwide=true` — xem docstring ở đó.
+ */
+export async function fetchNationalGaraCards(params: {
+  tireSize: string
+  tireBrand: string
+  limit?: number
+  sortBy?: GarageSortBy
+  excludeGarageCodes?: string[]
+  maxFinalPriceFloor?: number
+}): Promise<SpGaraCard[]> {
+  return fetchSpGaraCards({
+    ...params,
+    provinceCode: null,
+    wardCode: null,
+    allowNationwide: true,
+    catalogLimit: 30
+  })
+}
+
 // ── 3. resolveProvince ────────────────────────────────────────────────────────
 
 type ProvinceEntry = {
@@ -860,13 +966,19 @@ export function resolveProvinceSync(text: string): ProvinceResolution {
 
     for (const c of candidates) {
       if (!c || c.length < 2) continue
+      // haystack.includes(c) qua includesWholeWord (KHÔNG phải includes() thô)
+      // — c (tên tỉnh) PHẢI khớp theo ranh giới từ trong haystack (tin khách),
+      // tránh tên tỉnh NGẮN (vd "Huế" chỉ 3 ký tự) vô tình là substring của 1
+      // từ khác không liên quan (vd "Nhuế" trong "Cổ Nhuế" chứa "hue" ở cuối —
+      // xem docstring `includesWholeWord`).
       // c.includes(haystack): text khách gõ NGẮN HƠN tên tỉnh -> chỉ an toàn
       // khi haystack đủ dài, tránh 1 tên NGẮN, KHÔNG ĐỔI tự nó (vd "Vinh" -
       // TP Vinh, Nghệ An, không sáp nhập) bị coi là tiền tố mập mờ khớp NHẦM
       // vào tên tỉnh khác dài hơn chứa nó (vd "Vĩnh Long" chứa "vinh" như 1
       // tiền tố, dù không liên quan).
       const isMatch =
-        haystack.includes(c) || (haystack.length >= 5 && c.includes(haystack))
+        includesWholeWord(haystack, c) ||
+        (haystack.length >= 5 && c.includes(haystack))
       if (isMatch) {
         const score = Math.min(c.length, haystack.length)
         if (!best || score > best.score) {
@@ -942,8 +1054,20 @@ export function getWardByCode(code: string): WardMatch | null {
  * V3 fallback: tìm các ward (xã/phường) match với text khách nhập.
  * Dùng khi province.json không khớp (vd "Thái Bình" sau khi reorg địa giới).
  *
- * Match strategy: text khách (đã chuẩn hoá không dấu) chứa trong `name`, `path`
- * hoặc `slug` của ward. Trả về danh sách match (≤ limit).
+ * Match strategy — 2 CHIỀU (bug audit 2026-08-27, xem docstring `includesWholeWord`
+ * bên dưới):
+ *  (a) `needle` (text khách) chứa TRONG `name`/`path`/`slug` của ward — khách
+ *      gõ NGẮN hơn/bằng tên ward (vd chỉ gõ đúng "Cầu Giấy").
+ *  (b) tên ward (`w.name`, NGẮN) xuất hiện dạng WHOLE WORD BÊN TRONG `needle`
+ *      — khách gõ 1 câu ĐẦY ĐỦ dài hơn tên ward (vd "Tôi ở Cầu Giấy, Hà Nội",
+ *      CHÍNH LÀ định dạng ví dụ bot tự gợi ý khách). Bug gốc: code cũ CHỈ có
+ *      chiều (a) — với input câu dài thực tế, `haystack` (tên/path ward) LUÔN
+ *      ngắn hơn `needle` (cả câu) nên `haystack.includes(needle)` gần như
+ *      KHÔNG BAO GIỜ true → ward-level match coi như CHẾT với mọi input tự
+ *      nhiên có kèm từ khác ngoài tên ward. Dùng `includesWholeWord` (không
+ *      phải `includes` thô) cho chiều (b) để tránh ward tên ngắn khớp nhầm
+ *      vào giữa 1 từ khác trong câu — cùng lớp bug "Huế" lọt vào "Nhuế". Đồng
+ *      bộ với src/libs/chat/db/locationResolve.ts (cùng bugfix).
  */
 export function findWardsByText(text: string, limit = 13): WardMatch[] {
   const needle = stripVn(text)
@@ -954,17 +1078,17 @@ export function findWardsByText(text: string, limit = 13): WardMatch[] {
   for (const [code, w] of Object.entries(WARD_MAP)) {
     if (matches.length >= limit) break
     if (seen.has(code)) continue
-    const haystacks = [
-      stripVn(w.name),
-      stripVn(w.path),
-      stripVn(w.slug.replace(/-/g, ' '))
-    ]
+    const wardName = stripVn(w.name)
+    const haystacks = [wardName, stripVn(w.path), stripVn(w.slug.replace(/-/g, ' '))]
     let hit = false
     for (const h of haystacks) {
       if (h && h.includes(needle)) {
         hit = true
         break
       }
+    }
+    if (!hit && wardName && includesWholeWord(needle, wardName)) {
+      hit = true
     }
     if (hit) {
       seen.add(code)
@@ -1003,15 +1127,37 @@ const HANOI_PROVINCE_CODE = '01'
  * TÌNH chứa "dong ha") — nếu tin match này mù quáng sẽ auto-pick SAI hoàn toàn
  * sang 1 ward Hà Nội không liên quan. Yêu cầu needle khớp trực tiếp trong TÊN
  * ward (không phải path) mới coi là match Hà Nội THẬT.
+ *
+ * ⚠️ Bug thứ 2 phát hiện CÙNG NGÀY (audit 2026-08-27, khi test lại bằng
+ * conversation thật) — 2 phần:
+ *  (1) `stripVn(w.name).includes(needle)` chỉ đúng khi `queryText` NGẮN
+ *      hơn/bằng tên ward (vd khách gõ trần trụi "Hoàng Mai"). Với câu đầy đủ
+ *      THỰC TẾ hơn (vd "Tôi ở Hoàng Mai" — không kèm "Hà Nội") thì `needle`
+ *      dài hơn nên `.includes()` luôn false → hàm LUÔN trả null, bắt khách
+ *      xác nhận QR dù đáng lẽ đủ điều kiện tự chọn Hà Nội. Cùng lớp bug
+ *      (hướng includes ngược) vừa fix ở `findWardsByText` — dùng
+ *      `includesWholeWord` theo chiều ngược (tên ward NGẮN nằm trong needle).
+ *  (2) `w.name` ở ĐÂY là field của `WardMatch` — thực chất đã bị gán =
+ *      `name_with_type` lúc build trong `findWardsByText` (vd "Phường Hoàng
+ *      Mai", CÓ tiền tố loại hình), KHÁC với `WardJsonEntry.name` gốc (bare,
+ *      "Hoàng Mai") mà `findWardsByText` dùng để match. Khách KHÔNG BAO GIỜ
+ *      gõ kèm "Phường"/"Xã" → so needle với "phuong hoang mai" luôn trượt dù
+ *      chiều includes đã đúng. Lấy tên trần từ `w.path` (định dạng "<tên
+ *      ward>, <tỉnh>") thay vì `w.name` — vẫn KHÔNG dùng cả path nguyên câu
+ *      (giữ đúng nguyên tắc "khớp trên TÊN ward, không phải path" để tránh
+ *      bug họ "Hà Đông Hà Nội" → "Đông Hà").
+ * Đồng bộ với src/libs/chat/db/locationResolve.ts (cùng bugfix).
  */
 export function pickHanoiWardIfUnambiguous(
   wards: WardMatch[],
   queryText: string
 ): WardMatch | null {
   const needle = stripVn(queryText)
-  const hanoiMatches = wards.filter(
-    w => w.parent_code === HANOI_PROVINCE_CODE && needle && stripVn(w.name).includes(needle)
-  )
+  const hanoiMatches = wards.filter(w => {
+    if (w.parent_code !== HANOI_PROVINCE_CODE || !needle) return false
+    const bareName = stripVn(w.path.split(',')[0] ?? w.name)
+    return bareName.includes(needle) || includesWholeWord(needle, bareName)
+  })
   return hanoiMatches.length === 1 ? hanoiMatches[0] : null
 }
 
@@ -1392,4 +1538,26 @@ function stripVn(s: string): string {
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * `haystack.includes(needle)` nhưng bắt buộc `needle` khớp theo RANH GIỚI TỪ
+ * (đứng đầu/cuối chuỗi hoặc có khoảng trắng bao quanh) — KHÔNG chấp nhận
+ * `needle` nằm lọt thỏm giữa 1 từ khác. Cả `haystack` lẫn `needle` đều phải
+ * đã qua `stripVn()` trước (chỉ còn chữ/số/khoảng trắng đơn).
+ *
+ * Bug thật (2026-08-25): khách gõ "mình ở Cổ Nhuế gần Cầu Giấy" → stripVn ra
+ * "co nhue gan cau giay" — chuỗi này VÔ TÌNH chứa substring "hue" (3 ký tự
+ * cuối của "nhue") → `resolveProvinceSync` khớp NHẦM sang tỉnh "Huế" (tên
+ * tỉnh NGẮN NHẤT trong toàn bộ province.json, chỉ 3 ký tự sau stripVn — xem
+ * `includesWholeWord` được áp dụng ở đó). Direction `haystack.includes(c)`
+ * (c = tên tỉnh, thường NGẮN hơn haystack = tin khách) trước đây KHÔNG có
+ * ngưỡng bảo vệ nào (khác chiều `c.includes(haystack)` đã có ngưỡng
+ * `haystack.length >= 5` từ bug "Vinh"/"Vĩnh Long" trước đó) — tên tỉnh càng
+ * ngắn càng dễ vô tình là substring của 1 từ dài hơn không liên quan.
+ */
+function includesWholeWord(haystack: string, needle: string): boolean {
+  if (!needle) return false
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(haystack)
 }

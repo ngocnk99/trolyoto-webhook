@@ -4,6 +4,7 @@ import { AppModule } from './app.module'
 import { startHandoverCron } from './fb/handover-cron'
 import { startCacheOutboxCron } from './cache/cache-outbox-cron'
 import { startSearchAliasCron } from './search/search-alias-cron'
+import { startPriorityGarageCache } from './fb/priorityGarage'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -51,6 +52,11 @@ async function bootstrap() {
   // conversation_log + search_query_log bằng gpt-4o-mini → search_alias.
   // Xem src/search/search-alias-cron.ts.
   startSearchAliasCron()
+
+  // Cache RAM bảng priority_garage (gara ưu tiên khi hết cách tìm theo vị trí
+  // — tier 3 trong cascade tìm SP+gara). Refresh 30 phút/lần, load ngay lúc
+  // start. Xem src/fb/priorityGarage.ts.
+  startPriorityGarageCache()
 }
 
 bootstrap().catch(e => {

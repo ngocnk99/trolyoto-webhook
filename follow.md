@@ -254,3 +254,17 @@ Verify: `findWardsByText("Tôi ở Cầu Giấy, Hà Nội")` → đúng 1 match
 - D1–D7 (giá ngay đầu, FAQ năm SX, FAQ SĐT gara, multi-brand, lảng tránh liên tục, tên phường trùng tỉnh, emoji vô nghĩa): PASS, không crash case nào; D5 xác nhận đúng handoff sau 2 lần lảng tránh (mục 12 mới fix); D6 lẽ ra minh hoạ ward_confirm QR nhưng do fix `pickHanoiWardIfUnambiguous` ở trên nên tự resolve luôn (đã verify riêng nhánh QR qua case "Hoàng Mai, Nghệ An" tường minh + case 3-ứng-viên gốc).
 
 **Giới hạn đã biết của lần test này**: bảng `priority_garage` (mục 4) vẫn CHƯA được tạo trên DB thật (migration `database/migrations/20260827_priority_garage.sql` chưa chạy) — mock `getPriorityGarages()` trả cứng 4 code ở tầng cache lúc test, cascade logic downstream 100% thật. `OPENAI_API_KEY` trong `.env`/`.env.production`/`.env.dev` cục bộ từng invalid (401) — đã fix key khác cho local test, không ảnh hưởng key thật trên Vercel.
+
+## 14. Sửa nội dung tin nhắn intro tier 3/4 (2026-08-28) — theo feedback thật từ ảnh chụp
+
+User báo tin nhắn intro khi cascade rơi xuống tier 3 (gara ưu tiên) sai mẫu mong muốn — ảnh chụp thật cho thấy bubble "Dạ khu vực của mình hiện chưa có đại lý còn hàng..." không nêu rõ khu vực khách hỏi, không nhấn mạnh MIỄN SHIP (điểm bán hàng chính của gara ưu tiên), và nút CTA nhắc sai tên (chữ "Nhận khuyến mại" không khớp nút thật "🎁 Xem khuyến mại"/"🎁 Xem khuyến mãi").
+
+**Đã đổi cả 2 bot** (`buildPriorityGarageIntro`/`buildPriorityGarageIntroWeb`), tách riêng text tier 3 vs tier 4 (trước đây DÙNG CHUNG 1 text cho cả 2 tier — sai vì tier 4 KHÔNG có cam kết trợ giá/miễn ship như tier 3, tránh hứa hẹn sai):
+
+- **Tier 3** (gara ưu tiên): `"Hiện TROLYoto chưa ghi nhận gara ở {khu vực} công khai giá ạ 😔\nTuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉\nAnh/chị có thể tìm được thương hiệu mong muốn khi chọn "🎁 Xem khuyến mại/mãi" nhé 😊"` — Web nhấn MIỄN SHIP bằng markdown `**bold**` (render qua MemoizedReactMarkdown), FB nhấn bằng chữ hoa (Messenger không hỗ trợ markdown).
+- **Tier 4** (toàn quốc, hàm `buildNationalGarageIntro`/`buildNationalGarageIntroWeb` MỚI): cùng câu mở đầu, đoạn giữa đổi thành "...đang có sản phẩm phù hợp, mời anh/chị tham khảo ạ 😊" — KHÔNG có "TRỢ GIÁ + MIỄN SHIP".
+- `{khu vực}` lấy từ `ward_name ?? province_name` (Web) / `locationLabel` (FB, đã có sẵn) — khu vực KHÁCH thực sự hỏi, không phải khu vực kết quả trả về.
+
+**Phát hiện thêm 1 asymmetry lúc sửa**: nhánh multi-brand của FB (`showMultiBrandResults`) LUÔN dùng `buildSearchIntro` ("gara gần mình") kể cả khi tier 3/4 đã chạy cho 1+ hãng — sai hoàn toàn vì kết quả nằm ở tỉnh khác, khách dễ tự nhận ra. Web đã có check này từ trước (`anyUsedPriorityOrNational`), FB thì chưa. **Đã fix đồng bộ**: tính `anyUsedPriority`/`anyUsedNational` từ `results` (đã fetch sẵn trước loop) để chọn đúng intro.
+
+`npx tsc --noEmit` sạch cả 2 repo sau fix.

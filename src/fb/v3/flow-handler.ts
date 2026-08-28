@@ -324,11 +324,35 @@ function buildSearchIntro(_state: SessionState): string {
  * khách có thể tự nhận ra. Văn phong gần với câu CSKH người thật hay dùng khi
  * tự tay gợi ý gara tỉnh khác (xem follow.md mục 4).
  */
-function buildPriorityGarageIntro(): string {
+/** "ở {khu vực}" — rỗng nếu không xác định được khu vực khách để chèn câu tự nhiên. */
+function areaPhrase(areaLabel: string | null | undefined): string {
+  return areaLabel ? `ở ${areaLabel} ` : ''
+}
+
+/**
+ * Intro tier 3 (gara ƯU TIÊN — đối tác chính hãng đã cam kết trợ giá + miễn
+ * ship, xem priorityGarage.ts). Nhấn mạnh MIỄN SHIP — Messenger KHÔNG hỗ trợ
+ * markdown bold nên emphasize bằng chữ hoa (khác Web, có thể dùng ** thật —
+ * xem src/libs/chat/server/route.ts buildPriorityGarageIntroWeb()).
+ */
+function buildPriorityGarageIntro(areaLabel: string | null | undefined): string {
   return (
-    'Dạ khu vực của mình hiện chưa có đại lý còn hàng cho sản phẩm này ạ 😔\n' +
-    'TROLYoto xin giới thiệu một số ĐẠI LÝ CHÍNH HÃNG ở khu vực khác để anh/chị tham khảo ạ 😊\n' +
-    '👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và thông tin gara nhé!'
+    `Hiện TROLYoto chưa ghi nhận gara ${areaPhrase(areaLabel)}công khai giá ạ 😔\n` +
+    'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉\n' +
+    'Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "🎁 Xem khuyến mại" nhé 😊'
+  )
+}
+
+/**
+ * Intro tier 4 (toàn bộ gara, KHÔNG giới hạn danh sách ưu tiên) — gara này
+ * KHÔNG có cam kết trợ giá/miễn ship như tier 3 nên KHÔNG lặp lại câu đó,
+ * tránh hứa hẹn sai. Cùng cấu trúc câu với tier 3, chỉ khác đoạn giữa.
+ */
+function buildNationalGarageIntro(areaLabel: string | null | undefined): string {
+  return (
+    `Hiện TROLYoto chưa ghi nhận gara ${areaPhrase(areaLabel)}công khai giá ạ 😔\n` +
+    'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có sản phẩm phù hợp, mời anh/chị tham khảo ạ 😊\n' +
+    'Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "🎁 Xem khuyến mại" nhé 😊'
   )
 }
 
@@ -2281,9 +2305,10 @@ async function showSpGaraResults(
     // Có SP → intro. Tier 3/4 (kết quả KHÔNG thuộc khu vực khách) PHẢI dùng
     // buildPriorityGarageIntro() — buildSearchIntro ("gara gần mình") sẽ SAI
     // hoàn toàn trong case này, khách dễ tự nhận ra và mất niềm tin.
-    const msgFound =
-      usedPriorityGarage || usedNationalFallback
-        ? buildPriorityGarageIntro()
+    const msgFound = usedPriorityGarage
+      ? buildPriorityGarageIntro(locationLabel)
+      : usedNationalFallback
+        ? buildNationalGarageIntro(locationLabel)
         : usedFallbackBrand
           ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
           : buildSearchIntro(state)
@@ -2664,9 +2689,10 @@ async function showCascadeResults(
       return
     }
 
-    const msgFound =
-      usedPriorityGarage || usedNationalFallback
-        ? buildPriorityGarageIntro()
+    const msgFound = usedPriorityGarage
+      ? buildPriorityGarageIntro(locationLabel)
+      : usedNationalFallback
+        ? buildNationalGarageIntro(locationLabel)
         : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
@@ -2884,7 +2910,17 @@ async function showMultiBrandResults(
       return
     }
 
-    const msgFound = buildSearchIntro(state)
+    // Đồng bộ với Web (route.ts runFetchMultiBrandOffers) — trước đây nhánh
+    // multi-brand của FB LUÔN dùng buildSearchIntro ("gara gần mình") kể cả
+    // khi 1/nhiều hãng phải rơi xuống tier 3/4, sai hoàn toàn khi kết quả nằm
+    // ở tỉnh khác. Check trước cả loop vì results đã fetch xong hết.
+    const anyUsedPriority = results.some(r => r.usedPriorityGarage)
+    const anyUsedNational = results.some(r => r.usedNationalFallback)
+    const msgFound = anyUsedPriority
+      ? buildPriorityGarageIntro(locationLabel)
+      : anyUsedNational
+        ? buildNationalGarageIntro(locationLabel)
+        : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
 

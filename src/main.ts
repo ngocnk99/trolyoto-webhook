@@ -5,6 +5,13 @@ import { startHandoverCron } from './fb/handover-cron'
 import { startCacheOutboxCron } from './cache/cache-outbox-cron'
 import { startSearchAliasCron } from './search/search-alias-cron'
 import { startPriorityGarageCache } from './fb/priorityGarage'
+import { installAiUsageLogging } from './ai/usage-log'
+
+// Patch globalThis.fetch trước khi mở cổng — mọi request tới api.openai.com
+// được ghi 1 dòng ai_call_log (kể cả retry nội bộ của AI SDK). Xem
+// src/ai/usage-log.ts. Chạy ở module scope, trước bootstrap(), vì cron trong
+// bootstrap() cũng gọi AI.
+installAiUsageLogging()
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {

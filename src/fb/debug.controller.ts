@@ -8,6 +8,7 @@
  *    POST /api/debug/pass-control        → manually pass_thread_control 1 PSID
  *    GET  /api/debug/session/:psid       → xem session + conversation_log
  *    GET  /api/debug/errored-sessions    → list session bị is_error=true
+ *    GET  /api/debug/ai-usage            → chi phí token OpenAI theo ngày/nguồn/hàm
  *
  *  Auth: nếu env DEBUG_SECRET có set, request phải kèm header `x-debug-secret`
  *        khớp giá trị đó. Nếu env không set → không check (chỉ dùng nội bộ).
@@ -20,6 +21,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   Res,
   Headers
 } from '@nestjs/common'
@@ -287,5 +289,63 @@ export class DebugController {
         .json({ error: error.message })
     }
     return res.json({ count: data?.length ?? 0, sessions: data ?? [] })
+  }
+
+  // ─── GET /api/debug/ai-usage?days=14 ─────────────────────────────────────
+  // Đối chiếu với dashboard OpenAI: `requests` cộng theo ngày ở đây PHẢI khớp
+  // số requests bên OpenAI. Lệch = có request phát sinh ngoài 2 app này.
+  @Get('ai-usage')
+  async aiUsage(
+    @Query('days') days: string | undefined,
+    @Headers('x-debug-secret') secret: string | undefined,
+    @Res() res: Response
+  ) {
+    if (!checkAuth(secret)) {
+      return res.status(HttpStatus.UNAUTHORIZED).json({ error: 'bad secret' })
+    }
+    const nDays = Math.min(Math.max(Number(days) || 14, 1), 90)
+    const since = new Date(Date.now() - nDays * 86_400_000)
+      .toISOString()
+      .slice(0, 10)
+
+    const [daily, perTurn] = await Promise.all([
+      supabaseAmin
+        .from('ai_call_daily')
+        .select('*')
+        .gte('day_utc', since)
+        .order('day_utc', { ascending: false }),
+      supabaseAmin
+        .from('ai_cost_per_turn')
+        .select('*')
+        .gte('day_utc', since)
+        .order('day_utc', { ascending: false })
+    ])
+    if (daily.error || perTurn.error) {
+      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        error: daily.error?.message ?? perTurn.error?.message
+      })
+    }
+
+    // Tổng theo ngày — cột để so trực tiếp với biểu đồ requests của OpenAI.
+    const byDay = new Map<string, { requests: number; cost_usd: number }>()
+    for (const r of daily.data ?? []) {
+      const cur = byDay.get(r.day_utc) ?? { requests: 0, cost_usd: 0 }
+      cur.requests += Number(r.requests)
+      cur.cost_usd += Number(r.cost_usd)
+      byDay.set(r.day_utc, cur)
+    }
+
+    return res.json({
+      since,
+      total_by_day: [...byDay.entries()]
+        .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+        .map(([day_utc, v]) => ({
+          day_utc,
+          requests: v.requests,
+          cost_usd: Number(v.cost_usd.toFixed(4))
+        })),
+      breakdown: daily.data ?? [],
+      per_turn: perTurn.data ?? []
+    })
   }
 }

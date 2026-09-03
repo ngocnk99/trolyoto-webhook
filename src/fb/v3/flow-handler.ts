@@ -68,6 +68,7 @@ import {
   resolveAddress
 } from '../ai-helper'
 import { scheduleTimer, cancelTimer } from '../timers'
+import { withAiTurn, setAiContext } from '../../ai/usage-log'
 
 // Token chọn theo pageId — V3 page và PRODUCTION page dùng chung handler này
 // nhưng token khác nhau. AsyncLocalStorage giữ token theo request scope, an
@@ -956,6 +957,7 @@ async function handleImage(
   console.log(
     `[V3 image] session=${session.id} url=${imageUrl.slice(0, 80)}...`
   )
+  setAiContext({ sessionId: session.id })
   const analysis = await analyzeTireImage(imageUrl)
 
   const state = session.state
@@ -1240,6 +1242,8 @@ async function handleGathering(
 ): Promise<void> {
   const state = session.state
   const sessionId = session.id
+  // Gắn session vào ai_call_log để quy chi phí AI về đúng hội thoại.
+  setAiContext({ sessionId })
 
   // Hủy mọi timer pending (15s/45s từ flow trước) — khách đang chủ động gather
   // lại / hỏi lốp khác → tin nudge cũ sẽ ghi đè QR mới (vd: list size cho xe).
@@ -3382,8 +3386,21 @@ export async function handleMessengerEventV3(
   event: MessengerEvent,
   pageId: string
 ): Promise<void> {
-  return requestContext.run({ token: tokenForPageId(pageId), pageId }, () =>
-    handleMessengerEventV3Inner(event, pageId)
+  // 1 event khách = 1 "turn" cho ai_call_log. Mọi call AI phát sinh bên trong
+  // (v3GatherTurn + resolveCarModel + resolveAddress + analyzeTireImage...)
+  // dùng chung turn_id nên đo được "1 tin nhắn khách tốn mấy request / bao
+  // nhiêu tiền" — con số cần để quyết định tối ưu prompt hay đổi model.
+  return withAiTurn(
+    {
+      source:
+        PAGE_ID_PRODUCT && pageId === PAGE_ID_PRODUCT ? 'fb-prod' : 'fb-v3',
+      psid: event.sender?.id,
+      pageId
+    },
+    () =>
+      requestContext.run({ token: tokenForPageId(pageId), pageId }, () =>
+        handleMessengerEventV3Inner(event, pageId)
+      )
   )
 }
 

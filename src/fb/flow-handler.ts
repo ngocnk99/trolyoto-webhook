@@ -35,6 +35,7 @@ import {
   matchOption,
   type AiOptionDef
 } from './ai-helper'
+import { withAiTurn } from '../ai/usage-log'
 import { scheduleTimer, cancelTimer } from './timers'
 
 const PAGE_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN!
@@ -1367,6 +1368,17 @@ async function routeMatchedOption(
 }
 
 export async function handleMessengerEvent(
+  event: MessengerEvent,
+  pageId: string
+): Promise<void> {
+  // 1 event = 1 turn trong ai_call_log (xem src/ai/usage-log.ts).
+  return withAiTurn(
+    { source: 'fb-v2', psid: event.sender?.id, pageId },
+    () => handleMessengerEventInner(event, pageId)
+  )
+}
+
+async function handleMessengerEventInner(
   event: MessengerEvent,
   pageId: string
 ): Promise<void> {

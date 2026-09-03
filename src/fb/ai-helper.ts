@@ -1,6 +1,29 @@
 import { openai } from '@ai-sdk/openai'
 import { generateObject } from 'ai'
 import { z } from 'zod'
+import {
+  withAiCall,
+  setAiContext,
+  type AiCallContext
+} from '../ai/usage-log'
+
+/**
+ * Bọc 1 helper AI để mọi request HTTP nó sinh ra được gắn tên hàm trong
+ * `ai_call_log.fn`. Không đổi chữ ký hàm — chỉ thêm 1 lớp AsyncLocalStorage,
+ * nên caller giữ nguyên. Retry nội bộ của AI SDK nằm trong cùng scope này nên
+ * được đánh số qua cột `attempt`.
+ */
+function traced<A extends unknown[], R>(
+  name: string,
+  impl: (...args: A) => Promise<R>,
+  extra?: Partial<AiCallContext>
+): (...args: A) => Promise<R> {
+  return (...args: A) =>
+    withAiCall(name, () => {
+      if (extra) setAiContext(extra)
+      return impl(...args)
+    })
+}
 
 // Model rẻ + đủ cho classification/extraction. Đổi sang gpt-4o nếu cần độ chính xác cao hơn.
 const MODEL = 'gpt-4o-mini'
@@ -10,7 +33,7 @@ const MODEL = 'gpt-4o-mini'
  * Dùng khi user gõ "lốp tôi 185 60 r 15" / "kích cỡ 185/65 r15" / "lốp 205 55 17" — regex thông thường không bắt được.
  * @returns kích cỡ chuẩn hoá UPPERCASE, hoặc `null` nếu AI không nhận dạng được.
  */
-export async function extractTireSize(
+async function extractTireSizeImpl(
   userInput: string
 ): Promise<string | null> {
   try {
@@ -46,7 +69,7 @@ export async function extractTireSize(
  *
  * Thay thế mapping `CAR_TIRE_SIZES` cứng — cho phép mở rộng sang mọi dòng xe trên thị trường thế giới.
  */
-export async function getTireSizesForCar(carModel: string): Promise<string[]> {
+async function getTireSizesForCarImpl(carModel: string): Promise<string[]> {
   try {
     const { object } = await generateObject({
       model: openai(MODEL) as any,
@@ -104,7 +127,7 @@ export interface CarNameVariants {
  *   user "civic"     → exact=["honda civic","civic"], loose=["honda"]
  *   user "xe ko biết" → exact=[], loose=[]
  */
-export async function getCarNameVariants(
+async function getCarNameVariantsImpl(
   carName: string
 ): Promise<CarNameVariants> {
   if (!carName || carName.trim().length < 2) {
@@ -146,7 +169,7 @@ export async function getCarNameVariants(
  *  - `compatibleSizes`: subset của candidates mà AI cho là phù hợp (factory hoặc trim khác).
  *    Empty = không có size nào phù hợp → caller fallback `getTireSizesForCar()` (AI tự gợi ý).
  */
-export async function verifyTireSizesForCar(
+async function verifyTireSizesForCarImpl(
   carName: string,
   candidateSizes: string[]
 ): Promise<{ compatibleSizes: string[] }> {
@@ -207,7 +230,7 @@ const STRONG_MODEL = 'gpt-4o'
  * @param params.useStrongModel true khi đây là lần retry (đã có excludeModels)
  *   — chuyển sang model mạnh hơn (gpt-4o) để tăng độ chính xác.
  */
-export async function resolveCarModel(params: {
+async function resolveCarModelImpl(params: {
   userInput: string
   excludeModels?: string[]
   useStrongModel?: boolean
@@ -365,7 +388,7 @@ export interface AddressResolution {
  * Nhận toàn bộ userInput GỐC (không phải province_name đã bị v3GatherTurn
  * rút gọn/hiểu sai) để giữ ngữ cảnh đầy đủ nhất.
  */
-export async function resolveAddress(params: {
+async function resolveAddressImpl(params: {
   userInput: string
 }): Promise<AddressResolution> {
   const { userInput } = params
@@ -456,7 +479,7 @@ Ví dụ:
  *
  * @returns Tên tỉnh chuẩn (vd: "Hà Nội", "Hồ Chí Minh") hoặc `null` nếu AI cũng chịu.
  */
-export async function extractProvinceFromAddress(
+async function extractProvinceFromAddressImpl(
   userText: string
 ): Promise<string | null> {
   try {
@@ -507,7 +530,7 @@ export interface TireInputClassification {
  *  - kind='car'                    → tra kích cỡ theo xe rồi cho khách xác nhận
  *  - kind='unknown' / confidence thấp → hiển thị gợi ý + "❌ Không đúng"
  */
-export async function classifyTireInput(
+async function classifyTireInputImpl(
   userInput: string
 ): Promise<TireInputClassification> {
   const fallback: TireInputClassification = {
@@ -580,7 +603,7 @@ export interface BrandNeed {
  *
  * @param knownBrands danh sách brand hợp lệ trong hệ thống (để AI map chính xác).
  */
-export async function extractBrandNeed(
+async function extractBrandNeedImpl(
   userInput: string,
   knownBrands: string[] = []
 ): Promise<BrandNeed> {
@@ -666,7 +689,7 @@ export interface TireImageAnalysis {
  * trực tiếp URL FB CDN (status 400 "invalid_image_url" vì FB CDN block các UA lạ
  * hoặc URL có query signed). Tải qua fetch của Node thì OK.
  */
-export async function analyzeTireImage(
+async function analyzeTireImageImpl(
   imageUrl: string
 ): Promise<TireImageAnalysis> {
   try {
@@ -876,7 +899,7 @@ const V3_BRAND_TIER_INFO = {
  * KHÔNG cho AI sinh ra phần community CTA / wording cards — phần đó deterministic
  * trong code (giữ y nguyên V2). AI chỉ làm phần gathering.
  */
-export async function v3GatherTurn(
+async function v3GatherTurnImpl(
   input: V3GatherInput
 ): Promise<V3GatherDecision> {
   console.log('v3GatherTurn', input)
@@ -1429,7 +1452,7 @@ export interface AiOptionDef {
  *
  * Dùng khi user gõ text thay vì bấm Quick Reply / button. Là fallback sau khi keyword match thất bại.
  */
-export async function matchOption(
+async function matchOptionImpl(
   userInput: string,
   options: AiOptionDef[]
 ): Promise<string | null> {
@@ -1465,3 +1488,17 @@ export async function matchOption(
     return null
   }
 }
+
+// ── Export có gắn tên hàm cho ai_call_log ───────────────────────────────────
+export const extractTireSize = traced('extractTireSize', extractTireSizeImpl)
+export const getTireSizesForCar = traced('getTireSizesForCar', getTireSizesForCarImpl)
+export const getCarNameVariants = traced('getCarNameVariants', getCarNameVariantsImpl)
+export const verifyTireSizesForCar = traced('verifyTireSizesForCar', verifyTireSizesForCarImpl)
+export const resolveCarModel = traced('resolveCarModel', resolveCarModelImpl)
+export const resolveAddress = traced('resolveAddress', resolveAddressImpl)
+export const extractProvinceFromAddress = traced('extractProvinceFromAddress', extractProvinceFromAddressImpl)
+export const classifyTireInput = traced('classifyTireInput', classifyTireInputImpl)
+export const extractBrandNeed = traced('extractBrandNeed', extractBrandNeedImpl)
+export const analyzeTireImage = traced('analyzeTireImage', analyzeTireImageImpl, { hasImage: true })
+export const v3GatherTurn = traced('v3GatherTurn', v3GatherTurnImpl)
+export const matchOption = traced('matchOption', matchOptionImpl)

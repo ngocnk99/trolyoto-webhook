@@ -66,6 +66,34 @@ webhook.controller.ts: processEvents()
 
 ⚠️ Đây là AI, **không deterministic** — cùng input/state có thể trả `action` khác nhau giữa 2 lần gọi (đã quan sát thực tế khi test). Field nào AI trả **có thể là ECHO của giá trị cũ trong state** dù tin nhắn hiện tại không nhắc gì tới field đó — xem mục 5.
 
+## 3b. Đo chi phí token (`src/ai/usage-log.ts` → bảng `ai_call_log`)
+
+Dashboard OpenAI chỉ nói "ngày X tốn $Y cho model Z" — không nói request đến từ đâu, hàm nào, và 1 tin nhắn khách kéo theo mấy lượt gọi. `usage-log.ts` bù đúng chỗ thiếu đó.
+
+**Cách hoạt động** — patch `globalThis.fetch` (gọi 1 lần ở `main.ts`), chặn mọi request tới `api.openai.com`:
+
+- **1 dòng `ai_call_log` = 1 request HTTP.** Đếm dòng theo ngày phải KHỚP cột requests trên dashboard OpenAI; lệch = có request phát sinh ngoài 2 app (bot FB + web) → dấu hiệu key bị dùng nơi khác.
+- Bắt được cả **retry nội bộ của AI SDK** (`generateObject` mặc định `maxRetries: 2` → 1 lần lỗi = 3 request). Cột `attempt` đếm số lần thử trong cùng `(turn_id, fn)` — log ở tầng hàm KHÔNG nhìn thấy phần này.
+- Đọc `usage.prompt_tokens_details.cached_tokens` thẳng từ body, vì `@ai-sdk/openai@0.0.9` (bản đang cài) không map cached tokens ra ngoài.
+
+**Ngữ cảnh** đi theo `AsyncLocalStorage`, không luồn tham số:
+
+| API | Đặt ở đâu | Ghi vào cột |
+|---|---|---|
+| `withAiTurn({source, psid, pageId})` | `handleMessengerEventV3` / `handleMessengerEvent` / `runAliasMining` | `source`, `psid`, `page_id`, `turn_id` |
+| `withAiCall('tênHàm')` | tự động qua `traced()` ở cuối `ai-helper.ts` | `fn`, `attempt` |
+| `setAiContext({sessionId})` | `handleGathering` / `handleImage` | `session_id` |
+
+`turn_id` = 1 tin nhắn khách → view `ai_cost_per_turn` cho ra "1 tin nhắn tốn mấy request, bao nhiêu tiền" — con số cần để quyết định cắt prompt hay đổi model.
+
+**Đọc kết quả:**
+
+- `GET /api/debug/ai-usage?days=14` (header `x-debug-secret`) — tổng theo ngày + bóc tách theo nguồn/hàm/model.
+- `node scripts/ai-usage-report.js 14` — bản CLI, thêm phần đối chiếu lưu lượng FB thật đếm từ `conversation_log`.
+- View SQL: `ai_call_daily`, `ai_cost_per_turn`. Dọn log cũ: `select ai_call_log_prune(90)`.
+
+Tắt tạm bằng env `AI_USAGE_LOG_ENABLED=0` (vẫn giữ log console). Bảng do `database/migrations/20260903_ai_call_log.sql` tạo.
+
 ## 4. `handleGathering()` — thứ tự xử lý (v3/flow-handler.ts)
 
 1. Cancel timer pending (nudge 15s/45s từ turn trước).

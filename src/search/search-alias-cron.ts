@@ -29,6 +29,7 @@
  */
 
 import { openai } from '@ai-sdk/openai'
+import { withAiTurn, withAiCall } from '../ai/usage-log'
 import { generateObject } from 'ai'
 import { z } from 'zod'
 import { supabaseAmin } from '../fb/supabase'
@@ -273,6 +274,10 @@ function buildSystemPrompt(v: Vocabulary): string {
 }
 
 async function askAi(system: string, phrases: Phrase[]): Promise<AiAliasCandidate[]> {
+  return withAiCall('askAi', () => askAiImpl(system, phrases))
+}
+
+async function askAiImpl(system: string, phrases: Phrase[]): Promise<AiAliasCandidate[]> {
   const list = phrases.map((p, i) => `${i + 1}. ${p.text}`).join('\n')
   const { object } = await generateObject({
     model: openai(MODEL) as any,
@@ -360,6 +365,12 @@ let running = false
 let lastResult: MiningResult | null = null
 
 export async function runAliasMining(opts: { dryRun?: boolean } = {}): Promise<MiningResult> {
+  // Cả lượt mining = 1 turn trong ai_call_log → tách bạch chi phí cron ban đêm
+  // khỏi chi phí bot trả lời khách (2 nguồn này trước đây trộn chung hoá đơn).
+  return withAiTurn({ source: 'cron-search-alias' }, () => runAliasMiningImpl(opts))
+}
+
+async function runAliasMiningImpl(opts: { dryRun?: boolean } = {}): Promise<MiningResult> {
   const dryRun = !!opts.dryRun
   const t0 = Date.now()
   const result: MiningResult = {

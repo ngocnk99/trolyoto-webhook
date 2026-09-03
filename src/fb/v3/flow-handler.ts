@@ -2914,13 +2914,28 @@ async function showMultiBrandResults(
     // multi-brand của FB LUÔN dùng buildSearchIntro ("gara gần mình") kể cả
     // khi 1/nhiều hãng phải rơi xuống tier 3/4, sai hoàn toàn khi kết quả nằm
     // ở tỉnh khác. Check trước cả loop vì results đã fetch xong hết.
+    //
+    // Bug thật (session 58e55875, 2026-09-02): khách hỏi Michelin + Yokohama ở
+    // Hà Đông — Michelin CÓ gara thật ngay tại Hà Đông (tier 1), chỉ Yokohama
+    // phải rơi xuống tier 3 (gara ưu tiên, tỉnh khác). Dùng "ANY hãng dùng ưu
+    // tiên" để chọn câu intro cho CẢ response khiến bot nói "chưa ghi nhận
+    // gara ở Hà Đông" dù đang show đúng 1 card gara Hà Đông thật ngay bên
+    // dưới — khách đọc thấy mâu thuẫn rõ ràng. Chỉ dùng câu "chưa ghi nhận gara
+    // khu vực này" khi TẤT CẢ hãng đều phải fallback — mix thì dùng câu bình
+    // thường, để nhãn riêng từng hãng (`displayLabel` trong loop dưới) tự nói
+    // rõ hãng nào rơi xuống tier 3/4.
+    const allUsedFallback = results.every(
+      r => r.usedPriorityGarage || r.usedNationalFallback
+    )
     const anyUsedPriority = results.some(r => r.usedPriorityGarage)
     const anyUsedNational = results.some(r => r.usedNationalFallback)
-    const msgFound = anyUsedPriority
-      ? buildPriorityGarageIntro(locationLabel)
-      : anyUsedNational
-        ? buildNationalGarageIntro(locationLabel)
-        : buildSearchIntro(state)
+    const msgFound = !allUsedFallback
+      ? buildSearchIntro(state)
+      : anyUsedPriority
+        ? buildPriorityGarageIntro(locationLabel)
+        : anyUsedNational
+          ? buildNationalGarageIntro(locationLabel)
+          : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
 

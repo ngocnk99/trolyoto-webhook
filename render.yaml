@@ -53,6 +53,14 @@ services:
       # trang bị xoá cache, và mỗi trang bị xoá phải dựng lại ở lượt truy cập
       # sau = một ISR write tính tiền. Hạ số này xuống là đánh đổi trực tiếp
       # bằng hoá đơn Vercel. Dòng chờ không bị mất, chỉ hoãn tới lô sau.
+      #
+      # Hai tag của nhóm trang market có NHỊP RIÊNG (03/09/2026):
+      #   CACHE_OUTBOX_MIN_TAG_GAP_MS           30 phút  -> market-listing:root
+      #                                         (3 trang /lop, /ac-quy, /noi-ngoai-that)
+      #   CACHE_OUTBOX_MIN_CATEGORY_TAG_GAP_MS   6 giờ   -> market-listing:category
+      #                                         (313 trang thương hiệu + dòng xe)
+      # Hạ con số thứ hai là thứ đắt nhất trong cả file này — xem
+      # docs/vercel-cost-audit-20260903.md.
 
     # LƯU Ý: `name` dưới đây quyết định hostname <name>.onrender.com. Service
     # thật đang chạy KHÔNG khớp tên này — trolyoto-fb-webhook.onrender.com trả

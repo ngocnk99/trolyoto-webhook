@@ -157,22 +157,62 @@ const PRODUCT_PATH_RE = /^\/(lop|ac-quy|noi-ngoai-that)\//
  * 5 phút như cũ. Và `MARKET_LISTING_REVALIDATE = 3600` bên buyer vẫn là lưới
  * cuối, nên sai số trần vẫn là 1 giờ.
  *
- * CỐ Ý KHÔNG nâng hằng số 3600 đó lên 86400: nó là thứ duy nhất chặn sai số
- * trong khung nghỉ đêm 00:00-07:00, lúc consumer không chạy.
+ * ─── CẬP NHẬT 03/09/2026: TÁCH TIẾP THÀNH HAI TAG ────────────────────────────
+ *
+ * 30 phút vẫn chưa đủ. Đo chu kỳ 25/08→03/09: 218.910 ISR Writes (~21.900/ngày)
+ * trong khi GA4 chỉ ghi ~2.335 lượt xem thật/ngày. Lý do là tag
+ * `market-listing` phủ 316 trang, mà 313 trong số đó là trang DANH MỤC
+ * (/lop/{24 thương hiệu} + /lop/{284 dòng xe} + /ac-quy/{5 thương hiệu}) —
+ * lưu lượng mỗi trang thấp, nhưng bị xoá cache đúng bằng nhịp của 3 trang
+ * danh sách trần vốn đông người xem nhất.
+ *
+ * Nay buyer gắn hai tag hẹp cho hai nhóm (src/apis/cache/marketListing.ts) và
+ * file này bắn chúng theo HAI NHỊP:
+ *
+ *   market-listing:root      3 trang   30 phút  (giữ nguyên như cũ)
+ *   market-listing:category  313 trang  6 giờ
+ *
+ * Tag `market-listing` cũ KHÔNG còn được gửi từ đây nữa — nhưng vẫn nằm trên
+ * mọi entry và admin vẫn gửi nó ở 39 chỗ, nên thao tác của người vẫn xoá sạch
+ * cả hai nhóm ngay lập tức. Xem docs/vercel-cost-audit-20260903.md.
+ *
+ * ĐÁNH ĐỔI MỚI: giá trên trang thương hiệu/dòng xe trễ tối đa 6 giờ (trước là
+ * 30 phút). Trang danh sách trần và trang chi tiết KHÔNG đổi.
+ *
+ * CỐ Ý KHÔNG nâng `MARKET_LISTING_REVALIDATE` (nhóm root) lên 86400: nó là thứ
+ * duy nhất chặn sai số trong khung nghỉ đêm 00:00-07:00, lúc consumer không
+ * chạy. Nhóm category thì đã lên 86400 vì có nhịp 6 giờ riêng lo.
  */
-const MIN_TAG_GAP_MS = Number(process.env.CACHE_OUTBOX_MIN_TAG_GAP_MS ?? 1_800_000)
+const MIN_ROOT_TAG_GAP_MS = Number(
+  process.env.CACHE_OUTBOX_MIN_TAG_GAP_MS ?? 1_800_000
+)
+const MIN_CATEGORY_TAG_GAP_MS = Number(
+  process.env.CACHE_OUTBOX_MIN_CATEGORY_TAG_GAP_MS ?? 21_600_000
+)
 
-/** Thời điểm gửi kèm tag `market-listing` gần nhất (epoch ms). */
-let lastTagAt = 0
+const ROOT_TAG = 'market-listing:root'
+const CATEGORY_TAG = 'market-listing:category'
+
+/** Thời điểm gửi từng tag gần nhất (epoch ms). */
+const lastTagAt: Record<string, number> = { [ROOT_TAG]: 0, [CATEGORY_TAG]: 0 }
 
 /**
  * Chỉ kèm tag khi lô CÓ trang sản phẩm VÀ đã đủ khoảng cách kể từ lần gửi
- * tag trước. Lô toàn đường dẫn gara (`/garage/<slug>`) không bao giờ cần tag.
+ * tag ĐÓ trước. Lô toàn đường dẫn gara (`/garage/<slug>`) không bao giờ cần tag.
  */
-function buildBody(paths: string[]) {
+function buildBody(paths: string[]): { paths: string[]; tags?: string[] } {
   const hasProductPath = paths.some(p => PRODUCT_PATH_RE.test(p))
-  const tagDue = Date.now() - lastTagAt >= MIN_TAG_GAP_MS
-  return hasProductPath && tagDue ? { paths, tags: ['market-listing'] } : { paths }
+  if (!hasProductPath) return { paths }
+
+  const now = Date.now()
+  const tags = [
+    [ROOT_TAG, MIN_ROOT_TAG_GAP_MS] as const,
+    [CATEGORY_TAG, MIN_CATEGORY_TAG_GAP_MS] as const
+  ]
+    .filter(([tag, gap]) => now - lastTagAt[tag] >= gap)
+    .map(([tag]) => tag)
+
+  return tags.length ? { paths, tags } : { paths }
 }
 
 /**
@@ -204,11 +244,17 @@ export function getCacheOutboxStatus() {
     buyerOrigin: BUYER_ORIGIN,
     intervalMs: INTERVAL_MS,
     minFlushGapMs: MIN_FLUSH_GAP_MS,
-    // Nhịp RIÊNG của tag `market-listing` — xem MIN_TAG_GAP_MS. Nếu ISR Writes
-    // vẫn cao, so hai mốc này trước: `lastTagAt` mới là thứ xoá cả nhóm trang
-    // brand/dòng xe, `lastFlushAt` chỉ xoá từng đường dẫn.
-    minTagGapMs: MIN_TAG_GAP_MS,
-    lastTagAt: lastTagAt ? new Date(lastTagAt).toISOString() : null,
+    // Nhịp RIÊNG của từng tag. Nếu ISR Writes vẫn cao, soi mấy mốc này trước:
+    // `lastTagAt[market-listing:category]` mới là thứ xoá cả 313 trang thương
+    // hiệu/dòng xe, `lastFlushAt` chỉ xoá từng đường dẫn.
+    minRootTagGapMs: MIN_ROOT_TAG_GAP_MS,
+    minCategoryTagGapMs: MIN_CATEGORY_TAG_GAP_MS,
+    lastTagAt: Object.fromEntries(
+      Object.entries(lastTagAt).map(([tag, at]) => [
+        tag,
+        at ? new Date(at).toISOString() : null
+      ])
+    ),
     lastFlushAt: lastFlushAt ? new Date(lastFlushAt).toISOString() : null,
     // Mốc sớm nhất được phép xoá cache lần kế. Nếu lastSkipReason đang là
     // "hoãn ..." thì dòng vẫn nằm trong outbox chờ tới mốc này, chưa mất.
@@ -309,11 +355,11 @@ async function flushOnce(): Promise<void> {
     // tưởng chưa từng xoá, claim lại đúng lô đó và xoá cache lần nữa. Đúng
     // kiểu bắn dồn mà biến này sinh ra để chặn.
     lastFlushAt = Date.now()
-    // Chỉ tính mốc khi lô NÀY thật sự có kèm tag. Đặt ở đây (sau khi biết
-    // request thành công) chứ không đặt trong buildBody: dựng body xong mà
-    // request lỗi thì tag chưa hề được xoá, ghi mốc sẽ khoá mất 30 phút kế
-    // tiếp cho một lần xoá không xảy ra.
-    if ('tags' in body) lastTagAt = lastFlushAt
+    // Chỉ tính mốc cho ĐÚNG những tag lô này thật sự có kèm. Đặt ở đây (sau
+    // khi biết request thành công) chứ không đặt trong buildBody: dựng body
+    // xong mà request lỗi thì tag chưa hề được xoá, ghi mốc sẽ khoá mất cả cửa
+    // sổ kế tiếp cho một lần xoá không xảy ra.
+    for (const tag of body.tags ?? []) lastTagAt[tag] = lastFlushAt
 
     const now = new Date().toISOString()
     const { error: markErr } = await supabaseAmin

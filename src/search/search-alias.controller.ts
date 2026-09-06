@@ -5,7 +5,8 @@ import { getSearchAliasStatus, runAliasMining } from './search-alias-cron'
 /**
  * Task search-suggest-v2 GĐ3 — endpoint vận hành cho mining alias.
  * Bảo vệ bằng DEBUG_SECRET (cùng cơ chế debug.controller.ts): header
- * `x-debug-secret`. Không set DEBUG_SECRET → mở (chỉ nên ở local).
+ * `x-debug-secret`. Chưa set DEBUG_SECRET → TỪ CHỐI hết (sửa 06/09/2026, trước
+ * đó là cho qua nên endpoint mở ra internet).
  *
  *   GET  /api/search-alias/status
  *   POST /api/search-alias/run?dryRun=1   → chạy ngay, dryRun không ghi DB
@@ -13,7 +14,8 @@ import { getSearchAliasStatus, runAliasMining } from './search-alias-cron'
 const DEBUG_SECRET = process.env.DEBUG_SECRET ?? ''
 
 function authorized(secret?: string): boolean {
-  if (!DEBUG_SECRET) return true
+  // Xem chú thích trong fb/debug.controller.ts: chưa set secret là TỪ CHỐI.
+  if (!DEBUG_SECRET) return false
   return secret === DEBUG_SECRET
 }
 

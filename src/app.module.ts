@@ -5,6 +5,7 @@ import { HealthController } from './health.controller'
 import { VersionController } from './version.controller'
 import { SearchAliasController } from './search/search-alias.controller'
 import { TilesController } from './tiles/tiles.controller'
+import { MetaCapiController } from './meta/capi.controller'
 
 @Module({
   controllers: [
@@ -13,7 +14,8 @@ import { TilesController } from './tiles/tiles.controller'
     WebhookController,
     DebugController,
     SearchAliasController,
-    TilesController
+    TilesController,
+    MetaCapiController
   ]
 })
 export class AppModule {}

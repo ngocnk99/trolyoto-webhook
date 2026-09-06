@@ -34,6 +34,28 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # ── Meta Conversions API (src/meta/capi-outbox-cron.ts) ─────────────
+      # Kênh server-side gửi Purchase sang Meta, đọc bảng meta_capi_outbox mà
+      # buyer ghi lúc tạo đơn. `event_id` trùng với `eventID` của pixel để hai
+      # bên khử trùng lặp — trước đợt 06/09/2026 pixel không gửi eventID nên
+      # Meta đếm 104 purchase/30 ngày còn GA4 chỉ tính 80 giao dịch.
+      # Token lấy ở: Trình quản lý sự kiện → Dataset → Cài đặt → Conversions
+      # API → "Tạo mã truy cập".
+      - key: META_PIXEL_ID
+        sync: false
+      - key: META_CAPI_ACCESS_TOKEN
+        sync: false
+      # CHỈ đặt khi đang test. Còn biến này thì sự kiện KHÔNG vào báo cáo thật.
+      - key: META_CAPI_TEST_EVENT_CODE
+        sync: false
+      # Secret cho /api/meta/capi/* — CHƯA SET LÀ TỪ CHỐI hết.
+      - key: CAPI_ADMIN_SECRET
+        sync: false
+      # Secret cho /api/debug/* và /api/search-alias/*. Từ 06/09/2026 chưa set
+      # là TỪ CHỐI (trước đó cho qua -> các endpoint này đang mở ra internet).
+      # PHẢI set giá trị thật trên dashboard, nếu không mất luôn công cụ debug.
+      - key: DEBUG_SECRET
+        sync: false
       # ── Cache outbox consumer (src/cache/cache-outbox-cron.ts) ──────────
       # Đọc bảng cache_invalidation_outbox rồi gọi buyer /api/revalidate để
       # giá mới lên web ngay, thay vì chờ hết cache ISR 1 giờ.

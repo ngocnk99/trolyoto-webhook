@@ -2,6 +2,7 @@ import { Controller, Get, Header } from '@nestjs/common'
 import { getCacheOutboxStatus } from './cache/cache-outbox-cron'
 import { getTilesStatus } from './tiles/tiles.controller'
 import { getPriorityGarageStatus } from './fb/priorityGarage'
+import { getMetaCapiStatus } from './meta/capi-outbox-cron'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require('../package.json')
@@ -52,7 +53,8 @@ export class VersionController {
       now: new Date().toISOString(),
       cacheOutbox: getCacheOutboxStatus(),
       tiles: getTilesStatus(),
-      priorityGarage: getPriorityGarageStatus()
+      priorityGarage: getPriorityGarageStatus(),
+      metaCapi: getMetaCapiStatus()
     }
   }
 }

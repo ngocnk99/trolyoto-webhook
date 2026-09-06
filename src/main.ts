@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { startHandoverCron } from './fb/handover-cron'
 import { startCacheOutboxCron } from './cache/cache-outbox-cron'
+import { startMetaCapiCron } from './meta/capi-outbox-cron'
 import { startSearchAliasCron } from './search/search-alias-cron'
 import { startPriorityGarageCache } from './fb/priorityGarage'
 import { installAiUsageLogging } from './ai/usage-log'
@@ -64,6 +65,12 @@ async function bootstrap() {
   // — tier 3 trong cascade tìm SP+gara). Refresh 30 phút/lần, load ngay lúc
   // start. Xem src/fb/priorityGarage.ts.
   startPriorityGarageCache()
+
+  // Đọc meta_capi_outbox → gửi Purchase sang Meta Conversions API. Có kênh
+  // server-side thì pixel trình duyệt và Meta mới khử trùng lặp được cho nhau
+  // (qua event_id), và đơn không mất khi trình duyệt chặn pixel.
+  // Xem src/meta/capi-outbox-cron.ts.
+  startMetaCapiCron()
 }
 
 bootstrap().catch(e => {

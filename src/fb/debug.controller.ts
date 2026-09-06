@@ -38,7 +38,14 @@ const PAGE_ID_V3 = process.env.FACEBOOK_PAGE_ID_V3 ?? ''
 const DEBUG_SECRET = process.env.DEBUG_SECRET ?? ''
 
 function checkAuth(secret?: string): boolean {
-  if (!DEBUG_SECRET) return true
+  // TỪ CHỐI khi chưa cấu hình, không phải cho qua.
+  //
+  // Bản cũ `if (!DEBUG_SECRET) return true` cộng với việc DEBUG_SECRET chưa
+  // được set ở .env/.env.example/render.yaml nghĩa là toàn bộ /api/debug/* đang
+  // MỞ RA INTERNET trên production: xem được session khách, PSID, chi phí AI,
+  // và cướp được quyền hội thoại qua take-control. Muốn dùng ở local thì set
+  // DEBUG_SECRET trong .env.
+  if (!DEBUG_SECRET) return false
   return secret === DEBUG_SECRET
 }
 

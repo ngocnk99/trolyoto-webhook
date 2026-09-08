@@ -120,7 +120,7 @@ const BRAND_TIERS = {
     ] as string[]
   },
   balanced: {
-    brands: ['HANKOOK', 'GOODYEAR', 'DUNLOP', 'YOKOHAMA'] as string[]
+    brands: ['HANKOOK', 'GOODYEAR', 'DUNLOP', 'YOKOHAMA', 'DAYTON'] as string[]
   },
   budget: {
     brands: [
@@ -132,7 +132,8 @@ const BRAND_TIERS = {
       'TBB',
       'WESTLAKE',
       'MAXXIS',
-      'OTANI'
+      'OTANI',
+      'AMERICAN'
     ] as string[]
   },
   all: { brands: [] as string[] }
@@ -152,7 +153,12 @@ const QR_TITLE = {
   COMMUNITY_VOUCHER: 'Nhận voucher 200k',
   // V3 mới
   BRAND_ALL: 'Xem tất cả',
-  CHAT_TVV: '💬 Chat tư vấn viên'
+  CHAT_TVV: '💬 Chat tư vấn viên',
+  // Replay card cho FAQ "booking_flow" (xem handleBookingFlowFaq) — đổi nhãn
+  // cả 3 nút sang ngữ cảnh "đặt lịch" thay vì "xem khuyến mại", URL giữ nguyên.
+  BOOK_THIS_GARAGE: 'Đặt lịch gara này',
+  BOOK_OTHER_GARAGE: 'Đặt gara khác',
+  CHOOSE_OTHER_GARAGE: 'Chọn gara khác'
 } as const
 
 /** Brand list hiển thị làm QR — chọn các brand phổ biến nhất (FB max 13 QR;
@@ -1086,8 +1092,8 @@ function extractLocationTokens(text: string): string[] {
 
 // ════════════════════════════════════════════════════════════════════════════
 //  FAQ "cố định + replay card gần nhất" — dùng chung cho "lốp sản xuất năm
-//  nào" và "địa chỉ/SĐT gara" (2 FAQ có CÙNG shape: trả lời cố định, gửi lại
-//  y nguyên card SP+gara gần nhất, chỉ đổi nhãn nút "🎁 Xem khuyến mại").
+//  nào", "địa chỉ/SĐT gara" và "quy trình đặt lịch" (đều CÙNG shape: trả lời
+//  cố định, gửi lại y nguyên card SP+gara gần nhất, chỉ đổi nhãn nút).
 // ════════════════════════════════════════════════════════════════════════════
 
 const MANUFACTURE_YEAR_FAQ_TEXT =
@@ -1098,13 +1104,34 @@ const GARAGE_CONTACT_FAQ_TEXT =
   '😊 Anh/chị sẽ có ngay thông tin liên hệ khi chọn [Xem gara này] ạ.'
 const VIEW_GARAGE_CONTACT_TITLE = 'Xem gara này'
 
+const BOOKING_FLOW_FAQ_TEXT =
+  'Dạ anh/chị đặt lịch với gara trên TROLYoto bằng SĐT để gara nhận thông tin, mình đến được phục vụ ngay, không phải chờ đợi ạ 😊'
+
+/** Đổi CẢ 3 nút sang ngữ cảnh "đặt lịch" (booking_flow) — giữ nguyên URL,
+ *  chỉ đổi tiêu đề. Map theo Ý NGHĨA nút gốc (không phải khớp chữ), xem
+ *  buildSpGaraCard(): VIEW_PROMO = chi tiết SP của gara, VIEW_OTHER_GARAGE =
+ *  chi tiết SP chung (đổi gara khác), VIEW_OTHER_PRODUCT = trang lốp filter
+ *  theo size (đổi cả SP lẫn gara). */
+const BOOKING_FLOW_BUTTON_MAP: Record<string, string> = {
+  [QR_TITLE.VIEW_PROMO]: QR_TITLE.BOOK_THIS_GARAGE,
+  [QR_TITLE.VIEW_OTHER_GARAGE]: QR_TITLE.BOOK_OTHER_GARAGE,
+  [QR_TITLE.VIEW_OTHER_PRODUCT]: QR_TITLE.CHOOSE_OTHER_GARAGE
+}
+
+const LOGIN_REQUIRED_FAQ_TEXT =
+  'Dạ anh/chị chỉ cần đăng nhập nhanh bằng số điện thoại để ạ 😊\n' +
+  '• Xem đầy đủ thông tin gara\n' +
+  '• Gara tạo bảo hành điện tử & hoá đơn sau khi sử dụng dịch vụ cho mình'
+
 /**
  * Trả lời CỐ ĐỊNH (KHÔNG để AI tự sinh) + tìm tin card gần nhất trong
  * conversation_log (đã lưu sẵn đầy đủ LoggedCard[]), gửi lại y nguyên, chỉ
- * đổi nhãn nút "🎁 Xem khuyến mại" → `viewButtonTitle` (giữ nguyên URL — theo
- * yêu cầu: dùng chung URL với nút khuyến mại hiện tại). Chưa có card nào
- * trước đó (khách hỏi ngay từ đầu) → chỉ trả FAQ + tiếp tục hỏi field còn
- * thiếu như bình thường.
+ * đổi nhãn nút theo `relabelButton` (giữ nguyên URL — theo yêu cầu: dùng
+ * chung URL với nút hiện tại, chỉ đổi tiêu đề). `relabelButton` nhận tiêu đề
+ * nút GỐC, trả về tiêu đề MỚI (trả nguyên tiêu đề gốc nếu không cần đổi nút
+ * đó — cho phép đổi 1 nút như FAQ năm SX/gara contact, hoặc cả 3 nút như FAQ
+ * booking_flow). Chưa có card nào trước đó (khách hỏi ngay từ đầu) → chỉ trả
+ * FAQ + tiếp tục hỏi field còn thiếu như bình thường.
  */
 async function replyFaqWithReplayCard(
   psid: string,
@@ -1112,7 +1139,7 @@ async function replyFaqWithReplayCard(
   pageId: string,
   newState: SessionState,
   faqText: string,
-  viewButtonTitle: string,
+  relabelButton: (oldTitle: string) => string,
   logContext: string
 ): Promise<void> {
   await reply(psid, session.id, faqText)
@@ -1148,7 +1175,7 @@ async function replyFaqWithReplayCard(
     buttons: c.buttons?.map(
       (b): Button => ({
         type: 'web_url',
-        title: b.title === QR_TITLE.VIEW_PROMO ? viewButtonTitle : b.title,
+        title: relabelButton(b.title),
         url: b.url ?? ''
       })
     )
@@ -1169,7 +1196,7 @@ async function handleManufactureYearFaq(
     pageId,
     newState,
     MANUFACTURE_YEAR_FAQ_TEXT,
-    VIEW_MANUFACTURE_YEAR_TITLE,
+    t => (t === QR_TITLE.VIEW_PROMO ? VIEW_MANUFACTURE_YEAR_TITLE : t),
     'Replay card gần nhất (đổi nhãn nút → năm SX)'
   )
 }
@@ -1187,9 +1214,53 @@ async function handleGarageContactFaq(
     pageId,
     newState,
     GARAGE_CONTACT_FAQ_TEXT,
-    VIEW_GARAGE_CONTACT_TITLE,
+    t => (t === QR_TITLE.VIEW_PROMO ? VIEW_GARAGE_CONTACT_TITLE : t),
     'Replay card gần nhất (đổi nhãn nút → gara contact)'
   )
+}
+
+/** Khách hỏi quy trình đặt lịch/áp dụng khuyến mại tại gara — xem
+ *  replyFaqWithReplayCard(). Đổi CẢ 3 nút (khác 2 FAQ trên chỉ đổi 1 nút). */
+async function handleBookingFlowFaq(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<void> {
+  await replyFaqWithReplayCard(
+    psid,
+    session,
+    pageId,
+    newState,
+    BOOKING_FLOW_FAQ_TEXT,
+    t => BOOKING_FLOW_BUTTON_MAP[t] ?? t,
+    'Replay card gần nhất (đổi nhãn nút → đặt lịch)'
+  )
+}
+
+/** Khách hỏi vì sao cần đăng nhập / không xem được thông tin gara — trả lời
+ *  cố định, KHÔNG replay card (câu hỏi không gắn với 1 card gara cụ thể).
+ *  Tiếp tục hỏi field còn thiếu như bình thường sau đó (giống nhánh "chưa có
+ *  card nào" của replyFaqWithReplayCard). */
+async function handleLoginRequiredFaq(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  newState: SessionState
+): Promise<void> {
+  await reply(psid, session.id, LOGIN_REQUIRED_FAQ_TEXT)
+  const nextQ = nextMissingFieldQuestion(newState)
+  if (nextQ) {
+    await delay(REPLY_GAP_MS)
+    const needBrand = !!newState.tire_size && !hasBrandField(newState)
+    await reply(
+      psid,
+      session.id,
+      nextQ,
+      needBrand ? V3_BRAND_QRS() : undefined
+    )
+  }
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
 }
 
 /**
@@ -1698,6 +1769,20 @@ async function handleGathering(
   // định + replay card gần nhất, đổi nhãn nút khác).
   if (decision.off_topic_kind === 'garage_contact') {
     await handleGarageContactFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // FAQ "mình đến gara thì gặp ai / làm sao được áp dụng khuyến mãi" — cùng
+  // shape 2 FAQ trên nhưng đổi CẢ 3 nút (không chỉ 1) sang ngữ cảnh đặt lịch.
+  if (decision.off_topic_kind === 'booking_flow') {
+    await handleBookingFlowFaq(psid, session, pageId, newState)
+    return
+  }
+
+  // FAQ "phải đăng nhập à / không xem được địa chỉ-sđt" — reply cố định,
+  // KHÔNG gắn với card cụ thể nào nên không replay card.
+  if (decision.off_topic_kind === 'login_required') {
+    await handleLoginRequiredFaq(psid, session, pageId, newState)
     return
   }
 

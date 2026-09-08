@@ -881,13 +881,15 @@ export interface V3GatherDecision {
     | 'manufacture_year'
     | 'garage_contact'
     | 'generic_price_inquiry'
+    | 'booking_flow'
+    | 'login_required'
     | null
 }
 
 const V3_BRAND_TIER_INFO = {
   premium: 'Michelin, Bridgestone, Toyo, Continental, Pirelli',
-  balanced: 'Hankook, Goodyear, Dunlop, Yokohama',
-  budget: 'Sailun, Kumho, RoadX, Laufenn, Nexen, TBB, Westlake, Maxxis, Otani'
+  balanced: 'Hankook, Goodyear, Dunlop, Yokohama, Dayton',
+  budget: 'Sailun, Kumho, RoadX, Laufenn, Nexen, TBB, Westlake, Maxxis, Otani, American'
 } as const
 
 /**
@@ -989,10 +991,16 @@ async function v3GatherTurnImpl(
             'True khi bạn đang trả lời câu hỏi NGOÀI luồng gathering (vd "có phải bot không", "đặt online à", "địa chỉ bạn ở đâu", "TROLYoto là gì"). Khi true, orchestrator sẽ KHÔNG tính fail counter. False/omit cho các turn gathering thông thường.'
           ),
         off_topic_kind: z
-          .enum(['manufacture_year', 'garage_contact', 'generic_price_inquiry'])
+          .enum([
+            'manufacture_year',
+            'garage_contact',
+            'generic_price_inquiry',
+            'booking_flow',
+            'login_required'
+          ])
           .nullish()
           .describe(
-            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"). Set "garage_contact" BẤT CỨ KHI NÀO khách hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (vd "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "gara ở đâu", "liên hệ gara sao", "sđt gara là gì") — KHÁC với hỏi địa chỉ/SĐT của TROLYoto (đó là off-topic Loại 2 riêng). Set "generic_price_inquiry" khi khách hỏi GIÁ CHUNG CHUNG (vd "bao nhiêu một chiếc vậy", "giá bao nhiêu", "báo giá giúp em") — KHÔNG chê đắt, chỉ hỏi thông tin — VÀ state CHƯA đủ cả 3 trường size/brand/khu vực (nếu đã đủ 3 trường thì dùng action=\'fetch_results\' bình thường, KHÔNG set field này). 3 trường hợp trên: kể cả câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường (áp dụng cho manufacture_year/garage_contact). Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC, KHÔNG set action=\'handoff_cskh\' (hệ thống đã có câu trả lời cố định riêng/logic tự hỏi field thiếu, không cần chuyển CSKH). Null/omit cho mọi trường hợp khác.'
+            'Set "manufacture_year" BẤT CỨ KHI NÀO khách hỏi về NĂM/NGÀY SẢN XUẤT lốp (vd "lốp sản xuất năm nào", "date code là gì", "lốp này mới hay tồn kho lâu", "sản xuất khi nào", "date bao nhiêu"). Set "garage_contact" BẤT CỨ KHI NÀO khách hỏi ĐỊA CHỈ/SỐ ĐIỆN THOẠI của GARA cụ thể (vd "cho tôi xin địa chỉ gara", "có số điện thoại gara không", "gara ở đâu", "liên hệ gara sao", "sđt gara là gì") — KHÁC với hỏi địa chỉ/SĐT của TROLYoto (đó là off-topic Loại 2 riêng). Set "generic_price_inquiry" khi khách hỏi GIÁ CHUNG CHUNG (vd "bao nhiêu một chiếc vậy", "giá bao nhiêu", "báo giá giúp em") — KHÔNG chê đắt, chỉ hỏi thông tin — VÀ state CHƯA đủ cả 3 trường size/brand/khu vực (nếu đã đủ 3 trường thì dùng action=\'fetch_results\' bình thường, KHÔNG set field này). Set "booking_flow" khi khách hỏi CÁCH/QUY TRÌNH (HOW) để dùng được khuyến mại/đặt lịch tại gara (vd "mình đến gara thì gặp ai", "mình đến thì làm sao được áp dụng", "làm sao để được áp dụng khuyến mãi", "làm thế nào để áp dụng khuyến mại", "sau khi đặt lịch thì sao", "sau khi đến gara làm gì tiếp") — KHÁC "có khuyến mại gì" (hỏi WHAT/có gì, không hỏi cách làm — đó là generic_price_inquiry hoặc off-topic thường, KHÔNG set booking_flow). Set "login_required" khi khách hỏi vì sao cần đăng nhập hoặc không xem được thông tin gara (vd "phải đăng nhập à", "không xem được địa chỉ", "sao không thấy sđt", "cần tài khoản à"). 5 trường hợp trên: kể cả câu hỏi có vẻ liên quan tới SP đang bàn (không phải "off-topic xa lạ"), kể cả khi state đã đủ 3 trường (áp dụng cho manufacture_year/garage_contact/booking_flow/login_required). Khi set field này → BẮT BUỘC set is_off_topic=true CÙNG LÚC, KHÔNG set action=\'handoff_cskh\' (hệ thống đã có câu trả lời cố định riêng/logic tự hỏi field thiếu, không cần chuyển CSKH). Null/omit cho mọi trường hợp khác.'
           )
       }),
       system: `Bạn là TROLY — trợ lý ô tô của TROLYoto (nền tảng mua lốp xe ở Việt Nam).
@@ -1299,7 +1307,7 @@ VÍ DỤ OFF-TOPIC REPLY (chọn template đúng theo loại câu hỏi):
 [Loại 7] "Loại nào tốt" — khách CHƯA xác định thương hiệu/SP, hỏi chung "loại nào tốt", "nên mua hãng nào", "tư vấn hãng giúp em"
   Reply: "Dạ tùy vào nhu cầu và ngân sách, TROLYoto gợi ý theo tiêu chí chất lượng + giá thành ạ:\\n• Cao cấp: Michelin, Bridgestone, Continental\\n• Cân bằng: Goodyear, Hankook, Yokohama\\n• Tiết kiệm: Kumho, Sailun, Laufenn\\n\\nAnh/chị đang quan tâm thương hiệu nào ạ?"
 
-[Loại 8] Hỏi tên CHƯƠNG TRÌNH KHUYẾN MẠI cụ thể: "có khuyến mại gì", "chương trình X còn không", "đang sale gì"
+[Loại 8] Hỏi CÓ chương trình khuyến mại gì (WHAT — chưa biết có gì, KHÁC Loại 11 dưới hỏi CÁCH áp dụng): "có khuyến mại gì", "chương trình X còn không", "đang sale gì"
   Reply: "Dạ tùy vào kích cỡ + thương hiệu + gara khác nhau sẽ có các chương trình khác nhau ạ 😊\\n\\nAnh/chị cho em biết kích cỡ lốp + thương hiệu mong muốn để em tìm chương trình phù hợp nhé?"
   → Tiếp tục flow tìm 3 dữ liệu: kích cỡ + thương hiệu + khu vực.
 
@@ -1313,6 +1321,25 @@ VÍ DỤ OFF-TOPIC REPLY (chọn template đúng theo loại câu hỏi):
   action='handoff_cskh' (đây KHÔNG thuộc nhóm "không có dữ liệu" ở trên — hệ thống đã có
   câu trả lời cố định + gửi lại card gara riêng), kể cả khi state đã đủ 3 trường. Reply
   KHÔNG cần tự soạn — hệ thống dùng câu cố định riêng, bạn CHỈ CẦN set đúng 2 field trên.
+
+[Loại 11] Hỏi CÁCH/QUY TRÌNH để dùng được khuyến mại/đặt lịch tại gara (HOW — ĐÃ biết có
+  khuyến mại rồi, muốn biết PHẢI LÀM GÌ để được áp dụng — KHÁC Loại 8 ở trên hỏi WHAT/có gì):
+  Ví dụ: "làm sao để được áp dụng khuyến mãi", "làm thế nào để áp dụng khuyến mại", "mình đến
+  gara thì gặp ai", "mình đến thì làm sao được áp dụng", "sau khi đặt lịch thì sao", "sau khi
+  đến gara làm gì tiếp", "đặt lịch xong rồi sao nữa". Tín hiệu nhận diện: câu có "làm sao
+  để"/"làm thế nào"/"phải làm gì" ĐI KÈM "áp dụng"/"đặt lịch"/"đến gara" (hỏi HÀNH ĐỘNG cần
+  làm) — KHÁC câu chỉ hỏi "có khuyến mại gì" (Loại 8, hỏi thông tin, không hỏi cách làm).
+  → LUÔN set is_off_topic=true VÀ off_topic_kind='booking_flow' CÙNG LÚC — KHÔNG set
+  action='handoff_cskh', kể cả khi state đã đủ 3 trường. Reply KHÔNG cần tự soạn — hệ thống
+  dùng câu cố định riêng + gửi lại card SP/gara gần nhất (đổi nhãn nút sang "Đặt lịch gara
+  này"/"Đặt gara khác"/"Chọn gara khác"), bạn CHỈ CẦN set đúng 2 field trên.
+
+[Loại 12] Hỏi vì sao cần đăng nhập / không xem được thông tin gara:
+  Ví dụ: "phải đăng nhập à", "không xem được địa chỉ", "sao không thấy sđt", "cần tài khoản
+  à", "sao phải login".
+  → LUÔN set is_off_topic=true VÀ off_topic_kind='login_required' CÙNG LÚC — KHÔNG set
+  action='handoff_cskh', kể cả khi state đã đủ 3 trường. Reply KHÔNG cần tự soạn — hệ thống
+  dùng câu cố định riêng, bạn CHỈ CẦN set đúng 2 field trên.
 
 LUÔN set is_off_topic=true, action=continue cho các turn off-topic này.
 

@@ -990,21 +990,38 @@ export function resolveProvinceSync(text: string): ProvinceResolution {
 
   if (best) return { code: best.code, name: best.name }
 
-  // Aliases hay gặp
+  // Aliases hay gặp — bao gồm cả dạng viết DÍNH LIỀN không dấu cách (vd
+  // "hanoi", "saigon", "danang") vì stripVn() giữ nguyên chỗ khách KHÔNG gõ
+  // dấu cách, không tự thêm vào. Bug thật (2026-09-08, session d9c1f4dc):
+  // khách gõ "Hà đông - hanoi" — "hanoi" dính liền không khớp được "ha noi"
+  // (có dấu cách) nên rơi hẳn xuống bước tiếp theo, cuối cùng bị AI đoán nhầm
+  // sang "Đông Hà, Quảng Trị". Token NGẮN ('hn', 'hcm', 'sg', 'dn') bắt buộc
+  // qua includesWholeWord (không phải includes() thô) — 2-3 ký tự rất dễ vô
+  // tình là substring của 1 từ khác không liên quan. Đồng bộ với
+  // src/libs/chat/tireDb.ts (cùng bugfix).
   if (
     haystack.includes('ho chi minh') ||
-    haystack.includes('tphcm') ||
     haystack.includes('tp hcm') ||
-    haystack.includes('hcm') ||
-    haystack.includes('sg') ||
-    haystack.includes('sai gon')
+    haystack.includes('tphcm') ||
+    includesWholeWord(haystack, 'hcm') ||
+    includesWholeWord(haystack, 'sg') ||
+    haystack.includes('sai gon') ||
+    haystack.includes('saigon')
   ) {
     return { code: '79', name: PROVINCE_MAP['79']?.name ?? 'Hồ Chí Minh' }
   }
-  if (haystack.includes('ha noi') || haystack.includes('hn ')) {
+  if (
+    haystack.includes('ha noi') ||
+    haystack.includes('hanoi') ||
+    includesWholeWord(haystack, 'hn')
+  ) {
     return { code: '01', name: PROVINCE_MAP['01']?.name ?? 'Hà Nội' }
   }
-  if (haystack.includes('da nang') || haystack.includes('dn ')) {
+  if (
+    haystack.includes('da nang') ||
+    haystack.includes('danang') ||
+    includesWholeWord(haystack, 'dn')
+  ) {
     return { code: '48', name: PROVINCE_MAP['48']?.name ?? 'Đà Nẵng' }
   }
 
@@ -1104,29 +1121,35 @@ export function findWardsByText(text: string, limit = 13): WardMatch[] {
   return matches
 }
 
-/** Mã tỉnh Hà Nội trong province.json/PROVINCE_MAP. */
-const HANOI_PROVINCE_CODE = '01'
+/** Mã tỉnh Hà Nội + Hồ Chí Minh trong province.json/PROVINCE_MAP — 2 thị
+ *  trường khách hàng chính, xem `pickPriorityCityWardIfUnambiguous`. */
+const PRIORITY_CITY_CODES = ['01', '79']
 
 /**
  * Khi 1 tên ward khớp NHIỀU tỉnh/TP khác nhau (`findWardsByText` trả >1 kết
- * quả) — thị trường khách hàng chính là Hà Nội, nên nếu ĐÚNG 1 trong các match
- * đó thuộc Hà Nội, ưu tiên chọn LUÔN ward đó thay vì bắt khách xác nhận qua
- * QR. Vd khách gõ "Hoàng Mai" → khớp cả "Hoàng Mai, Hà Nội" lẫn "Hoàng Mai,
- * Huế" (tên khác, trùng tên xã) → coi như khách muốn "Hoàng Mai, Hà Nội".
- * CHỈ áp dụng khi Hà Nội xuất hiện ĐÚNG 1 lần trong danh sách match — nếu bản
- * thân Hà Nội cũng có ≥2 ward trùng tên thì vẫn còn mập mờ THẬT SỰ (khác quận/
- * huyện cũ trong cùng Hà Nội), phải hỏi lại khách như cũ, không đoán bừa.
+ * quả) — 2 thị trường khách hàng chính là Hà Nội + Hồ Chí Minh, nên nếu ĐÚNG
+ * 1 trong các match đó thuộc 1 trong 2 TP này, ưu tiên chọn LUÔN ward đó thay
+ * vì bắt khách xác nhận qua QR. Vd khách gõ "Hoàng Mai" → khớp cả "Hoàng Mai,
+ * Hà Nội" lẫn "Hoàng Mai, Nghệ An" (tên khác, trùng tên xã) → coi như khách
+ * muốn "Hoàng Mai, Hà Nội". CHỈ áp dụng khi ĐÚNG 1 match thuộc Hà Nội/HCM —
+ * nếu match CẢ Hà Nội LẪN HCM (2 TP ưu tiên trùng nhau) hoặc bản thân 1 TP đó
+ * cũng có ≥2 ward trùng tên thì vẫn còn mập mờ THẬT SỰ, phải hỏi lại khách
+ * như cũ, không đoán bừa.
  *
- * `queryText` bắt buộc để verify match Hà Nội là THẬT (khớp trực tiếp trên
- * TÊN ward, không qua `path`) — `findWardsByText` fuzzy-match trên CẢ path
- * ("<ward>, <tỉnh>"), nên 2 từ ở ranh giới ward/tỉnh có thể VÔ TÌNH ghép thành
- * substring trùng khớp 1 địa danh khác hoàn toàn (cùng bản chất bug "Hà Đông Hà
- * Nội" → "Đông Hà, Quảng Trị" đã fix trước đó, xem follow.md mục 3). Vd khách
- * gõ "Đông Hà" (ý nói Đông Hà, Quảng Trị) → 1 trong các match do path-collision
+ * ⚠️ Trước 2026-09-08 hàm này CHỈ ưu tiên Hà Nội (tên `pickHanoiWardIfUnambiguous`)
+ * — đổi tên + mở rộng sang HCM theo yêu cầu thật (2 TP đều là thị trường
+ * chính, không riêng Hà Nội).
+ *
+ * `queryText` bắt buộc để verify match là THẬT (khớp trực tiếp trên TÊN ward,
+ * không qua `path`) — `findWardsByText` fuzzy-match trên CẢ path ("<ward>,
+ * <tỉnh>"), nên 2 từ ở ranh giới ward/tỉnh có thể VÔ TÌNH ghép thành substring
+ * trùng khớp 1 địa danh khác hoàn toàn (cùng bản chất bug "Hà Đông Hà Nội" →
+ * "Đông Hà, Quảng Trị" đã fix trước đó, xem follow.md mục 3). Vd khách gõ
+ * "Đông Hà" (ý nói Đông Hà, Quảng Trị) → 1 trong các match do path-collision
  * lại là "Phù Đổng, Hà Nội" (stripVn("Phù Đổng, Hà Nội")="phu dong ha noi" VÔ
  * TÌNH chứa "dong ha") — nếu tin match này mù quáng sẽ auto-pick SAI hoàn toàn
  * sang 1 ward Hà Nội không liên quan. Yêu cầu needle khớp trực tiếp trong TÊN
- * ward (không phải path) mới coi là match Hà Nội THẬT.
+ * ward (không phải path) mới coi là match THẬT.
  *
  * ⚠️ Bug thứ 2 phát hiện CÙNG NGÀY (audit 2026-08-27, khi test lại bằng
  * conversation thật) — 2 phần:
@@ -1148,17 +1171,17 @@ const HANOI_PROVINCE_CODE = '01'
  *      bug họ "Hà Đông Hà Nội" → "Đông Hà").
  * Đồng bộ với src/libs/chat/db/locationResolve.ts (cùng bugfix).
  */
-export function pickHanoiWardIfUnambiguous(
+export function pickPriorityCityWardIfUnambiguous(
   wards: WardMatch[],
   queryText: string
 ): WardMatch | null {
   const needle = stripVn(queryText)
-  const hanoiMatches = wards.filter(w => {
-    if (w.parent_code !== HANOI_PROVINCE_CODE || !needle) return false
+  const priorityMatches = wards.filter(w => {
+    if (!PRIORITY_CITY_CODES.includes(w.parent_code) || !needle) return false
     const bareName = stripVn(w.path.split(',')[0] ?? w.name)
     return bareName.includes(needle) || includesWholeWord(needle, bareName)
   })
-  return hanoiMatches.length === 1 ? hanoiMatches[0] : null
+  return priorityMatches.length === 1 ? priorityMatches[0] : null
 }
 
 /**
@@ -1295,15 +1318,22 @@ export function resolveMergedProvinceAlias(text: string): {
 
   let best: { key: string; score: number } | null = null
   for (const key of Object.keys(MERGED_PROVINCE_ALIASES)) {
-    // haystack.includes(key): text khách gõ DÀI HƠN/chứa trọn key -> an toàn dù
-    // key ngắn (khách gõ rõ ràng đủ, không mập mờ).
+    // haystack.includes(key) qua includesWholeWord (KHÔNG phải includes() thô)
+    // — bug thật (2026-09-08, session d9c1f4dc): khách gõ "Hà đông - hanoi" ý
+    // nói Hà Đông (Hà Nội), stripVn ra "ha dong hanoi" — chuỗi này VÔ TÌNH
+    // chứa substring "dong ha" (nối "đông" cuối + "ha" đầu của "hanoi", không
+    // dấu cách vì khách gõ dính "hanoi") → khớp NHẦM alias key 'dong ha'
+    // (Đông Hà, Quảng Trị). CÙNG lớp bug "Huế"/"Nhuế" — key ngắn càng dễ vô
+    // tình là substring của 2 từ ghép lại không liên quan — bắt buộc ranh
+    // giới từ. Đồng bộ với src/libs/chat/db/locationResolve.ts (cùng bugfix).
     // key.includes(haystack): text khách gõ NGẮN HƠN key (vd "Bà Rịa" khớp
     // "ba ria vung tau") -> CHỈ an toàn khi haystack đủ dài để không phải 1
     // tiền tố mập mờ của nhiều key khác nhau (vd "Vinh" (Nghệ An, không đổi)
     // ngắn hơn "vinh phuc"/"vinh yen" nên bị includes() coi là match SAI nếu
     // không chặn) - yêu cầu tối thiểu 5 ký tự cho chiều này.
     const isMatch =
-      haystack.includes(key) || (haystack.length >= 5 && key.includes(haystack))
+      includesWholeWord(haystack, key) ||
+      (haystack.length >= 5 && key.includes(haystack))
     if (isMatch) {
       const score = Math.min(key.length, haystack.length)
       if (!best || score > best.score) best = { key, score }

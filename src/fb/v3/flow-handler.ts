@@ -43,7 +43,7 @@ import {
   fetchTireSizesByCarTags,
   fetchTireSizesByProductSearch,
   findWardsByText,
-  pickHanoiWardIfUnambiguous,
+  pickPriorityCityWardIfUnambiguous,
   getWardParentCode,
   getWardByCode,
   type SpGaraCard,
@@ -1579,8 +1579,8 @@ async function handleGathering(
       if (directWardMatches.length > 1) {
         // Nhiều tỉnh/TP trùng tên ward nhưng ĐÚNG 1 trong số đó thuộc Hà Nội
         // (thị trường khách hàng chính) → ưu tiên chọn luôn, không hỏi lại.
-        // Xem giải thích đầy đủ tại pickHanoiWardIfUnambiguous (db.ts).
-        const hanoiPick = pickHanoiWardIfUnambiguous(directWardMatches, userInput)
+        // Xem giải thích đầy đủ tại pickPriorityCityWardIfUnambiguous (db.ts).
+        const hanoiPick = pickPriorityCityWardIfUnambiguous(directWardMatches, userInput)
         if (hanoiPick) {
           newState.province_code = hanoiPick.parent_code
           newState.province_name = resolveProvinceSync('Hà Nội').name ?? 'Hà Nội'
@@ -1662,7 +1662,7 @@ async function handleGathering(
             }
           }
           if (wards.length > 1) {
-            const hanoiPick = pickHanoiWardIfUnambiguous(wards, text)
+            const hanoiPick = pickPriorityCityWardIfUnambiguous(wards, text)
             if (hanoiPick) {
               newState.province_code = hanoiPick.parent_code
               newState.province_name = resolveProvinceSync('Hà Nội').name ?? 'Hà Nội'

@@ -5,6 +5,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  resolveReviewVerdicts,
+  type PendingAliasRow,
   chunk,
   extractUserPhrases,
   normalizeText,
@@ -122,4 +124,47 @@ test('chunk chia đúng', () => {
 test('normalizeText khớp quy ước unaccent lower', () => {
   assert.equal(normalizeText('  Lốp   Mít  '), 'lop mit')
   assert.equal(normalizeText('Đảo lốp'), 'dao lop')
+})
+
+// ── GĐ8: AI tự duyệt pending ──────────────────────────────────────────────────
+const NORMS = new Set(['lop kumho', 'lop hankook', 'thay cum den hau'])
+const row = (id: number, alias_norm: string, canonical_q: string): PendingAliasRow => ({
+  id, alias: alias_norm, alias_norm, canonical_q, type: 'SAN_PHAM',
+  confidence: 0.5, evidence_count: 1, evidence: []
+})
+
+test('review: approve giữ canonical, reject chuyển rejected, fix đổi canonical đúng', () => {
+  const rows = [
+    row(1, 'han coc', 'Lốp Hankook'),
+    row(2, 'lop tot', 'Lốp Kumho'),
+    row(3, 'cum ho', 'Thay cụm đèn hậu')
+  ]
+  const acts = resolveReviewVerdicts(rows, [
+    { index: 0, verdict: 'approve', confidence: 0.95, reason: 'phiên âm' },
+    { index: 1, verdict: 'reject', confidence: 0.9, reason: 'chung chung' },
+    { index: 2, verdict: 'fix', canonical: 'Lốp Kumho', confidence: 0.9, reason: 'phiên âm Kumho' }
+  ], NORMS)
+  assert.deepEqual(acts.map(a => a.action), ['approve', 'reject', 'fix'])
+  assert.equal(acts[2].canonical_q, 'Lốp Kumho')
+})
+
+test('review: skip khi AI bịa canonical / thiếu verdict / canonical biến mất', () => {
+  const rows = [
+    row(1, 'abc xyz', 'Lốp Hankook'),
+    row(2, 'khong verdict', 'Lốp Kumho'),
+    row(3, 'x y', 'Lốp Đã Xoá')
+  ]
+  const acts = resolveReviewVerdicts(rows, [
+    { index: 0, verdict: 'fix', canonical: 'Lốp Không Tồn Tại', confidence: 0.9, reason: 'bịa' },
+    { index: 2, verdict: 'approve', confidence: 0.9, reason: 'canonical đã mất' }
+  ], NORMS)
+  assert.deepEqual(acts.map(a => a.action), ['skip', 'skip', 'skip'])
+})
+
+test('review: fix về cỡ lốp hợp lệ được chấp nhận dù không có trong từ điển', () => {
+  const acts = resolveReviewVerdicts([row(1, '205 55 16', 'Lốp Hankook')], [
+    { index: 0, verdict: 'fix', canonical: 'Lốp 205/55R16', confidence: 0.95, reason: 'cỡ lốp' }
+  ], NORMS)
+  assert.equal(acts[0].action, 'fix')
+  assert.equal(acts[0].canonical_q, 'Lốp 205/55R16')
 })

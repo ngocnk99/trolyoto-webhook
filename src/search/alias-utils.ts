@@ -128,3 +128,83 @@ export function chunk<T>(arr: T[], size: number): T[][] {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
   return out
 }
+
+// ── GĐ8 (10/09/2026): cron AI tự duyệt alias pending ─────────────────────────
+// User không có thời gian duyệt tay ~150 dòng pending (case hiếm evidence < 3
+// nằm pending vô hạn, có dòng mining đoán SAI canonical như "cum ho" → "Thay
+// cụm đèn hậu"). Cron đêm cho gpt-4o-mini chấm lại từng dòng: approve / reject /
+// fix (đổi sang canonical đúng). Phần thuần ở đây để test được.
+
+export interface PendingAliasRow {
+  id: number
+  alias: string
+  alias_norm: string
+  canonical_q: string
+  type: 'SAN_PHAM' | 'DICH_VU'
+  confidence: number | null
+  evidence_count: number
+  evidence: string[]
+}
+
+export interface AiReviewVerdict {
+  index: number
+  verdict: 'approve' | 'reject' | 'fix'
+  /** chỉ khi verdict='fix': bản chuẩn ĐÚNG, copy nguyên văn từ danh sách từ điển */
+  canonical?: string
+  confidence: number
+  reason: string
+}
+
+export interface ReviewAction {
+  id: number
+  alias_norm: string
+  action: 'approve' | 'reject' | 'fix' | 'skip'
+  /** canonical mới khi action='fix' */
+  canonical_q?: string
+  type?: 'SAN_PHAM' | 'DICH_VU'
+  reason: string
+}
+
+const SIZE_RE_REVIEW = /^lop \d{3}\/\d{2}r\d{2}c?$/
+
+/**
+ * Đối chiếu verdict AI với từ điển trước khi ghi DB (AI KHÔNG được tự bịa):
+ *  - approve: canonical HIỆN TẠI phải còn trong từ điển (hoặc dạng cỡ lốp) —
+ *    không thì skip (canonical đã biến mất, giữ pending).
+ *  - fix: canonical MỚI phải có trong từ điển / dạng cỡ lốp, khác alias_norm,
+ *    và alias_norm không được trùng một norm chuẩn sẵn có → đổi canonical + approve.
+ *  - reject: chấp nhận luôn (AI thấy vô nghĩa/chung chung/không liên quan).
+ *  - dòng không có verdict → skip (giữ pending, đêm sau chấm lại).
+ */
+export function resolveReviewVerdicts(
+  rows: PendingAliasRow[],
+  verdicts: AiReviewVerdict[],
+  dictionaryNorms: ReadonlySet<string>
+): ReviewAction[] {
+  const byIndex = new Map<number, AiReviewVerdict>()
+  for (const v of verdicts ?? []) {
+    if (v && Number.isInteger(v.index) && !byIndex.has(v.index)) byIndex.set(v.index, v)
+  }
+  const canonicalOk = (norm: string) =>
+    dictionaryNorms.has(norm) || SIZE_RE_REVIEW.test(norm)
+
+  return rows.map((row, i): ReviewAction => {
+    const v = byIndex.get(i)
+    const base = { id: row.id, alias_norm: row.alias_norm, type: row.type }
+    if (!v) return { ...base, action: 'skip', reason: 'AI không trả verdict' }
+    if (v.verdict === 'reject') return { ...base, action: 'reject', reason: v.reason }
+    if (v.verdict === 'approve') {
+      if (!canonicalOk(normalizeText(row.canonical_q)))
+        return { ...base, action: 'skip', reason: 'canonical hiện tại không còn trong từ điển' }
+      return { ...base, action: 'approve', reason: v.reason }
+    }
+    // fix
+    const canonical = (v.canonical ?? '').trim()
+    const canonicalNorm = normalizeText(canonical)
+    if (!canonical || !canonicalOk(canonicalNorm))
+      return { ...base, action: 'skip', reason: 'canonical sửa không có trong từ điển' }
+    if (canonicalNorm === row.alias_norm || dictionaryNorms.has(row.alias_norm))
+      return { ...base, action: 'skip', reason: 'alias trùng bản chuẩn' }
+    return { ...base, action: 'fix', canonical_q: canonical, reason: v.reason }
+  })
+}

@@ -76,6 +76,8 @@ export type AiSource =
   | 'fb-v3'
   | 'fb-prod'
   | 'cron-search-alias'
+  // 86eyuw542 GĐ8: cron AI tự duyệt alias pending (alias-review-cron.ts)
+  | 'cron-search-alias-review'
   // GĐ4 search-suggest-v2 (branch feature/task-search-suggest-v2-alias-mining,
   // chưa merge): embedding-cron.ts gọi thẳng REST /v1/embeddings bằng `fetch`
   // nên interceptor bắt được ngay, chỉ cần bọc runEmbeddingBackfill trong

@@ -5,6 +5,7 @@ import { startHandoverCron } from './fb/handover-cron'
 import { startCacheOutboxCron } from './cache/cache-outbox-cron'
 import { startMetaCapiCron } from './meta/capi-outbox-cron'
 import { startSearchAliasCron } from './search/search-alias-cron'
+import { startAliasReviewCron } from './search/alias-review-cron'
 import { startPriorityGarageCache } from './fb/priorityGarage'
 import { installAiUsageLogging } from './ai/usage-log'
 
@@ -61,6 +62,10 @@ async function bootstrap() {
   // conversation_log + search_query_log bằng gpt-4o-mini → search_alias.
   // Xem src/search/search-alias-cron.ts.
   startSearchAliasCron()
+
+  // 86eyuw542 GĐ8: 02:00 VN (sau mining, trước refresh 02:30) — AI tự duyệt
+  // alias pending: approve/reject/fix canonical. Xem src/search/alias-review-cron.ts.
+  startAliasReviewCron()
 
   // Cache RAM bảng priority_garage (gara ưu tiên khi hết cách tìm theo vị trí
   // — tier 3 trong cascade tìm SP+gara). Refresh 30 phút/lần, load ngay lúc

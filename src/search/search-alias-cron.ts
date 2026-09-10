@@ -82,7 +82,7 @@ interface Phrase {
   source: 'fb_messenger' | 'query_log'
 }
 
-interface Vocabulary {
+export interface Vocabulary {
   brands: string[]
   carlines: string[]
   services: string[]
@@ -119,7 +119,8 @@ async function writeState(key: string, value: string): Promise<void> {
   if (error) throw new Error(`state write ${key}: ${error.message}`)
 }
 
-async function loadVocabulary(): Promise<Vocabulary> {
+// GĐ8: alias-review-cron.ts tái dùng — export.
+export async function loadVocabulary(): Promise<Vocabulary> {
   const norms = new Set<string>()
   const brands: string[] = []
   const carlines: string[] = []

@@ -268,3 +268,39 @@ User báo tin nhắn intro khi cascade rơi xuống tier 3 (gara ưu tiên) sai 
 **Phát hiện thêm 1 asymmetry lúc sửa**: nhánh multi-brand của FB (`showMultiBrandResults`) LUÔN dùng `buildSearchIntro` ("gara gần mình") kể cả khi tier 3/4 đã chạy cho 1+ hãng — sai hoàn toàn vì kết quả nằm ở tỉnh khác, khách dễ tự nhận ra. Web đã có check này từ trước (`anyUsedPriorityOrNational`), FB thì chưa. **Đã fix đồng bộ**: tính `anyUsedPriority`/`anyUsedNational` từ `results` (đã fetch sẵn trước loop) để chọn đúng intro.
 
 `npx tsc --noEmit` sạch cả 2 repo sau fix.
+
+## 15. Cập nhật phân loại hãng lốp + 2 case đặc biệt mới (2026-09-03)
+
+**Phân loại hãng lốp (brand tier)** — theo yêu cầu user, cập nhật cả 2 bot (`BRAND_TIERS`/`V3_BRAND_TIER_INFO` bên FB `v3/flow-handler.ts`+`ai-helper.ts`, `BRAND_TIERS`/`BRAND_TIER_INFO` bên Web `prompts.ts`):
+- Cao cấp: Michelin, Bridgestone, Toyo, Continental, Pirelli (không đổi).
+- Cân bằng: Hankook, Goodyear, Dunlop, Yokohama, **+ Dayton** (mới).
+- Tiết kiệm: Sailun, Kumho, RoadX, Laufenn, Nexen, TBB, Westlake, Maxxis, Otani, **+ American** (mới).
+
+Lưu ý: `fb-webhook-server/src/fb/flow-handler.ts` (handler V2 KHÔNG qua `v3/`, dùng cho page không phải "product"/"V3" — xem `isProduct`/`isV3` ở `webhook.controller.ts`) có 1 `BRAND_TIERS` RIÊNG với cách phân loại KHÁC hẳn (vd Goodyear ở premium, Laufenn ở balanced, thiếu Nexen/Westlake/Maxxis/Continental) — **CHƯA cập nhật** theo spec mới vì không rõ có phải chủ ý khác biệt cho page đó hay không, và file này không có khái niệm `off_topic_kind` nên 2 case mới bên dưới cũng không áp dụng được. Cần hỏi lại nếu muốn đồng bộ luôn.
+
+**2 case đặc biệt mới** (thêm `off_topic_kind`, cùng shape với `manufacture_year`/`garage_contact` đã có — xem mục cũ):
+
+- **`booking_flow`** — khách hỏi CÁCH/QUY TRÌNH đặt lịch hoặc áp dụng khuyến mại (vd "mình đến gara thì gặp ai", "làm sao để được áp dụng khuyến mãi", "sau khi đặt lịch thì sao"). Trả lời cố định: *"Dạ anh/chị đặt lịch với gara trên TROLYoto bằng SĐT để gara nhận thông tin, mình đến được phục vụ ngay, không phải chờ đợi ạ 😊"* + replay card SP/gara gần nhất, đổi **CẢ 3 nút** (khác 2 FAQ cũ chỉ đổi 1 nút):
+  - 🎁 Xem khuyến mại/mãi (chi tiết SP của gara) → **Đặt lịch gara này**
+  - So sánh giá gara khác (chi tiết SP chung) → **Đặt gara khác**
+  - Xem loại lốp khác (trang lốp filter theo size) → **Chọn gara khác**
+
+  `replyFaqWithReplayCard()` (FB) và `buildFaqReplayOffersResponse()` (Web) đổi từ nhận 1 `viewButtonTitle: string` sang nhận hàm/object relabel để hỗ trợ đổi nhiều nút cùng lúc — 2 FAQ cũ (`manufacture_year`/`garage_contact`) vẫn hoạt động y hệt (chỉ đổi 1 nút).
+
+- **`login_required`** — khách hỏi vì sao cần đăng nhập / không xem được thông tin gara (vd "phải đăng nhập à", "không xem được địa chỉ"). Trả lời cố định, **KHÔNG replay card** (câu hỏi không gắn với 1 gara cụ thể): *"Dạ anh/chị chỉ cần đăng nhập nhanh bằng số điện thoại để ạ 😊 • Xem đầy đủ thông tin gara • Gara tạo bảo hành điện tử & hoá đơn sau khi sử dụng dịch vụ cho mình"*.
+
+**Bug phát hiện lúc test thật** (4 hội thoại × nhiều lần lặp lại để kiểm tra non-determinism): câu "làm sao để được áp dụng khuyến mãi" ban đầu **0/3 lần** bị AI đá nhầm sang FAQ CŨ "hỏi có khuyến mại gì" (2 câu nghe gần giống nhưng khác ý — 1 câu hỏi CÓ GÌ, 1 câu hỏi CÁCH LÀM). Đã sửa: thêm ghi chú phân biệt tường minh 2 chiều ở cả prompt Loại 8 (khuyến mại cũ) và Loại 11 (booking_flow mới), nhấn tín hiệu "làm sao để"/"làm thế nào" đi kèm "áp dụng"/"đặt lịch". Sau fix: **3/3 lần** đúng. Case `login_required` với đúng câu mẫu "Phải đăng nhập à?" có 1 lần trong 6 lần test bị lệch sang FAQ "có phải bot không" — retest riêng 4/4 đúng, kết luận là nhiễu non-determinism bình thường (giống case `manufacture_year` đã ghi nhận trước đó), không sửa thêm.
+
+`npx tsc --noEmit` sạch cả 2 repo sau toàn bộ thay đổi.
+
+## 16. Fix "Hà đông - hanoi" → "Đông Hà, Quảng Trị" (2026-09-08) — 3 bug thật ở lớp resolve địa chỉ
+
+User báo + gửi ảnh: khách gõ **"Hà đông - hanoi"** bị nhận diện thành phường Đông Hà, Quảng Trị (đảo ngược âm tiết "Hà Đông"). Tra đúng session gốc (`d9c1f4dc-57f9-46c6-87b9-d4bd5f6ee3a0`, psid `28506251219011616`, tin nhắn lúc 2026-09-08T15:35:48Z), replay input thật qua code hiện tại → xác nhận đúng lỗi, tìm ra 3 nguyên nhân (2 cái user tự đoán đúng, thêm 1 cái ẩn):
+
+1. **`resolveMergedProvinceAlias` dùng `.includes()` thô, không có ranh giới từ** — ĐÂY LÀ ROOT CAUSE THẬT của case này. Alias `'dong ha'` (Đông Hà, Quảng Trị) khớp NHẦM vì `stripVn("Hà đông - hanoi")` = `"ha dong hanoi"` — chuỗi này VÔ TÌNH chứa substring "dong ha" (nối "đông" cuối + "ha" đầu của "hanoi", không có dấu cách vì khách gõ dính liền). Cùng lớp bug Huế/Nhuế (mục 3) nhưng ở 1 hàm CHƯA được fix khi đó. **Đã fix**: đổi `haystack.includes(key)` → `includesWholeWord(haystack, key)`.
+2. **`resolveProvinceCodeFromText` không nhận diện "hanoi"/"saigon" viết DÍNH LIỀN (không dấu cách)** — user gọi đây là "lỗi 1: chưa nhận diện được hà nội". Code cũ chỉ check `haystack.includes('ha noi')` (CÓ dấu cách) — "hanoi" (dính liền, khách gõ tắt) không khớp. **Đã fix**: thêm biến thể dính liền cho cả Hà Nội ("hanoi"), HCM ("saigon" — "sai gon" đã có), và tiện thể đồng bộ luôn Đà Nẵng ("danang") vì FB đã có sẵn check "da nang"/"dn " mà Web thiếu (asymmetry cũ). Token NGẮN (`hn`, `hcm`, `sg`, `dn`) đổi từ `.includes()` thô sang `includesWholeWord` — bảo vệ tương tự.
+3. **`pickHanoiWardIfUnambiguous` CHỈ ưu tiên Hà Nội, không có Hồ Chí Minh** — user gọi đây là "lỗi 2: ưu tiên Hà Nội/HCM khi ward thuộc nhiều tỉnh". Đây không phải root cause của case cụ thể này (vì "Đông Hà" không phải ward trùng tên với Hà Nội) nhưng là cải tiến robustness đúng theo yêu cầu — nếu tầng trên (root cause #1) lỡ fail lần nữa trong tương lai, tầng ward-match vẫn có thêm 1 lớp bảo vệ ưu tiên 2 TP chính. **Đã fix**: đổi tên hàm → `pickPriorityCityWardIfUnambiguous`, mở rộng check `parent_code` sang cả `'01'` (Hà Nội) và `'79'` (HCM). Nếu ward trùng tên khớp CẢ Hà Nội LẪN HCM cùng lúc → vẫn coi là mập mờ thật, hỏi lại khách (không đoán bừa giữa 2 TP chính).
+
+Verify: input thật "Hà đông - hanoi" → đúng Hà Nội/Hà Đông (09556). Test thêm "saigon", "Thủ Đức hcm", "danang" đều đúng. Regression: "Hà Đông Hà Nội" (đủ dấu cách) và "mình ở cổ nhuế gần cầu giấy" (bug Huế/Nhuế cũ) vẫn đúng, không bị ảnh hưởng. Case "Tân Bình" (khớp cả HCM lẫn Cần Thơ) → tự chọn đúng HCM nhờ mở rộng #3.
+
+`npx tsc --noEmit` sạch cả 2 repo.

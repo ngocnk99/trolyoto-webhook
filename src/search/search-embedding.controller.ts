@@ -8,7 +8,8 @@ import { getSearchEmbeddingStatus, runEmbeddingBackfill } from './embedding-cron
  *   POST /api/search-embedding/run?dryRun=1
  */
 const DEBUG_SECRET = process.env.DEBUG_SECRET ?? ''
-const authorized = (secret?: string) => !DEBUG_SECRET || secret === DEBUG_SECRET
+// Cùng chính sách search-alias.controller (vá 06/09): chưa set DEBUG_SECRET là TỪ CHỐI hết.
+const authorized = (secret?: string) => !!DEBUG_SECRET && secret === DEBUG_SECRET
 
 @Controller('api/search-embedding')
 export class SearchEmbeddingController {

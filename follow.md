@@ -338,12 +338,14 @@ Theo yêu cầu user ("cần xây dựng test case toàn bộ hãng đã đượ
 4. **FALSE-POSITIVE PROBE** — câu đời thường KHÔNG nhắc hãng nào nhưng nghi ngờ trùng ngẫu nhiên với 1 alias.
 5. Audit chéo danh sách brand trong PROMPT (ai-helper.ts/webGatherTurn.ts) vs `BRAND_ALIASES` (code).
 
-**Kết quả lần chạy đầu — phát hiện 3 false-positive THẬT** (đã fix, bỏ khỏi bảng alias ở cả 2 repo):
-- `CONTINENTAL` alias `"con ti"` ↔ trùng **"còn tí"** — cụm RẤT phổ biến trong chat tiếng Việt (vd "chờ con tí nhé"). Giữ lại `"continental"`/`"conti"` (an toàn, không phải từ tiếng Việt thật).
-- `KUMHO` alias `"cum ho"` ↔ trùng **"cụm hộ"** (cụm dân cư) — rủi ro cao vì bot hay hỏi khu vực/địa chỉ, đúng lúc dễ gặp cụm này. Giữ lại `"kumho"`/`"kum ho"` (khác phụ âm đầu, không trùng từ thật).
-- `LAUFENN` alias `"lau phan"` ↔ trùng **"lau phần"** (vd "lau phần nào trước"). Giữ lại `"laufenn"`/`"lau fen"`.
+**Kết quả lần chạy đầu — phát hiện 3 false-positive LÝ THUYẾT** (ban đầu đã bỏ khỏi bảng alias, SAU ĐÓ user quyết định GIỮ LẠI — xem cập nhật cuối mục):
+- `CONTINENTAL` alias `"con ti"` ↔ trùng **"còn tí"** — cụm RẤT phổ biến trong chat tiếng Việt (vd "chờ con tí nhé").
+- `KUMHO` alias `"cum ho"` ↔ trùng **"cụm hộ"** (cụm dân cư) — rủi ro cao vì bot hay hỏi khu vực/địa chỉ, đúng lúc dễ gặp cụm này.
+- `LAUFENN` alias `"lau phan"` ↔ trùng **"lau phần"** (vd "lau phần nào trước").
 
-Sau fix: **182/182 pass** cả 2 repo (đã tự sửa lại 1 test case của chính mình bị viết sai — câu ví dụ ADVENZA lỡ nhắc kèm "Kumho" nên đúng ra PHẢI trả cả 2 brand, không phải lỗi code).
+Sau fix ban đầu: 182/182 pass cả 2 repo (đã tự sửa lại 1 test case của chính mình bị viết sai — câu ví dụ ADVENZA lỡ nhắc kèm "Kumho" nên đúng ra PHẢI trả cả 2 brand, không phải lỗi code).
+
+**CẬP NHẬT (cùng ngày 2026-09-11) — user yêu cầu GIỮ NGUYÊN cả 3 alias**: "cumho, conti, lauphan vẫn giữ nguyên, vì chat bot fb là kiểu chat riêng biệt, sẽ không bao giờ xuất hiện trong khi chat trên fb". Tức là 3 collision phát hiện được (`còn tí`/`cụm hộ`/`lau phần`) là rủi ro LÝ THUYẾT của whole-word matching nói chung, nhưng KHÔNG phải rủi ro THỰC TẾ trong ngữ cảnh chat mua lốp qua Messenger (khách hỏi mua lốp không có lý do gõ 3 cụm đời thường đó). Đã REVERT cả 2 repo về đúng bảng alias gốc (khôi phục `"con ti"`, `"cum ho"`, `"lau phan"`) + xoá 3 test case false-positive tương ứng khỏi test suite (không còn là kỳ vọng đúng, có ghi chú giải thích trong cả comment code lẫn test). Sau revert: **186/186 pass** cả 2 repo (186 = 182 gốc − 3 false-positive-probe cũ + thêm case tự sửa).
 
 **Audit chéo phát hiện thêm (CHƯA fix — cần user xác nhận, không tự đoán vì liên quan dữ liệu kinh doanh thật)**:
 - `ADVANCE` có trong PROMPT (dòng liệt kê hãng + alias phonetic "át văn"/"ad van") nhưng **THIẾU hẳn trong `BRAND_ALIASES` (code)** — chỉ có `ADVENZA` (hãng khác, đã có note phân biệt "KHÁC Kumho" trong code). Không rõ `ADVANCE` và `ADVENZA` có phải cùng 1 hãng viết khác nhau hay 2 hãng thật sự khác nhau — cần user xác nhận trước khi thêm alias.

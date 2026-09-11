@@ -48,14 +48,15 @@ function includesWholeWord(haystack: string, needle: string): boolean {
  * TRƯNG). Cũng KHÔNG gồm "mix" (alias Michelin trong prompt) vì "mix" là từ
  * tiếng Anh quá phổ biến trong tiếng Việt (rủi ro match nhầm ngữ cảnh khác).
  *
- * CŨNG ĐÃ BỎ 3 alias 2-âm-tiết sau (phát hiện qua `__tests__/brandAliases.test.ts`
- * mục "FALSE-POSITIVE PROBE", 2026-09-11) vì trùng NGẪU NHIÊN với cụm từ tiếng
- * Việt phổ biến, gây match nhầm brand dù khách không hề nhắc hãng lốp nào:
- * - CONTINENTAL "con ti": trùng "còn tí" (rất phổ biến, vd "chờ con tí nhé").
- * - KUMHO "cum ho": trùng "cụm hộ" (cụm dân cư — dễ gặp khi khách tả địa chỉ,
- *   đúng lúc bot đang hỏi khu vực).
- * - LAUFENN "lau phan": trùng "lau phần" (vd "lau phần nào trước").
- * Alias khác (single-token, phiên âm nước ngoài rõ) không bị lỗi này.
+ * ĐÃ CÂN NHẮC bỏ 3 alias 2-âm-tiết sau (phát hiện qua
+ * `__tests__/brandAliases.test.ts` mục "FALSE-POSITIVE PROBE", 2026-09-11) vì
+ * trùng NGẪU NHIÊN với cụm từ tiếng Việt phổ biến ("con ti"~"còn tí",
+ * "cum ho"~"cụm hộ", "lau phan"~"lau phần") — nhưng theo quyết định user
+ * (2026-09-11): GIỮ NGUYÊN cả 3, vì đặc thù chat qua Messenger (khách hàng
+ * hỏi mua lốp) KHÔNG BAO GIỜ thực sự gõ các cụm đời thường đó trong ngữ cảnh
+ * này — rủi ro lý thuyết, không phải rủi ro thực tế của kênh chat này. 3 test
+ * case false-positive tương ứng đã bị xoá khỏi test suite (không còn là
+ * kỳ vọng đúng).
  */
 export const BRAND_ALIASES: Record<string, string[]> = {
   MICHELIN: ['michelin', 'michellin', 'mit', 'mic', 'ma so lin', 'mi so lin', 'mi so lang'],
@@ -63,17 +64,17 @@ export const BRAND_ALIASES: Record<string, string[]> = {
   HANKOOK: ['hankook', 'han coc', 'han cook', 'han kook'],
   DUNLOP: ['dunlop', 'dan lop', 'dan lop'],
   GOODYEAR: ['goodyear', 'good year', 'gut die', 'gut nam', 'good iya'],
-  KUMHO: ['kumho', 'kum ho'],
+  KUMHO: ['kumho', 'kum ho', 'kum ho', 'cum ho'],
   MAXXIS: ['maxxis', 'mac xit', 'max xit', 'max sit'],
   YOKOHAMA: ['yokohama', 'yo co ha ma', 'yo ko ha ma', 'yo hama'],
-  CONTINENTAL: ['continental', 'conti'],
+  CONTINENTAL: ['continental', 'conti', 'con ti'],
   PIRELLI: ['pirelli', 'pi reo li', 'pi re li'],
   TOYO: ['toyo', 'to yo'],
   FALKEN: ['falken', 'phan ken', 'phai ken'],
   NEXEN: ['nexen', 'nech sen', 'nech xen'],
   SAILUN: ['sailun', 'sai lun', 'say lun'],
   ROADX: ['roadx', 'road x', 'rot ich'],
-  LAUFENN: ['laufenn', 'lau fen'],
+  LAUFENN: ['laufenn', 'lau fen', 'lau phan'],
   TBB: ['ti bi bi'],
   WESTLAKE: ['westlake', 'goet lech', 'oet lech'],
   OTANI: ['otani', 'o ta ni'],

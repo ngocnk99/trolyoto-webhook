@@ -97,17 +97,15 @@ check(
 // ── 4. FALSE-POSITIVE PROBE — câu KHÔNG nhắc hãng nào nhưng chứa cụm từ tiếng
 //       Việt phổ biến TRÙNG NGẪU NHIÊN với 1 alias sau khi stripVn. Đây là
 //       rủi ro thật của cách tiếp cận whole-word match trên alias NGẮN/đa âm
-//       tiết phổ thông — PHẢI trả [] (không match brand nào). ──
+//       tiết phổ thông — PHẢI trả [] (không match brand nào).
+//
+//       LƯU Ý: "con ti"~"còn tí" (CONTINENTAL), "cum ho"~"cụm hộ" (KUMHO),
+//       "lau phan"~"lau phần" (LAUFENN) TỪNG bị coi là false-positive và bị
+//       xoá khỏi BRAND_ALIASES — nhưng theo quyết định user (2026-09-11): GIỮ
+//       NGUYÊN 3 alias đó, vì đặc thù chat mua lốp qua Messenger không bao
+//       giờ thực sự phát sinh 3 cụm đời thường này. Nên KHÔNG còn test case
+//       false-positive cho 3 cụm đó nữa (đã xoá khỏi list dưới). ──
 const falsePositiveProbes: string[] = [
-  // "con ti"/"còn tí" ~ CONTINENTAL alias "con ti" — cụm RẤT phổ biến trong
-  // chat tiếng Việt ("chờ con tí", "còn tí nữa xong").
-  'chờ con tí nhé shop đang kiểm tra',
-  'còn tí nữa là xong rồi ạ',
-  // "cum ho"/"cụm hộ" ~ KUMHO alias "kum ho"/"cum ho" — cụm liên quan địa chỉ,
-  // rủi ro cao vì bot hỏi địa chỉ khách thường xuyên.
-  'nhà em ở khu cụm hộ dân gần đây',
-  // "lau phan"/"lau phần" ~ LAUFENN alias "lau phan" — cụm mô tả hành động lau.
-  'lau phần nào trước cho sạch ạ',
   // brand tên xe dễ nhầm — "toyo" là whole-word con của "toyota" nhưng
   // KHÔNG được match nhờ whole-word (test khẳng định không false-positive).
   'xe em là Toyota Vios',

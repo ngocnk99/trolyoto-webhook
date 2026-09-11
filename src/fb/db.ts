@@ -1591,3 +1591,64 @@ function includesWholeWord(haystack: string, needle: string): boolean {
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(haystack)
 }
+
+/**
+ * Bảng alias/cách gọi hãng lốp — đã stripVn (không dấu, thường) sẵn. Port
+ * TRỰC TIẾP từ danh sách "VIẾT TẮT/CÁCH GỌI TÊN HÃNG LỐP" trong system prompt
+ * v3GatherTurn (ai-helper.ts) — GIỮ ĐỒNG BỘ khi sửa 1 bên. CỐ Ý KHÔNG gồm mã
+ * viết tắt 2-3 ký tự (MC/BS/HK...) — quá ngắn, dễ false-positive nếu match mù
+ * quáng không ngữ cảnh (khác lớp bài toán tên tỉnh/ward đã fix trước — brand
+ * KHÔNG có "vị trí trong câu" để dựa vào, nên chỉ nhận biến thể ĐỦ DÀI/ĐẶC
+ * TRƯNG). Cũng KHÔNG gồm "mix" (alias Michelin trong prompt) vì "mix" là từ
+ * tiếng Anh quá phổ biến trong tiếng Việt (rủi ro match nhầm ngữ cảnh khác).
+ */
+const BRAND_ALIASES: Record<string, string[]> = {
+  MICHELIN: ['michelin', 'michellin', 'mit', 'mic', 'ma so lin', 'mi so lin', 'mi so lang'],
+  BRIDGESTONE: ['bridgestone', 'bri do', 'bri do ston', 'be rit gi ton', 'bri so ton'],
+  HANKOOK: ['hankook', 'han coc', 'han cook', 'han kook'],
+  DUNLOP: ['dunlop', 'dan lop', 'dan lop'],
+  GOODYEAR: ['goodyear', 'good year', 'gut die', 'gut nam', 'good iya'],
+  KUMHO: ['kumho', 'kum ho', 'kum ho', 'cum ho'],
+  MAXXIS: ['maxxis', 'mac xit', 'max xit', 'max sit'],
+  YOKOHAMA: ['yokohama', 'yo co ha ma', 'yo ko ha ma', 'yo hama'],
+  CONTINENTAL: ['continental', 'conti', 'con ti'],
+  PIRELLI: ['pirelli', 'pi reo li', 'pi re li'],
+  TOYO: ['toyo', 'to yo'],
+  FALKEN: ['falken', 'phan ken', 'phai ken'],
+  NEXEN: ['nexen', 'nech sen', 'nech xen'],
+  SAILUN: ['sailun', 'sai lun', 'say lun'],
+  ROADX: ['roadx', 'road x', 'rot ich'],
+  LAUFENN: ['laufenn', 'lau fen', 'lau phan'],
+  TBB: ['ti bi bi'],
+  WESTLAKE: ['westlake', 'goet lech', 'oet lech'],
+  OTANI: ['otani', 'o ta ni'],
+  ADVENZA: ['advenza', 'avenza', 'ad venza'],
+  DAYTON: ['dayton'],
+  AMERICAN: ['american']
+}
+
+/**
+ * Quét trực tiếp `text` KHÁCH GÕ (chưa qua AI) theo bảng alias cố định ở trên
+ * — trả về danh sách hãng khớp (whole-word, không đoán ngoài whitelist).
+ *
+ * Bug thật (session a87ce436-c48e-4a05-b531-c13ec5da8086, 2026-09-11): khách
+ * gõ "Có lốp mít lắp cho xe 10 không bạn ơi?" — "mít" là alias CÓ SẴN của
+ * MICHELIN ngay trong chính system prompt (kèm ví dụ MINH HOẠ gần như y hệt
+ * câu này: "lốp mít có dùng cho xe i10 không"), nhưng AI vẫn trả nhầm
+ * selected_brands=['SAILUN'] — hoàn toàn không khớp BẤT KỲ từ nào khách gõ,
+ * AI KHÔNG tuân thủ prompt dù hướng dẫn đã rất rõ ràng (không phải lỗi thiếu
+ * ví dụ — ví dụ đã có, AI vẫn sai). Cùng bản chất "không tin AI tuyệt đối"
+ * như các fix location trước đó — brand alias là bảng CỐ ĐỊNH, hữu hạn, khớp
+ * chuỗi trực tiếp đáng tin hơn quyết định AI khi có mâu thuẫn.
+ */
+export function resolveBrandAliasFromText(text: string): string[] {
+  const haystack = stripVn(text)
+  if (!haystack) return []
+  const found = new Set<string>()
+  for (const [brand, aliases] of Object.entries(BRAND_ALIASES)) {
+    if (aliases.some(a => includesWholeWord(haystack, a))) {
+      found.add(brand)
+    }
+  }
+  return Array.from(found)
+}

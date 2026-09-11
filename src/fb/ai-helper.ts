@@ -296,7 +296,9 @@ chính xác. Ví dụ:
 * "san ta pe" / "xan ta phê" → "Santa Fe" (Hyundai)
 * "pho tu nơ" / "pho tuy nơ" → "Fortuner" (Toyota)
 * "cờ rốt xì" / "cờ rốt" → "Cross" (vd "Corolla Cross")
-* "i ét" / "i ét mười" → "i10" (Hyundai Grand i10)
+* "i ét" / "i ét mười" / "xe 10" / "xe10" → "i10" (Hyundai Grand i10) — KHÔNG có
+  nghĩa nào khác, TUYỆT ĐỐI KHÔNG suy diễn sang xe phổ biến khác (vd Vios) chỉ
+  vì "quen thuộc hơn" — lỗi thật từng xảy ra: "xe 10" bị đoán nhầm "Toyota Vios"
 * "ca ren" / "caren" / "ca rèn" → "Carens" (Kia) — KHÔNG phải "Carnival"
 * "xe lô ra tô" → không phải tên xe thật nào (gõ lung tung/vô nghĩa) → car_model=null
 
@@ -884,6 +886,12 @@ export interface V3GatherDecision {
     | 'booking_flow'
     | 'login_required'
     | null
+  /** DEBUG (tạm, đang test) — căn cứ + độ tin cậy AI tự giải trình cho selected_brands. */
+  brand_match_keyword?: string | null
+  brand_confidence?: number | null
+  /** DEBUG (tạm, đang test) — căn cứ + độ tin cậy AI tự giải trình cho car_model. */
+  car_model_match_keyword?: string | null
+  car_model_confidence?: number | null
 }
 
 const V3_BRAND_TIER_INFO = {
@@ -943,6 +951,25 @@ async function v3GatherTurnImpl(
           .describe(
             'Brand cụ thể UPPERCASE khách nhắc (vd ["MICHELIN","BRIDGESTONE"]). Null/omit hoặc [] nếu chưa có.'
           ),
+        // ── DEBUG (tạm, đang test — xem follow.md mục brand alias 2026-09-11) ──
+        // Bắt AI tự giải trình CĂN CỨ (từ khoá gốc trong tin khách) + ĐỘ TIN CẬY
+        // cho quyết định selected_brands ở trên — mục đích: khi AI đoán sai (vd
+        // trả 'SAILUN' dù khách gõ "lốp mít"), field này lộ ra NGAY AI đang "nhìn"
+        // vào đâu để hallucinate, thay vì phải đoán mò lý do qua log thô.
+        brand_match_keyword: z
+          .string()
+          .nullish()
+          .describe(
+            'Từ/cụm từ CHÍNH XÁC (nguyên văn, giữ dấu) trong tin nhắn khách mà bạn DỰA VÀO để xác định selected_brands ở trên. Nếu selected_brands rỗng/null → để trống. Nếu nhiều hãng, liệt kê từng từ khoá cách nhau dấu phẩy, ứng với thứ tự trong selected_brands.'
+          ),
+        brand_confidence: z
+          .number()
+          .min(0)
+          .max(100)
+          .nullish()
+          .describe(
+            'Độ tin cậy 0-100 cho quyết định selected_brands ở trên (100 = chắc chắn tuyệt đối, khớp alias/tên hãng rõ ràng; dưới 60 = suy đoán mơ hồ, không có từ khoá rõ ràng trong tin khách). Null/omit nếu selected_brands rỗng.'
+          ),
         max_price_vnd: z
           .number()
           .nullish()
@@ -966,6 +993,20 @@ async function v3GatherTurnImpl(
           .nullish()
           .describe(
             'Tên xe khách nêu khi CHƯA có kích cỡ chính xác (vd "VinFast 3", "Toyota Vios", "Fortuner 2020"). Hệ thống sẽ tự tra ra list kích cỡ. Null/omit nếu không có tên xe hoặc đã có size.'
+          ),
+        car_model_match_keyword: z
+          .string()
+          .nullish()
+          .describe(
+            'Từ/cụm từ CHÍNH XÁC (nguyên văn) trong tin nhắn khách mà bạn DỰA VÀO để xác định car_model ở trên. Trống nếu car_model rỗng/null.'
+          ),
+        car_model_confidence: z
+          .number()
+          .min(0)
+          .max(100)
+          .nullish()
+          .describe(
+            'Độ tin cậy 0-100 cho quyết định car_model ở trên. Null/omit nếu car_model rỗng.'
           ),
         reply: z
           .string()
@@ -1116,7 +1157,10 @@ QUY TẮC TRÍCH XUẤT:
   * "city" → Honda City            "hrv"/"hr-v" → Honda HR-V
   * "cx3"/"cx5"/"cx8" → Mazda CX-3/5/8    "mazda3" → Mazda 3
   * "vf3"-"vf9" → VinFast VF3-VF9    "fadil" → VinFast Fadil
-  * "acent"/"accent" → Hyundai Accent    "i10"/"grand i10" → Hyundai Grand i10
+  * "acent"/"accent" → Hyundai Accent    "i10"/"grand i10"/"xe 10"/"xe10" → Hyundai Grand i10
+    (LƯU Ý: "xe 10" KHÔNG có nghĩa nào khác ngoài i10 — TUYỆT ĐỐI KHÔNG suy diễn
+    sang xe phổ biến khác như Vios/Wigo chỉ vì "quen thuộc hơn"; đây là lỗi thật
+    từng xảy ra: "lắp cho xe 10" bị đoán nhầm "Toyota Vios")
   * "tucson"/"tucs" → Hyundai Tucson    "santafe"/"santa fe" → Hyundai Santa Fe
   * "elantra" → Hyundai Elantra
   * "seltos"/"seltot"/"selto" → Kia Seltos    "morning" → Kia Morning
@@ -1192,6 +1236,20 @@ QUY TẮC TRÍCH XUẤT:
   "ADVENZA"), KHÔNG tự ý đổi sang brand khác chỉ vì nghe gần giống hoặc quen
   thuộc hơn. CHỈ set null/bỏ qua khi câu THỰC SỰ không nhắc tên hãng nào rõ
   ràng (mơ hồ/không phải tên hãng), KHÔNG PHẢI vì tên hãng đó lạ/chưa biết.
+
+- GIẢI TRÌNH CĂN CỨ (BẮT BUỘC, DEBUG — tạm thời đang test độ chính xác):
+  Mỗi khi set selected_brands và/hoặc car_model, PHẢI kèm field debug tương ứng:
+  * brand_match_keyword: từ/cụm từ NGUYÊN VĂN trong tin khách mà bạn dựa vào (vd
+    khách gõ "lốp mít" → brand_match_keyword="mít"). brand_confidence: 0-100, mức
+    tin cậy THẬT của bạn (100=khớp alias/tên hãng rõ ràng không mơ hồ; dưới 60=chỉ
+    đoán). Nếu selected_brands rỗng → để trống cả 2 field.
+  * car_model_match_keyword/car_model_confidence: tương tự, cho car_model.
+  Mục đích: khi bạn PHẢI đoán (không có từ khoá rõ ràng) → field debug lộ ra NGAY
+  để hệ thống/người kiểm tra biết bạn đang suy luận từ đâu, tránh tình trạng trả
+  1 brand mà KHÔNG có căn cứ nào trong tin khách (vd tin chỉ nói "lốp mít" mà lại
+  trả selected_brands=['SAILUN'] — nếu xảy ra, brand_match_keyword PHẢI trung
+  thực phản ánh bạn KHÔNG có từ khoá "sailun"/alias nào trong tin, KHÔNG được bịa
+  ra 1 từ khoá không tồn tại để hợp lý hoá.
 
 - QUY TẮC selected_brands — CỰC QUAN TRỌNG:
   selected_brands chỉ chứa brand được nhắc trong TIN NHẮN HIỆN TẠI của khách. KHÔNG bao giờ thêm brand đã có sẵn trong state cũ.
@@ -1402,6 +1460,9 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         action: object.action
       })}`
     )
+    console.log(
+      `[AI v3GatherTurn] DEBUG brand_match_keyword="${object.brand_match_keyword ?? ''}" brand_confidence=${object.brand_confidence ?? 'null'} car_model_match_keyword="${object.car_model_match_keyword ?? ''}" car_model_confidence=${object.car_model_confidence ?? 'null'}`
+    )
 
     // Normalize tire_size (uppercase + clean format). Bỏ ký hiệu tốc độ tuỳ
     // chọn (Z/H/V/W...) giữa tỷ lệ khung và "R" — catalog không phân biệt
@@ -1445,7 +1506,11 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
       action: object.action,
       cskh_reason: object.cskh_reason ?? null,
       is_off_topic: object.is_off_topic ?? false,
-      off_topic_kind: object.off_topic_kind ?? null
+      off_topic_kind: object.off_topic_kind ?? null,
+      brand_match_keyword: object.brand_match_keyword ?? null,
+      brand_confidence: object.brand_confidence ?? null,
+      car_model_match_keyword: object.car_model_match_keyword ?? null,
+      car_model_confidence: object.car_model_confidence ?? null
     }
   } catch (e: any) {
     // Log chi tiết để debug schema/network/quota issues

@@ -46,6 +46,7 @@ import {
   pickPriorityCityWardIfUnambiguous,
   getWardParentCode,
   getWardByCode,
+  resolveBrandAliasFromText,
   type SpGaraCard,
   type WardMatch
 } from '../db'
@@ -1386,6 +1387,24 @@ async function handleGathering(
     decision.updates.tire_size = confirmedSize
     newState.last_shown_car_sizes = []
   }
+
+  // Ưu tiên alias hãng khớp trực tiếp trên TIN HIỆN TẠI (deterministic) hơn
+  // AI — bug thật (session a87ce436, 2026-09-11): khách gõ "Có lốp mít lắp
+  // cho xe 10 không bạn ơi?" — "mít" là alias MICHELIN CÓ SẴN trong chính
+  // system prompt (kèm ví dụ gần như y hệt câu này), nhưng AI vẫn trả nhầm
+  // selected_brands=['SAILUN'] — hoàn toàn không khớp từ nào khách gõ, AI
+  // KHÔNG tuân thủ prompt dù hướng dẫn đã rất rõ ràng. resolveBrandAliasFromText
+  // quét userInput theo bảng alias CỐ ĐỊNH (đồng bộ nội dung với system prompt,
+  // không đoán ngoài whitelist) — có kết quả thì GHI ĐÈ decision.updates.selected_brands,
+  // đáng tin hơn quyết định AI khi 2 bên mâu thuẫn (cùng triết lý các fix vị
+  // trí trước đó: có tín hiệu deterministic đủ chắc thì không cần tin AI).
+  // CHỈ ghi đè khi resolve được — brand mô tả định tính ("hàng tốt", "chất
+  // lượng cao"...) hoặc câu không nhắc brand nào vẫn để nguyên quyết định AI.
+  const brandsFromRaw = resolveBrandAliasFromText(userInput)
+  if (brandsFromRaw.length > 0) {
+    decision.updates.selected_brands = brandsFromRaw
+  }
+
   if (
     decision.updates.brand_tier !== undefined &&
     decision.updates.brand_tier !== null

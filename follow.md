@@ -322,3 +322,40 @@ User gửi ảnh FB thật: khách nhắn **"Có lốp mít lắp cho xe 10 khô
 Field debug hiện đang ở trạng thái **tạm/test** (comment `GIẢI TRÌNH CĂN CỨ (BẮT BUỘC, DEBUG — tạm thời đang test độ chính xác)` trong cả 2 prompt) — chưa dùng làm filter tự động, chỉ log ra console (`[webGatherTurn] DEBUG ...` / `[AI v3GatherTurn] DEBUG ...`) để theo dõi thêm trước khi quyết định bước tiếp theo (vd nâng ngưỡng confidence tối thiểu, hoặc giữ nguyên chỉ để debug thủ công).
 
 `npx tsc --noEmit` sạch cả 2 repo.
+
+## 18. Test case toàn bộ hãng đã khai báo + phát hiện 3 false-positive alias (2026-09-11)
+
+Theo yêu cầu user ("cần xây dựng test case toàn bộ hãng đã được khai báo") sau khi xác nhận multi-brand ("mít, sai lun") hoạt động đúng — xây bộ test EXHAUSTIVE cho toàn bộ `BRAND_ALIASES`, không phải chỉ vài case rời rạc như trước.
+
+**Tách code trước khi test**: `BRAND_ALIASES`/`resolveBrandAliasFromText` (trong `db.ts`/`tireDb.ts`) phụ thuộc gián tiếp Supabase/`server-only` (import chain của cả file) → không test độc lập được nếu không setup harness nặng (env, DB). Tách riêng sang module THUẦN, zero-dependency:
+- FB: `src/fb/brandAliases.ts` (mới) — `db.ts` giờ chỉ `export { resolveBrandAliasFromText } from './brandAliases'` (giữ nguyên import path cho `v3/flow-handler.ts`).
+- Web: `src/libs/chat/brandAliases.ts` (mới) — `tireDb.ts` re-export tương tự (giữ nguyên cho `stateMachine.ts`).
+
+**Test suite** (`src/fb/__tests__/brandAliases.test.ts` + `src/libs/chat/__tests__/brandAliases.test.ts`, port y hệt nhau, không dùng framework — repo chưa có jest/vitest, tự chấm pass/fail + `process.exit(1)`):
+1. Mỗi alias khai báo (21 hãng) → tự resolve đúng, cả dạng thô lẫn nhúng câu khách hàng mẫu.
+2. Biến thể CÓ DẤU thật theo đúng ví dụ phát âm trong system prompt (quan trọng hơn test alias thô vì đó là input thật khách sẽ gõ).
+3. Đa hãng trong 1 câu (regression cho bug mục 17).
+4. **FALSE-POSITIVE PROBE** — câu đời thường KHÔNG nhắc hãng nào nhưng nghi ngờ trùng ngẫu nhiên với 1 alias.
+5. Audit chéo danh sách brand trong PROMPT (ai-helper.ts/webGatherTurn.ts) vs `BRAND_ALIASES` (code).
+
+**Kết quả lần chạy đầu — phát hiện 3 false-positive THẬT** (đã fix, bỏ khỏi bảng alias ở cả 2 repo):
+- `CONTINENTAL` alias `"con ti"` ↔ trùng **"còn tí"** — cụm RẤT phổ biến trong chat tiếng Việt (vd "chờ con tí nhé"). Giữ lại `"continental"`/`"conti"` (an toàn, không phải từ tiếng Việt thật).
+- `KUMHO` alias `"cum ho"` ↔ trùng **"cụm hộ"** (cụm dân cư) — rủi ro cao vì bot hay hỏi khu vực/địa chỉ, đúng lúc dễ gặp cụm này. Giữ lại `"kumho"`/`"kum ho"` (khác phụ âm đầu, không trùng từ thật).
+- `LAUFENN` alias `"lau phan"` ↔ trùng **"lau phần"** (vd "lau phần nào trước"). Giữ lại `"laufenn"`/`"lau fen"`.
+
+Sau fix: **182/182 pass** cả 2 repo (đã tự sửa lại 1 test case của chính mình bị viết sai — câu ví dụ ADVENZA lỡ nhắc kèm "Kumho" nên đúng ra PHẢI trả cả 2 brand, không phải lỗi code).
+
+**Audit chéo phát hiện thêm (CHƯA fix — cần user xác nhận, không tự đoán vì liên quan dữ liệu kinh doanh thật)**:
+- `ADVANCE` có trong PROMPT (dòng liệt kê hãng + alias phonetic "át văn"/"ad van") nhưng **THIẾU hẳn trong `BRAND_ALIASES` (code)** — chỉ có `ADVENZA` (hãng khác, đã có note phân biệt "KHÁC Kumho" trong code). Không rõ `ADVANCE` và `ADVENZA` có phải cùng 1 hãng viết khác nhau hay 2 hãng thật sự khác nhau — cần user xác nhận trước khi thêm alias.
+- `DAYTON`, `AMERICAN` có trong `BRAND_ALIASES` (code, từ đợt cập nhật phân khúc mục 15) nhưng **KHÔNG có dòng alias phonetic tương ứng trong PROMPT** — hiện chỉ nhận diện được khi khách gõ ĐÚNG tên "Dayton"/"American", chưa có phiên âm dự phòng nếu khách gõ sai/phát âm lệch.
+
+Cách chạy lại test (không cần .env/DB, chạy độc lập):
+```
+# FB (module=commonjs sẵn trong tsconfig, chạy thẳng được)
+cd fb-webhook-server && npx ts-node --transpile-only src/fb/__tests__/brandAliases.test.ts
+
+# Web (tsconfig gốc dùng module=esnext/bundler, cần tsconfig.harness.json — đã có sẵn ở repo root)
+npx ts-node --project tsconfig.harness.json --transpile-only src/libs/chat/__tests__/brandAliases.test.ts
+```
+
+`npx tsc --noEmit` sạch cả 2 repo.

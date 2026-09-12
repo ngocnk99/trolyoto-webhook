@@ -7,6 +7,7 @@ import { SearchAliasController } from './search/search-alias.controller'
 import { TilesController } from './tiles/tiles.controller'
 import { MetaCapiController } from './meta/capi.controller'
 import { SearchEmbeddingController } from './search/search-embedding.controller'
+import { TelegramNotifyController } from './notify/telegram-notify.controller'
 
 @Module({
   controllers: [
@@ -17,7 +18,8 @@ import { SearchEmbeddingController } from './search/search-embedding.controller'
     SearchAliasController,
     TilesController,
     MetaCapiController,
-    SearchEmbeddingController
+    SearchEmbeddingController,
+    TelegramNotifyController
   ]
 })
 export class AppModule {}

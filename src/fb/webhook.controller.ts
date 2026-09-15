@@ -12,7 +12,10 @@ import type { Request, Response } from 'express'
 import { RawBodyRequest } from '@nestjs/common'
 import * as crypto from 'crypto'
 import { handleMessengerEvent } from './flow-handler'
-import { handleMessengerEventV3 } from './v3/flow-handler'
+import {
+  handleMessengerEventV3,
+  handleStandbyAdsReferralV3
+} from './v3/flow-handler'
 import { handleMessengerEventProduction } from './production/flow-handler'
 import { runWithPsidLock } from './psid-mutex'
 import type { MessengerWebhookBody, MessengerEvent } from './types'
@@ -173,12 +176,15 @@ export class WebhookController {
       }
 
       // STANDBY events — bot KHÔNG giữ thread control. PROD vẫn xử lý (qua
-      // mutex) để log + detect CSKH echo. V2/V3 dev pages chỉ log.
+      // mutex) để log + detect CSKH echo. V3 CHỈ xử lý riêng case ads/optin
+      // (reset pause — xem handleStandbyAdsReferralV3), không xử lý gì khác
+      // (không có thread control để reply). V2 dev pages chỉ log.
       const standby = entry.standby ?? []
       for (const event of standby) {
         const summary = {
           psid: event.sender?.id,
           referral: event.referral,
+          message_referral: event.message?.referral,
           optin: event.optin,
           postback: event.postback,
           text: event.message?.text,
@@ -194,6 +200,13 @@ export class WebhookController {
           if (!psid) continue
           await runWithPsidLock(psid, () =>
             handleMessengerEventProduction(event, entry.id, true)
+          )
+        }
+        if (isV3) {
+          const psid = customerPsid(event)
+          if (!psid) continue
+          await runWithPsidLock(psid, () =>
+            handleStandbyAdsReferralV3(event, entry.id)
           )
         }
       }

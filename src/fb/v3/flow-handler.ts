@@ -3482,6 +3482,69 @@ async function handlePhoneInput(
   })
 }
 
+/**
+ * Ads/optin (khách bấm quảng cáo hoặc m.me link) LUÔN reset trạng thái pause
+ * — bất kể session cũ đang paused hay không, KHÔNG chờ 8h tự hết hạn (yêu
+ * cầu user, đã từng thống nhất trước đó). Bug thật (2026-09-15, ảnh chụp
+ * thật): khách bấm ads trong lúc session cũ đang PAUSED_BY_CSKH → referral
+ * event bị pause-guard chặn im lặng → tin khách nhắn NGAY SAU ĐÓ
+ * ("215/75/16 bst") cũng bị chặn theo (dù Meta tự động gửi welcome message
+ * riêng qua Ads Manager instant-reply, khiến nhìn như bot đã phản hồi — thực
+ * ra server chưa hề xử lý gì).
+ *
+ * Dùng chung cho CẢ 2 đường event có thể đến:
+ *  - `entry.messaging[]` (bot đang giữ thread) → gọi từ `handleMessengerEventV3Inner`.
+ *  - `entry.standby[]` (app khác — vd Pancake — đang giữ thread lúc đó) → gọi
+ *    từ `handleStandbyAdsReferralV3()`, export riêng cho webhook.controller.ts.
+ *    Payload thật cho thấy referral có thể GẮN VÀO `message.referral` (không
+ *    phải chỉ top-level `event.referral`) khi khách bấm ads RỒI gõ tin luôn
+ *    trong cùng 1 event — xem field `message.referral` mới thêm ở types.ts.
+ *
+ * CHỈ reset trạng thái pause trong DB — KHÔNG chiếm lại thread (không gọi
+ * `takeThreadControl`), KHÔNG tự trả lời tin nhắn kèm theo trong event
+ * standby đó (nếu app khác đang giữ thread, bot không gửi API được). Tin
+ * nhắn khách gửi ở lần TIẾP THEO — khi thread đã thuộc về bot bình thường —
+ * mới được bot xử lý, nhưng nhờ pause đã reset sẵn nên không còn bị im lặng.
+ */
+export async function resetPauseIfAdsReferral(
+  psid: string,
+  pageId: string,
+  logTag: string
+): Promise<void> {
+  const latestForAdsReset = await getLatestSession(psid, pageId)
+  if (!latestForAdsReset?.is_paused_by_cskh) return
+  await updateSession(latestForAdsReset.id, {
+    is_active: false,
+    step: 'COMPLETED',
+    is_paused_by_cskh: false,
+    paused_by_cskh_at: null
+  })
+  console.log(
+    `[${logTag}] ads/optin đến trong lúc session ${latestForAdsReset.id} đang PAUSED_BY_CSKH → reset pause`
+  )
+}
+
+/**
+ * Entry point riêng cho `entry.standby[]` — gọi từ webhook.controller.ts.
+ * CHỈ xử lý đúng 1 việc: nếu event mang referral (ads/m.me), reset pause cho
+ * PSID đó. KHÔNG xử lý gì khác (không tạo session, không AI gather, không
+ * reply) — vì bot KHÔNG giữ thread control lúc này, mọi cố gắng trả lời sẽ
+ * fail. Xem docstring đầy đủ ở `resetPauseIfAdsReferral()`.
+ */
+export async function handleStandbyAdsReferralV3(
+  event: MessengerEvent,
+  pageId: string
+): Promise<void> {
+  if (!event.optin && !event.referral && !event.message?.referral) return
+  const psid = event.sender?.id ?? ''
+  if (!psid || psid === pageId) return
+  try {
+    await resetPauseIfAdsReferral(psid, pageId, 'V3 standby')
+  } catch (e) {
+    console.error('[V3 standby] resetPauseIfAdsReferral error:', e)
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Main dispatcher
 // ════════════════════════════════════════════════════════════════════════════
@@ -3700,7 +3763,8 @@ async function handleMessengerEventV3Inner(
       hasAttachment ||
       event.postback ||
       event.optin ||
-      event.referral
+      event.referral ||
+      event.message?.referral
     )
     if (!isActionable) return
 
@@ -3728,27 +3792,10 @@ async function handleMessengerEventV3Inner(
     }
 
     // Ads/optin (khách bấm quảng cáo hoặc m.me link) LUÔN reset trạng thái
-    // pause — bất kể session cũ đang paused hay không, KHÔNG chờ 8h tự hết
-    // hạn (yêu cầu user, đã từng thống nhất trước đó). Bug thật (2026-09-15,
-    // ảnh chụp thật): khách bấm ads trong lúc session cũ đang PAUSED_BY_CSKH
-    // → referral event bị pause-guard bên dưới chặn im lặng → tin khách nhắn
-    // NGAY SAU ĐÓ ("215/75/16 bst") cũng bị chặn theo (dù Meta tự động gửi
-    // welcome message riêng qua Ads Manager instant-reply, khiến nhìn như bot
-    // đã phản hồi — thực ra server chưa hề xử lý gì). Đặt TRƯỚC mọi
-    // pause-guard khác để guard bên dưới thấy đúng trạng thái đã reset.
-    if (event.optin || event.referral) {
-      const latestForAdsReset = await getLatestSession(psid, pageId)
-      if (latestForAdsReset?.is_paused_by_cskh) {
-        await updateSession(latestForAdsReset.id, {
-          is_active: false,
-          step: 'COMPLETED',
-          is_paused_by_cskh: false,
-          paused_by_cskh_at: null
-        })
-        console.log(
-          `[V3 entry] ads/optin đến trong lúc session ${latestForAdsReset.id} đang PAUSED_BY_CSKH → reset pause, sẽ tạo session mới`
-        )
-      }
+    // pause — xem docstring đầy đủ ở `resetPauseIfAdsReferral()`. Đặt TRƯỚC
+    // mọi pause-guard khác để guard bên dưới thấy đúng trạng thái đã reset.
+    if (event.optin || event.referral || event.message?.referral) {
+      await resetPauseIfAdsReferral(psid, pageId, 'V3 entry')
     }
 
     let session: FbSession | null = await getActiveSession(psid, pageId)

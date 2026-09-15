@@ -215,6 +215,12 @@ export interface MessengerEvent {
     quick_reply?: { payload: string }
     is_echo?: boolean
     app_id?: number
+    /** Referral GẮN THẲNG vào message (khác `event.referral` ở top-level) —
+     *  FB gửi kiểu này khi khách bấm ads RỒI gõ tin luôn trong cùng 1 event
+     *  (thường đến qua `entry.standby[]` nếu app khác đang giữ thread lúc
+     *  đó). Cùng shape với `event.referral` bên dưới — xem
+     *  `getEventReferral()` trong v3/flow-handler.ts (đọc CẢ 2 vị trí). */
+    referral?: MessengerEvent['referral']
     attachments?: Array<{
       type:
         | 'image'

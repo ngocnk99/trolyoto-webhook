@@ -381,3 +381,24 @@ Fix: thêm block XỬ LÝ TRƯỚC mọi pause-guard — khi `event.optin || eve
 Verify: unit-check `isPauseExpired` với 4 case (not-paused / paused+null / paused+fresh / paused+stale-9h) — cả 4 đúng kỳ vọng. `npx tsc --noEmit` sạch.
 
 **Lưu ý cho user**: fix `isPauseExpired` chỉ tự chữa cho session khi khách nhắn TIẾP THEO — không chủ động "đánh thức" 4134 khách đang kẹt sẵn nếu họ không nhắn lại nữa. Nếu muốn chủ động unpause hết ngay bây giờ (để CSKH/marketing remarketing lại mà không lo bot im lặng), cần 1 lệnh UPDATE bulk riêng trên DB — CHƯA chạy, cần user xác nhận trước (thao tác ghi hàng loạt lên DB production).
+
+## 20. Case ads đến qua `entry.standby[]` cũng phải reset pause + xác định lại đúng handler thật (2026-09-15, cùng ngày)
+
+User gửi RAW payload webhook thật của đúng case "215/75/16 bst" (mục 19) — phát hiện 2 điều quan trọng mà lúc đầu tôi phân tích SAI:
+
+1. **Event đến qua `entry.standby[]`, KHÔNG PHẢI `entry.messaging[]`** — tức là lúc đó BOT KHÔNG giữ thread control (app khác, ví dụ Pancake, đang là Primary Receiver). Fix mục 19 (block reset-pause tôi thêm vào `handleMessengerEventV3Inner`) nằm trong nhánh xử lý `entry.messaging[]` — KHÔNG BAO GIỜ chạy tới cho event dạng này.
+2. **`page_id` của session (`507700655762341`) thực ra là `FACEBOOK_PAGE_ID_PRODUCT`, KHÔNG PHẢI `FACEBOOK_PAGE_ID_V3`** (`100784872170719`) — session này do `production/flow-handler.ts` xử lý, không phải `v3/flow-handler.ts` như tôi nhầm tưởng suốt mục 19. Do 2 handler dùng chung nhiều hàm/wording rất giống nhau (Production gọi `handleMessengerEventV3` ở 1 số nhánh) nên dễ nhầm.
+3. **Referral GẮN VÀO `message.referral`** (không phải top-level `event.referral`) khi khách bấm ads RỒI gõ tin luôn trong cùng 1 event — field này TRƯỚC ĐÓ chưa có trong type `MessengerEvent.message`, mọi chỗ check `event.optin || event.referral` đều BỎ SÓT case này.
+
+**Fix đầy đủ**:
+- `types.ts`: thêm `message.referral` (cùng shape với `event.referral`).
+- `v3/flow-handler.ts`: tách logic reset-pause thành hàm dùng chung `resetPauseIfAdsReferral(psid, pageId, logTag)` (export), điều kiện trigger mở rộng thành `event.optin || event.referral || event.message?.referral`. Thêm `isActionable` cũng nhận `message.referral`.
+- `v3/flow-handler.ts`: thêm `handleStandbyAdsReferralV3(event, pageId)` (export) — entry point RIÊNG cho `entry.standby[]`, CHỈ làm đúng 1 việc (reset pause nếu có ads/optin), KHÔNG cố xử lý/trả lời gì khác (bot không có thread control lúc này, mọi API gửi tin sẽ fail).
+- `webhook.controller.ts`: standby loop giờ gọi `handleStandbyAdsReferralV3` cho page V3 (trước đây V3 KHÔNG xử lý standby event nào cả, chỉ log).
+- `production/flow-handler.ts`: import + gọi `resetPauseIfAdsReferral()` NGAY ĐẦU `handleMessengerEventProduction` (trước mọi nhánh khác, áp dụng cho CẢ standby lẫn messaging) — đây mới là handler THẬT xử lý case bug gốc.
+
+Verify: replay ĐÚNG payload raw JSON user gửi (standby, `message.referral`) qua `handleStandbyAdsReferralV3` (test session riêng, is_paused_by_cskh=true trước) → PASS, reset đúng về `is_paused_by_cskh=false`. Replay lại y hệt qua `handleMessengerEventProduction(event, pageId, isStandby=true)` (handler thật xử lý page này) → PASS. `npx tsc --noEmit` sạch.
+
+**Vì sao KHÔNG chủ động `takeThreadControl`/trả lời ngay trong standby event đó**: bot không giữ thread lúc này (app khác đang Primary) — gọi send API chắc chắn fail. Chỉ reset đúng trạng thái pause trong DB; tin nhắn khách gửi ở lần tiếp theo (khi thread đã về tay bot theo cơ chế handover bình thường của Production — xem nhánh `isOutOfHours`/`takeThreadControl` sẵn có) sẽ được xử lý bình thường, không còn bị chặn oan bởi pause cũ.
+
+**Chưa chạy**: lệnh UPDATE bulk unpause 4134 session cũ (mục 19) — bị chặn bởi permission classifier khi thử chạy trực tiếp (ghi hàng loạt lên DB production), cần user tự chạy hoặc cấp quyền Bash tương ứng.

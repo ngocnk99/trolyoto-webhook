@@ -36,7 +36,8 @@ import type {
 import {
   handleMessengerEventV3,
   dispatchAndShowResults,
-  hasBrandField
+  hasBrandField,
+  resetPauseIfAdsReferral
 } from '../v3/flow-handler'
 import {
   getActiveSession,
@@ -246,6 +247,21 @@ export async function handleMessengerEventProduction(
   const isWhitelistedPsid = PROD_TEST_PSIDS.has(psid)
   const inWindow = isInProductionWindow() // true = giờ bot (18:00-08:30)
   const isOutOfHours = inWindow // alias for clarity: bot active outside business hours
+
+  // ── (-1) Ads/optin (khách bấm quảng cáo hoặc m.me link) LUÔN reset trạng
+  // thái pause ngay — không chờ 8h tự hết hạn. Bug thật (2026-09-15, ảnh +
+  // payload thật): khách bấm ads → referral GẮN vào `message.referral` (đến
+  // qua entry.standby[] vì Pancake đang giữ thread) → session cũ đang
+  // PAUSED_BY_CSKH khiến nhánh (3) Standby ở dưới thấy `is_paused_by_cskh`
+  // vẫn true → chỉ log, không take_thread_control, không reply — dù khách
+  // vừa bấm ads. CHỈ áp dụng cho event THẬT từ khách (không phải echo).
+  // Xem docstring đầy đủ ở `resetPauseIfAdsReferral()` (v3/flow-handler.ts).
+  if (
+    !isEcho &&
+    (event.optin || event.referral || event.message?.referral)
+  ) {
+    await resetPauseIfAdsReferral(psid, pageId, 'PROD entry')
+  }
 
   // ── (0) hop_context: bot vừa nhận thread từ Pancake → mark owns + log ────
   //  Đây là signal mạnh: dù event đến qua messaging[] hay standby[], nếu

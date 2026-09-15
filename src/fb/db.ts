@@ -120,21 +120,27 @@ const IMAGE_BASE_URL =
  * @param skip      Default 0
  * @param limit     Default 3
  */
-export async function fetchTireCatalog(params: {
-  tireSize: string
-  tireBrand: string
-  skip?: number
-  limit?: number
-}): Promise<{
+/**
+ * Bỏ hậu tố TẢI TRỌNG (vd "C" trong "195_70R15C") khỏi 1 sizeKey đã convert
+ * — trả về sizeKey GỐC (không hậu tố) nếu có hậu tố, `null` nếu không.
+ * Rim luôn là 2 CHỮ SỐ nên hậu tố chữ cuối chuỗi CHẮC CHẮN không phải 1 phần
+ * kích thước thật — an toàn để tách riêng cho fallback.
+ */
+function stripSizeSuffix(sizeKey: string): string | null {
+  const m = sizeKey.match(/^(.*R\d{2})[A-Z]{1,2}$/)
+  return m ? m[1] : null
+}
+
+async function fetchTireCatalogExact(
+  sizeKey: string,
+  tireBrand: string,
+  skip: number,
+  limit: number
+): Promise<{
   items: TireCatalogItem[]
   productadminIds: string[]
   total: number
 }> {
-  const { tireSize, tireBrand, skip = 0, limit = 3 } = params
-  const sizeKey = toSizeKey(tireSize) // '185/65R15' → '185_65R15'
-
-  if (!sizeKey) return { items: [], productadminIds: [], total: 0 }
-
   let query = supabaseAmin
     .from('productadmin')
     .select(
@@ -173,6 +179,40 @@ export async function fetchTireCatalog(params: {
   }
 }
 
+export async function fetchTireCatalog(params: {
+  tireSize: string
+  tireBrand: string
+  skip?: number
+  limit?: number
+}): Promise<{
+  items: TireCatalogItem[]
+  productadminIds: string[]
+  total: number
+}> {
+  const { tireSize, tireBrand, skip = 0, limit = 3 } = params
+  const sizeKey = toSizeKey(tireSize) // '185/65R15' → '185_65R15'
+
+  if (!sizeKey) return { items: [], productadminIds: [], total: 0 }
+
+  const exact = await fetchTireCatalogExact(sizeKey, tireBrand, skip, limit)
+  if (exact.items.length > 0) return exact
+
+  // Fallback: size có hậu tố TẢI TRỌNG (vd "195_70R15C") nhưng không ra kết
+  // quả → thử lại với size GỐC không hậu tố ("195_70R15") — theo yêu cầu
+  // user (2026-09-15, sau bug session ae22724b): "gửi 195/70R15C, nếu không
+  // có thì fallback về 195/70R15". KHÔNG áp dụng chiều ngược lại (khách gõ
+  // size thường → KHÔNG tự ý nới lên bản "C", vì "C" là lốp thương mại/xe
+  // tải nhẹ, kích thước vật lý khác — dễ bán nhầm loại lốp cho khách xe con).
+  const baseSizeKey = stripSizeSuffix(sizeKey)
+  if (baseSizeKey) {
+    console.log(
+      `[DB fetchTireCatalog] size="${sizeKey}" không có kết quả → fallback size gốc "${baseSizeKey}"`
+    )
+    return await fetchTireCatalogExact(baseSizeKey, tireBrand, skip, limit)
+  }
+  return exact
+}
+
 // ── 1b. getMinPriceForTireSize ────────────────────────────────────────────────
 
 /**
@@ -184,13 +224,10 @@ export async function fetchTireCatalog(params: {
  * @param tireBrand Optional brand filter (vd: 'MICHELIN|HANKOOK'); default lấy tất cả.
  * @returns Giá đ (>0) hoặc `null` nếu DB không có sản phẩm hợp lệ.
  */
-export async function getMinPriceForTireSize(
-  tireSize: string,
+async function getMinPriceForSizeKeyExact(
+  sizeKey: string,
   tireBrand?: string
 ): Promise<number | null> {
-  const sizeKey = toSizeKey(tireSize)
-  if (!sizeKey) return null
-
   let q = supabaseAmin
     .from('productadmin')
     .select('lastprice')
@@ -217,6 +254,21 @@ export async function getMinPriceForTireSize(
   if (!first) return null
   const v = num(first.lastprice)
   return v > 0 ? v : null
+}
+
+export async function getMinPriceForTireSize(
+  tireSize: string,
+  tireBrand?: string
+): Promise<number | null> {
+  const sizeKey = toSizeKey(tireSize)
+  if (!sizeKey) return null
+
+  const exact = await getMinPriceForSizeKeyExact(sizeKey, tireBrand)
+  if (exact !== null) return exact
+
+  // Fallback về size gốc không hậu tố "C" — đồng bộ với fetchTireCatalog.
+  const baseSizeKey = stripSizeSuffix(sizeKey)
+  return baseSizeKey ? await getMinPriceForSizeKeyExact(baseSizeKey, tireBrand) : null
 }
 
 // ── 1c. getProductBriefById ───────────────────────────────────────────────────

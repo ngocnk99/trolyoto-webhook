@@ -422,3 +422,13 @@ Xác nhận bằng data catalog thật (`productadmin`): size `195_70R15C` có *
 
 Verify: gọi THẬT `v3GatherTurn`/`webGatherTurn` với câu gốc "Maxixis 195R/70c/15 giá bao nhiêu shop" — TRƯỚC fix: tire_size="195/70R15" (mất C) cả 2 bot. SAU fix: tire_size="195/70R15C" đúng, brand=MAXXIS đúng, 3/3 lần chạy mỗi bot. Unit-test riêng `parseExplicitTireSize` với 7 case (bao gồm case tránh false-positive) — 7/7 pass. `npx tsc --noEmit` sạch cả 2 repo.
 
+**Lớp bảo vệ thứ 2 (theo yêu cầu user, cùng ngày)**: dù đã fix root cause (AI không còn mất "C"), user yêu cầu thêm 1 lớp fallback Ở TẦNG DB — "nếu khách gửi lốp 195/70R15C thì search đúng 195/70R15C, nếu không có thì fallback về 195/70R15" — phòng ngừa các case tương lai khác (vd AI vẫn lệch, hoặc size "C" hợp lệ nhưng khu vực đó catalog thật sự KHÔNG có hàng "C" mà chỉ có bản thường).
+
+Fix ở ĐÚNG 1 ĐIỂM THẤP NHẤT (tầng query SIZE trực tiếp), để MỌI caller phía trên (fetchSpGaraCards, fetchPriorityGaraCards, mọi cascade/multi-brand) tự động hưởng lợi, không cần sửa từng nơi gọi:
+- FB: `fetchTireCatalog()` (tách `fetchTireCatalogExact()` nội bộ) + `getMinPriceForTireSize()` (tách `getMinPriceForSizeKeyExact()`) trong `db.ts`. Thêm hàm `stripSizeSuffix(sizeKey)` dùng chung.
+- Web: `fetchProductAdminsByTireTag()` (tách `fetchProductAdminsBySizeKeyExact()`) trong `tireDb.ts` — hàm này là gốc của CẢ `fetchTireCatalogForChat` lẫn `fetchDistinctBrandsForTireSize`, sửa 1 chỗ lợi cả 2. `stripSizeSuffix()` port y hệt FB.
+
+Logic: query size CHÍNH XÁC trước (giữ "C" nếu khách gõ có "C") → 0 kết quả VÀ size có hậu tố chữ (rim luôn 2 chữ số nên hậu tố cuối chuỗi chắc chắn không phải 1 phần size thật) → query LẠI với size GỐC bỏ hậu tố. CHỈ 1 CHIỀU (size có "C" fallback xuống KHÔNG "C") — KHÔNG làm chiều ngược lại (khách gõ size thường → không tự nới lên bản "C", vì đó là loại lốp vật lý khác — thương mại/xe tải nhẹ — dễ bán nhầm cho khách xe con).
+
+Verify (cả 2 repo, DB thật): (1) "195/70R15C" (9 SP thật) → trả đúng 9 SP, KHÔNG kích hoạt fallback (đã có kết quả ở query đầu). (2) "195/70R15" (1 SP Toyo riêng, không liên quan) → trả đúng 1 SP đó, không bị fallback ảnh hưởng ngược. (3) "195/70R15X" (size bịa, không tồn tại, nhưng bản gốc "195/70R15" có 1 SP) → kích hoạt đúng fallback, trả về đúng SP Toyo đó. `npx tsc --noEmit` sạch cả 2 repo.
+

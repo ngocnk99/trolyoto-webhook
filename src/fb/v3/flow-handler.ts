@@ -3660,12 +3660,21 @@ async function handleMessengerEventV3Inner(
       // pause CŨ đã hết hạn (xem CSKH_PAUSE_EXPIRY_MS), CSKH reply THÊM lần
       // nữa phải tính là 1 lần pause MỚI (đồng hồ 8h reset lại), không bị bỏ
       // sót chỉ vì session cũ đang is_active=false.
+      //
+      // LUÔN gọi pauseSessionByCskh khi có echo CSKH thật (BỎ điều kiện
+      // "chỉ khi đang chưa pause") — bug thật (2026-09-15): điều kiện cũ chỉ
+      // pause ở lần CSKH ĐẦU TIÊN, các lần CSKH reply tiếp theo trong cùng
+      // đợt hỗ trợ bị BỎ QUA hoàn toàn (không refresh `paused_by_cskh_at`),
+      // khiến đồng hồ 8h tính từ tin CSKH ĐẦU TIÊN thay vì tin GẦN NHẤT — có
+      // thể hết hạn giữa lúc CSKH vẫn đang active hỗ trợ khách. Gọi lại mỗi
+      // lần đều AN TOÀN (pauseSessionByCskh chỉ ghi đè timestamp, không có
+      // side-effect gì khác khi session đã paused sẵn).
       const recipientPsid = event.recipient.id
       const activeSession = await resolveEffectiveSession(
         (await getActiveSession(recipientPsid, pageId)) ??
           (await getLatestSession(recipientPsid, pageId))
       )
-      if (activeSession && !activeSession.is_paused_by_cskh) {
+      if (activeSession) {
         cancelTimer(activeSession.id, 'v3-cskh-takeover')
         await pauseSessionByCskh(activeSession.id)
         appendConversationLog(activeSession.id, {
@@ -3716,6 +3725,30 @@ async function handleMessengerEventV3Inner(
         'Em đã reset cuộc trò chuyện ạ 🔄\n\nAnh/chị cho em biết kích cỡ lốp + thương hiệu mong muốn nhé 😊'
       )
       return
+    }
+
+    // Ads/optin (khách bấm quảng cáo hoặc m.me link) LUÔN reset trạng thái
+    // pause — bất kể session cũ đang paused hay không, KHÔNG chờ 8h tự hết
+    // hạn (yêu cầu user, đã từng thống nhất trước đó). Bug thật (2026-09-15,
+    // ảnh chụp thật): khách bấm ads trong lúc session cũ đang PAUSED_BY_CSKH
+    // → referral event bị pause-guard bên dưới chặn im lặng → tin khách nhắn
+    // NGAY SAU ĐÓ ("215/75/16 bst") cũng bị chặn theo (dù Meta tự động gửi
+    // welcome message riêng qua Ads Manager instant-reply, khiến nhìn như bot
+    // đã phản hồi — thực ra server chưa hề xử lý gì). Đặt TRƯỚC mọi
+    // pause-guard khác để guard bên dưới thấy đúng trạng thái đã reset.
+    if (event.optin || event.referral) {
+      const latestForAdsReset = await getLatestSession(psid, pageId)
+      if (latestForAdsReset?.is_paused_by_cskh) {
+        await updateSession(latestForAdsReset.id, {
+          is_active: false,
+          step: 'COMPLETED',
+          is_paused_by_cskh: false,
+          paused_by_cskh_at: null
+        })
+        console.log(
+          `[V3 entry] ads/optin đến trong lúc session ${latestForAdsReset.id} đang PAUSED_BY_CSKH → reset pause, sẽ tạo session mới`
+        )
+      }
     }
 
     let session: FbSession | null = await getActiveSession(psid, pageId)

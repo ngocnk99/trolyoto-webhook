@@ -331,12 +331,15 @@ export async function handleMessengerEventProduction(
       )
     } else {
       console.log(
-        `[PROD] CSKH echo app_id=${appId} psid=${psid} session=${session.id} đã paused → chỉ log thêm`
+        `[PROD] CSKH echo app_id=${appId} psid=${psid} session=${session.id} đã paused → refresh paused_by_cskh_at`
       )
     }
-    if (!session.is_paused_by_cskh) {
-      await pauseSessionByCskh(session.id)
-    }
+    // LUÔN gọi pauseSessionByCskh (bỏ điều kiện "chỉ khi chưa pause") — bug
+    // thật (2026-09-15): điều kiện cũ chỉ pause ở lần CSKH ĐẦU TIÊN, các lần
+    // reply tiếp theo trong cùng đợt hỗ trợ không refresh `paused_by_cskh_at`
+    // → đồng hồ 8h tính từ tin CSKH ĐẦU TIÊN thay vì GẦN NHẤT, có thể hết hạn
+    // giữa lúc CSKH vẫn đang active. Xem session.ts isPauseExpired + follow.md.
+    await pauseSessionByCskh(session.id)
     // Log nội dung CSKH đã gửi vào conversation_log để có ngữ cảnh đầy đủ
     const logMsg: ConversationMessage = {
       role: 'bot',

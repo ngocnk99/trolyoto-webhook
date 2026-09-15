@@ -188,10 +188,28 @@ export async function completeSession(sessionId: string): Promise<void> {
  */
 export const CSKH_PAUSE_EXPIRY_MS = 8 * 60 * 60 * 1000 // 8 tiếng
 
+/**
+ * Bug thật (session 7cc79fdf-7dff-4e6d-814c-38f87565137a, phát hiện
+ * 2026-09-15 — khách gõ "215/75/16 bst" nhưng bot im lặng vĩnh viễn): trước
+ * khi field `paused_by_cskh_at` được thêm (commit 976fd0e, 2026-08-06), các
+ * session đang `is_paused_by_cskh=true` KHÔNG có timestamp này (null). Vì
+ * hàm cũ coi "thiếu timestamp" = "return false" (chưa hết hạn) → các session
+ * đó KHÔNG BAO GIỜ được coi là hết hạn → không bao giờ tự unpause qua
+ * `resolveEffectiveSession` → bot im lặng VĨNH VIỄN với khách, dù đã hơn 8h,
+ * hơn 8 NGÀY, hay hơn 8 TUẦN. Audit DB tại thời điểm phát hiện: 4134/5836
+ * session đang paused (~71%) bị dính lỗi kẹt vĩnh viễn này.
+ *
+ * Fix: thiếu timestamp → coi là ĐÃ HẾT HẠN (return true) thay vì "chưa hết
+ * hạn". An toàn hơn nhiều so với giữ nguyên "im lặng vô thời hạn" — pause
+ * vốn chỉ nhằm mục đích TẠM THỜI nhường quyền cho CSKH, không phải khoá vĩnh
+ * viễn; thiếu timestamp là lỗ hổng dữ liệu, không phải tín hiệu "pause mãi
+ * mãi" cố ý. Session sẽ tự unpause ngay lần khách nhắn tiếp theo.
+ */
 export function isPauseExpired(
   session: Pick<FbSession, 'is_paused_by_cskh' | 'paused_by_cskh_at'>
 ): boolean {
-  if (!session.is_paused_by_cskh || !session.paused_by_cskh_at) return false
+  if (!session.is_paused_by_cskh) return false
+  if (!session.paused_by_cskh_at) return true
   return (
     Date.now() - new Date(session.paused_by_cskh_at).getTime() >
     CSKH_PAUSE_EXPIRY_MS

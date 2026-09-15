@@ -361,3 +361,23 @@ npx ts-node --project tsconfig.harness.json --transpile-only src/libs/chat/__tes
 ```
 
 `npx tsc --noEmit` sạch cả 2 repo.
+
+## 19. Bot im lặng vĩnh viễn sau CSKH pause — 4134 session kẹt + fix reset pause khi có ads (2026-09-15)
+
+User báo qua ảnh chụp thật: khách nhắn **"215/75/16 bst"** sau khi bấm quảng cáo, bot không trả lời gì. Tra đúng session (`7cc79fdf-7dff-4e6d-814c-38f87565137a`, psid `27633990772923963`) → xác nhận `is_paused_by_cskh=true`, `paused_by_cskh_at=null`.
+
+**Root cause 1 — bug nghiêm trọng, ảnh hưởng diện rộng**: field `paused_by_cskh_at` (cơ chế tự unpause sau `CSKH_PAUSE_EXPIRY_MS`=8h, xem mục lịch sử session.ts) được thêm ở commit `976fd0e` (2026-08-06). Mọi session ĐANG `is_paused_by_cskh=true` TỪ TRƯỚC thời điểm đó không có timestamp này (null). Hàm `isPauseExpired()` cũ coi "thiếu timestamp" = "chưa hết hạn" (`return false`) → các session đó KHÔNG BAO GIỜ được tính là hết hạn → không bao giờ tự unpause qua `resolveEffectiveSession()` → **bot im lặng VĨNH VIỄN**, không phải 8 tiếng mà là vô thời hạn. Audit DB tại thời điểm phát hiện: **4134/5836 session đang paused (~71%) bị kẹt kiểu này** — quy mô rất lớn, không phải case hiếm.
+
+Fix (`session.ts`, `isPauseExpired`): thiếu timestamp → coi là ĐÃ HẾT HẠN (`return true`) thay vì "chưa hết hạn". Session tự unpause ngay lần khách nhắn tiếp theo (qua `resolveEffectiveSession` đã có sẵn ở mọi entry point). Không cần migration/backfill DB riêng — code tự chữa lành khi có tương tác mới.
+
+**Root cause phụ (liên quan, cùng phát hiện)**: guard "CSKH echo → pause" (`v3/flow-handler.ts` + `production/flow-handler.ts`) chỉ gọi `pauseSessionByCskh()` (refresh `paused_by_cskh_at`) ở LẦN CSKH ĐẦU TIÊN (`if (!session.is_paused_by_cskh)`), các lần CSKH reply tiếp theo trong cùng đợt hỗ trợ bị bỏ qua — đồng hồ 8h tính từ tin CSKH ĐẦU TIÊN thay vì GẦN NHẤT, trái với docstring gốc đã mô tả ("mỗi lần CSKH reply thêm sẽ làm mới paused_by_cskh_at"). Có thể khiến bot "sống lại" giữa lúc CSKH vẫn đang active hỗ trợ khách (nếu đợt hỗ trợ kéo dài >8h). Fix: bỏ điều kiện, LUÔN gọi `pauseSessionByCskh()` khi có echo CSKH thật (an toàn — chỉ ghi đè timestamp, không side-effect khác).
+
+**Root cause 2 — yêu cầu cũ bị thiếu/regress**: user xác nhận từng thống nhất "khi nào có ads đến thì reset hết trạng thái pause" — nhưng code hiện tại (`v3/flow-handler.ts`) xử lý `event.optin || event.referral` SAU các pause-guard, nên nếu session đang paused, referral event bị chặn im lặng, KHÔNG hề reset pause. Trong ảnh chụp: khách bấm ads → Meta tự động gửi welcome message riêng (Ads Manager instant-reply, KHÔNG PHẢI bot của mình) khiến nhìn như bot đã phản hồi — nhưng server thực ra chưa xử lý gì, nên tin nhắn thật của khách NGAY SAU ĐÓ ("215/75/16 bst") cũng bị chặn theo.
+
+Fix: thêm block XỬ LÝ TRƯỚC mọi pause-guard — khi `event.optin || event.referral` và session gần nhất đang `is_paused_by_cskh=true` → reset ngay (`is_active=false, step='COMPLETED', is_paused_by_cskh=false, paused_by_cskh_at=null`), để các guard phía sau thấy đúng trạng thái đã reset và tạo session mới bình thường. Không cần chờ 8h.
+
+**Phạm vi fix**: chỉ áp dụng `v3/flow-handler.ts` (page dùng V3) + `production/flow-handler.ts` (fix phụ "refresh mỗi lần CSKH reply"). KHÔNG động vào `flow-handler.ts` (V2 cũ) — file này chưa từng dùng `resolveEffectiveSession`/cơ chế tự unpause 8h từ đầu (thiết kế khác biệt có chủ đích hay bị bỏ sót — CHƯA XÁC NHẬN), giữ nguyên theo nguyên tắc đã thống nhất ở mục 15 (không tự ý sửa phần khác biệt của V2 khi chưa hỏi).
+
+Verify: unit-check `isPauseExpired` với 4 case (not-paused / paused+null / paused+fresh / paused+stale-9h) — cả 4 đúng kỳ vọng. `npx tsc --noEmit` sạch.
+
+**Lưu ý cho user**: fix `isPauseExpired` chỉ tự chữa cho session khi khách nhắn TIẾP THEO — không chủ động "đánh thức" 4134 khách đang kẹt sẵn nếu họ không nhắn lại nữa. Nếu muốn chủ động unpause hết ngay bây giờ (để CSKH/marketing remarketing lại mà không lo bot im lặng), cần 1 lệnh UPDATE bulk riêng trên DB — CHƯA chạy, cần user xác nhận trước (thao tác ghi hàng loạt lên DB production).

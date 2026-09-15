@@ -24,8 +24,17 @@ const TG_CHAT = '-5026164513'
 const MAX_TEXT = 60_000
 const TG_CHUNK = 3500 // sendMessage cap là 4096; chừa chỗ cho tiêu đề mỗi phần
 const MAX_PARTS = 12
-const RATE_WINDOW_MS = 10 * 60 * 1000
-const RATE_MAX = 8
+// Nới từ 8 tin/10 phút lên 60 tin/phút: ngoài trang duyệt thiết kế, endpoint này
+// giờ còn nhận cảnh báo lỗi tự động từ buyer (luồng đặt hàng / đăng nhập). Buyer
+// chạy trên Vercel và đi ra bằng một nhúm IP dùng chung, nên mọi lỗi của cả site
+// đổ vào cùng một hạn mức — ngưỡng cũ đủ cho một người bấm lặp là rớt hết.
+//
+// LƯU Ý: chính Telegram giới hạn khoảng 20 tin/phút vào một group. Đạt tới 60 ở
+// đây thì Telegram sẽ trả 429 và `sendOne` ghi cảnh báo rồi bỏ qua. Ngưỡng này
+// là hàng rào chống spam, không phải lời hứa mọi tin đều tới nơi — bên gọi vẫn
+// nên gộp các lượt lặp lại trước khi gửi.
+const RATE_WINDOW_MS = 60 * 1000
+const RATE_MAX = 60
 
 // Cố ý để trong RAM: restart làm mất bộ đếm là hành vi đúng cho một hàng rào
 // chống spam vào một kênh debug. Lưu xuống DB là thêm máy móc hơn mức rủi ro.

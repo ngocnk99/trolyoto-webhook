@@ -269,7 +269,7 @@ async function resolveCarModelImpl(params: {
 * SUZUKI:    Swift, Ertiga, XL7, Ciaz, Carry, Jimny
 * NISSAN:    Almera, Navara, X-Trail, Sunny, Terra, Kicks
 * CHEVROLET: Spark, Trailblazer, Colorado, Captiva, Cruze, Aveo
-* VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President
+* VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President, Limo Green
 * MG:        ZS, HS, MG5, RX5, MG3
 * SUBARU:    Forester, Outback, XV, Impreza
 * LEXUS:     RX, NX, LX, ES, GX, IS
@@ -300,6 +300,8 @@ chính xác. Ví dụ:
   nghĩa nào khác, TUYỆT ĐỐI KHÔNG suy diễn sang xe phổ biến khác (vd Vios) chỉ
   vì "quen thuộc hơn" — lỗi thật từng xảy ra: "xe 10" bị đoán nhầm "Toyota Vios"
 * "ca ren" / "caren" / "ca rèn" → "Carens" (Kia) — KHÔNG phải "Carnival"
+* "limo" / "li mô" → "Limo Green" (VinFast) — KHÔNG có model VinFast nào
+  khác tên "Limo", TUYỆT ĐỐI KHÔNG suy diễn sang xe khác
 * "xe lô ra tô" → không phải tên xe thật nào (gõ lung tung/vô nghĩa) → car_model=null
 
 ── GỢI Ý TỪ QUỐC GIA XUẤT XỨ (nếu khách có nhắc) ──
@@ -724,7 +726,7 @@ async function analyzeTireImageImpl(
           .string()
           .nullable()
           .describe(
-            'Tire size XXX/YYRZZ extracted from sidewall (vd "215/75R16"). Null if not 100% legible.'
+            'Tire size XXX/YYRZZ extracted from sidewall (vd "215/75R16"). If a load-index letter suffix is printed right after the rim diameter (e.g. "195/70R15C" for commercial/light-truck tires), KEEP it — "C" is a DIFFERENT product SKU from the non-C size, not a typo to drop. Null if not 100% legible.'
           ),
         brand: z
           .string()
@@ -749,7 +751,11 @@ async function analyzeTireImageImpl(
             'NHIỆM VỤ:',
             '1. Tìm chuỗi kích cỡ định dạng: <3 chữ số width> "/" <2 chữ số aspect> "R" <2 chữ số rim>',
             '   Ví dụ hợp lệ: "145/70R13", "175/65R14", "215/75R16", "265/65R17".',
-            '   Có thể có hậu tố như "C", "T", "82H", "91V" — BỎ QUA, không đưa vào tire_size.',
+            '   Có thể có hậu tố TẢI TRỌNG "C" dính liền NGAY SAU rim (vd "215/75R16C")',
+            '   → GIỮ LẠI "C", đưa vào tire_size ("215/75R16C") — đây là lốp thương mại/xe',
+            '   tải nhẹ, catalog coi là SKU KHÁC HẲN size không có "C". Hậu tố chỉ số',
+            '   tải+tốc độ đứng CÁCH 1 khoảng trắng (vd "T", "82H", "91V" trong',
+            '   "215/75R16 91V") mới BỎ QUA, không đưa vào tire_size.',
             '',
             '2. Tìm tên hãng (brand) viết HOA trên lốp: MICHELIN, BRIDGESTONE, HANKOOK, DUNLOP, GOODYEAR, KUMHO, MAXXIS, YOKOHAMA, CONTINENTAL, FALKEN, PIRELLI, NEXEN, TOYO, ADVANCE...',
             '',
@@ -782,12 +788,22 @@ async function analyzeTireImageImpl(
 
     // Normalize size: 215 75 R 16 → 215/75R16. Bỏ ký hiệu tốc độ tuỳ chọn
     // (Z/H/V/W...) giữa tỷ lệ khung và "R" — vd "225/55ZR19" → "225/55R19".
+    // GIỮ LẠI hậu tố sau đường kính vành (vd "C" trong "195/70R15C") — bug
+    // thật (2026-09-15, session ae22724b): "195/70R15C" (lốp thương mại/xe
+    // tải nhẹ) bị chuẩn hoá mất "C" thành "195/70R15" → tra catalog SAI SKU
+    // (catalog có 9 sản phẩm thật ở "195_70R15C", CHỈ 1 sản phẩm KHÔNG LIÊN
+    // QUAN ở "195_70R15") → toàn bộ gara ở đúng khu vực bị bỏ sót, hệ thống
+    // fallback oan ra gara ưu tiên khu vực khác dù có SP sát nhu cầu ngay
+    // tại chỗ. "C" là hậu tố PHÂN LOẠI TẢI (commercial/light-truck) — KHÁC
+    // hẳn size, không được coi là ký tự thừa cần bỏ.
     let normalizedSize: string | null = null
     if (object.tire_size) {
       const m = object.tire_size.match(
-        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})/i
+        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})\s*([A-Z]{1,2})?/i
       )
-      normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
+      normalizedSize = m
+        ? `${m[1]}/${m[2]}R${m[3]}${m[4] ?? ''}`.toUpperCase()
+        : null
     }
     const normalizedBrand = object.brand?.trim().toUpperCase() || null
 
@@ -937,7 +953,7 @@ async function v3GatherTurnImpl(
           .string()
           .nullish()
           .describe(
-            'Tire size XXX/YYRZZ (e.g. 185/65R15) nếu khách CHỐT. Null/omit nếu không có/không chắc.'
+            'Tire size XXX/YYRZZ (e.g. 185/65R15) nếu khách CHỐT. Nếu khách nêu kèm hậu tố chữ NGAY SAU đường kính vành (vd "195/70R15C" — lốp thương mại/xe tải nhẹ) → GIỮ NGUYÊN "C", KHÔNG bỏ — đây là SKU catalog KHÁC HẲN size không có "C", không phải ký tự thừa. Null/omit nếu không có/không chắc.'
           ),
         brand_tier: z
           .enum(['premium', 'balanced', 'budget', 'all'])
@@ -1096,7 +1112,14 @@ QUY TẮC TRÍCH XUẤT:
   * "205/60/16" → "205/60R16" (dấu "/" thứ 2 = R)
   * "205 60 16" / "205-60-16" / "205.60.16" → "205/60R16"
   * "20560R16" / "2056016" (dính liền) → "205/60R16"
-  * Có hậu tố tải/tốc độ (vd "205/60R16 92V", "215/75R16C") → BỎ hậu tố, chỉ lấy "205/60R16".
+  * Có hậu tố TẢI TRỌNG (chỉ 1 chữ cái NGAY SAU đường kính vành, vd "C" trong
+    "205/60R16C"/"215/75R16C") → GIỮ NGUYÊN, KHÔNG bỏ — "C" là lốp
+    THƯƠNG MẠI/XE TẢI NHẸ, catalog coi đây là SKU KHÁC HẲN size không có "C"
+    (bug thật 2026-09-15, session ae22724b: bỏ mất "C" khiến tra catalog sai
+    hẳn sản phẩm, dù gara khu vực CÓ bán đúng size này).
+  * Có hậu tố CHỈ SỐ TẢI+TỐC ĐỘ (2-3 ký tự, LUÔN đứng SAU 1 dấu cách, vd
+    "205/60R16 92V") → BỎ hậu tố này, chỉ lấy "205/60R16" (khác trường hợp
+    "C" ở trên — "92V" không đứng dính liền ngay sau rim, "C" thì có).
   * LUÔN output tire_size dạng chuẩn "XXX/YYRZZ" (3 số / 2 số R 2 số), dù khách gõ kiểu gì.
   * ĐỔI SIZE (CỰC QUAN TRỌNG): nếu khách gõ kích cỡ MỚI khác size đã có trong STATE
     → tire_size = size MỚI (GHI ĐÈ), reply nhắc ĐÚNG size mới.
@@ -1138,7 +1161,7 @@ QUY TẮC TRÍCH XUẤT:
   * SUZUKI:    Swift, Ertiga, XL7, Ciaz, Carry, Jimny
   * NISSAN:    Almera, Navara, X-Trail, Sunny, Terra, Kicks
   * CHEVROLET: Spark, Trailblazer, Colorado, Captiva, Cruze, Aveo
-  * VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President
+  * VINFAST:   VF3, VF5, VF6, VF7, VF8, VF9, Lux A, Lux SA, Fadil, President, Limo Green
   * MG:        ZS, HS, MG5, RX5, MG3
   * SUBARU:    Forester, Outback, XV, Impreza
   * LEXUS:     RX, NX, LX, ES, GX, IS
@@ -1157,6 +1180,8 @@ QUY TẮC TRÍCH XUẤT:
   * "city" → Honda City            "hrv"/"hr-v" → Honda HR-V
   * "cx3"/"cx5"/"cx8" → Mazda CX-3/5/8    "mazda3" → Mazda 3
   * "vf3"-"vf9" → VinFast VF3-VF9    "fadil" → VinFast Fadil
+  * "limo" → VinFast Limo Green (xe dịch vụ/taxi điện VinFast — KHÔNG có
+    model VinFast nào khác tên "Limo", TUYỆT ĐỐI KHÔNG suy diễn sang xe khác)
   * "acent"/"accent" → Hyundai Accent    "i10"/"grand i10"/"xe 10"/"xe10" → Hyundai Grand i10
     (LƯU Ý: "xe 10" KHÔNG có nghĩa nào khác ngoài i10 — TUYỆT ĐỐI KHÔNG suy diễn
     sang xe phổ biến khác như Vios/Wigo chỉ vì "quen thuộc hơn"; đây là lỗi thật
@@ -1466,13 +1491,19 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
 
     // Normalize tire_size (uppercase + clean format). Bỏ ký hiệu tốc độ tuỳ
     // chọn (Z/H/V/W...) giữa tỷ lệ khung và "R" — catalog không phân biệt
-    // theo speed rating, vd "225/55ZR19" → "225/55R19".
+    // theo speed rating, vd "225/55ZR19" → "225/55R19". GIỮ LẠI hậu tố sau
+    // đường kính vành (vd "C" trong "195/70R15C") — xem docstring đầy đủ ở
+    // `analyzeTireImage` (bug thật session ae22724b, 2026-09-15): "C" là
+    // hậu tố PHÂN LOẠI TẢI (thương mại/xe tải nhẹ), catalog coi là SKU KHÁC
+    // hẳn size không có "C" — bỏ mất sẽ tra sai catalog, fallback oan.
     let normalizedSize: string | null = null
     if (object.tire_size) {
       const m = object.tire_size.match(
-        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})/i
+        /(\d{3})\s*\/?\s*(\d{2})\s*[A-Z]?\s*R?\s*(\d{2})\s*([A-Z]{1,2})?/i
       )
-      normalizedSize = m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
+      normalizedSize = m
+        ? `${m[1]}/${m[2]}R${m[3]}${m[4] ?? ''}`.toUpperCase()
+        : null
     }
     const brandsRaw = object.selected_brands ?? []
     const normalizedBrands =

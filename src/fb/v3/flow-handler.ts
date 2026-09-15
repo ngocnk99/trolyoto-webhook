@@ -275,10 +275,19 @@ type FieldKey = 'size' | 'brand' | 'location' | 'price'
  * (catalog không phân biệt theo speed rating). Cận giữa 2 nhóm số cuối cho
  * phép tối đa 4 ký tự phân cách (chữ/space/-//) để không khớp nhầm số ngẫu
  * nhiên ở xa. Trả null nếu không tìm thấy pattern hợp lệ.
+ *
+ * GIỮ LẠI hậu tố chữ (0-2 ký tự, vd "C") NGAY SAU đường kính vành nếu có —
+ * bug thật (2026-09-15, session ae22724b): "195/70R15C" (lốp thương mại/xe
+ * tải nhẹ) mất "C" → tra catalog SAI SKU (catalog có 9 SP thật ở
+ * "195_70R15C", chỉ 1 SP KHÔNG LIÊN QUAN ở "195_70R15") → fallback oan ra
+ * gara khu vực khác dù có SP sát nhu cầu ngay tại chỗ. `(?![a-zA-Z])` chặn
+ * khớp lố sang chữ cái tiếp theo của 1 từ dài hơn không liên quan.
  */
 function parseExplicitTireSize(text: string): string | null {
-  const m = text.match(/(\d{3})\s*[/\s-]?\s*(\d{2})[\sA-Z/-]{0,4}(\d{2})/i)
-  return m ? `${m[1]}/${m[2]}R${m[3]}`.toUpperCase() : null
+  const m = text.match(
+    /(\d{3})\s*[/\s-]?\s*(\d{2})[\sA-Z/-]{0,4}(\d{2})\s*([A-Z]{1,2})?(?![a-zA-Z])/i
+  )
+  return m ? `${m[1]}/${m[2]}R${m[3]}${m[4] ?? ''}`.toUpperCase() : null
 }
 
 /**

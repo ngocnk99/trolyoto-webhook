@@ -402,3 +402,23 @@ Verify: replay ĐÚNG payload raw JSON user gửi (standby, `message.referral`) 
 **Vì sao KHÔNG chủ động `takeThreadControl`/trả lời ngay trong standby event đó**: bot không giữ thread lúc này (app khác đang Primary) — gọi send API chắc chắn fail. Chỉ reset đúng trạng thái pause trong DB; tin nhắn khách gửi ở lần tiếp theo (khi thread đã về tay bot theo cơ chế handover bình thường của Production — xem nhánh `isOutOfHours`/`takeThreadControl` sẵn có) sẽ được xử lý bình thường, không còn bị chặn oan bởi pause cũ.
 
 **Chưa chạy**: lệnh UPDATE bulk unpause 4134 session cũ (mục 19) — bị chặn bởi permission classifier khi thử chạy trực tiếp (ghi hàng loạt lên DB production), cần user tự chạy hoặc cấp quyền Bash tương ứng.
+
+## 21. Alias "limo"→VinFast Limo Green + fix mất hậu tố "C" (lốp thương mại) gây fallback oan (2026-09-15, cùng ngày)
+
+**Alias xe mới**: "limo"/"li mô" → VinFast Limo Green — thêm vào danh sách model VINFAST + alias viết tắt trong `v3GatherTurn`/`resolveCarModel` (FB) và `webGatherTurn`/`resolveCarModel` (Web), cùng pattern với "xe 10"→Hyundai Grand i10 trước đó.
+
+**Bug thật, phát hiện qua ảnh chụp** (session `ae22724b-2b07-4265-8592-5c220b9cbf59`): khách hỏi "Maxixis 195R/70c/15 giá bao nhiêu shop" (Maxxis, lốp thương mại/xe tải nhẹ 195/70R15C) tại Từ Liêm, Hà Nội — bot trả lời "chưa ghi nhận gara ở Phường Từ Liêm, Hà Nội công khai giá" rồi fallback sang gara ưu tiên KHU VỰC KHÁC + brand khác, dù user xác nhận đúng ra phải có gara Hà Nội bán ĐÚNG size này (chỉ khác brand).
+
+**Root cause — KHÔNG phải lỗi thứ tự fallback** (thứ tự fallback trong `showSpGaraResults` vốn đã đúng: ward → province → CÙNG khu vực bỏ brand → priority garage → national): tire_size bị chuẩn hoá **MẤT hậu tố "C"** ở NHIỀU lớp:
+1. Regex ghép lại tire_size (7 chỗ trong `ai-helper.ts` + `parseExplicitTireSize` trong `v3/flow-handler.ts`, mirror Web `analyzeTireImage.ts`/`stateMachine.ts`) chỉ capture 3 nhóm số (width/aspect/rim), KHÔNG capture hậu tố chữ đứng ngay sau rim.
+2. **Nguyên nhân GỐC thật sự** — prompt AI có dòng chỉ dẫn TƯỜNG MINH bảo AI BỎ hậu tố: `v3GatherTurn` (`ai-helper.ts`) dòng "Có hậu tố tải/tốc độ (vd..., "215/75R16C") → BỎ hậu tố" và `analyzeTireImage` dòng "Có thể có hậu tố như "C"... — BỎ QUA". Sửa field `.describe()` KHÔNG đủ — 2 dòng chỉ dẫn CÓ VÍ DỤ CỤ THỂ này mạnh hơn, override mất field description.
+
+Xác nhận bằng data catalog thật (`productadmin`): size `195_70R15C` có **9 sản phẩm thật** đang bán (kể cả MAXXIS, MICHELIN, HANKOOK, SAILUN...), trong khi `195_70R15` (không "C") chỉ có **1 sản phẩm KHÔNG LIÊN QUAN** (Toyo, khác hẳn). "C" là hậu tố PHÂN LOẠI TẢI (commercial/light-truck) — catalog coi là SKU HOÀN TOÀN KHÁC, không phải ký tự thừa.
+
+**Fix đầy đủ** (cả 2 repo):
+- Sửa NGƯỢC LẠI 2 dòng chỉ dẫn nêu trên: "C" đứng DÍNH LIỀN ngay sau rim → GIỮ; chỉ số tải+tốc độ đứng CÁCH 1 dấu cách (vd "92V") → vẫn BỎ như cũ (phân biệt rõ 2 case bằng vị trí dính liền/cách dấu cách).
+- Cả 7 regex reconstruct size (`ai-helper.ts`) + `parseExplicitTireSize` (`v3/flow-handler.ts`) + mirror Web (`analyzeTireImage.ts`, `stateMachine.ts`) — thêm capture group tuỳ chọn `([A-Z]{1,2})?` sau nhóm rim, append vào output nếu có. Riêng `parseExplicitTireSize` (raw text, không phải field AI đã cô lập) có thêm `(?![a-zA-Z])` chặn khớp lố sang chữ cái của từ tiếp theo (verify: "185/65R15 continental" KHÔNG bị ăn nhầm "c").
+- 2 site KHÔNG sửa (dead code / chỉ dùng bởi V2 cũ — theo nguyên tắc mục 15): `extractTireSize` (không ai gọi), `classifyTireInput`/`getTireSizesForCar` (chỉ `flow-handler.ts` V2 dùng).
+
+Verify: gọi THẬT `v3GatherTurn`/`webGatherTurn` với câu gốc "Maxixis 195R/70c/15 giá bao nhiêu shop" — TRƯỚC fix: tire_size="195/70R15" (mất C) cả 2 bot. SAU fix: tire_size="195/70R15C" đúng, brand=MAXXIS đúng, 3/3 lần chạy mỗi bot. Unit-test riêng `parseExplicitTireSize` với 7 case (bao gồm case tránh false-positive) — 7/7 pass. `npx tsc --noEmit` sạch cả 2 repo.
+

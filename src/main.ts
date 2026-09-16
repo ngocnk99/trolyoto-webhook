@@ -7,6 +7,7 @@ import { startMetaCapiCron } from './meta/capi-outbox-cron'
 import { startSearchAliasCron } from './search/search-alias-cron'
 import { startAliasReviewCron } from './search/alias-review-cron'
 import { startPriorityGarageCache } from './fb/priorityGarage'
+import { startTireSizeMergeCache } from './fb/tireSizeMerge'
 import { installAiUsageLogging } from './ai/usage-log'
 
 // Patch globalThis.fetch trước khi mở cổng — mọi request tới api.openai.com
@@ -71,6 +72,12 @@ async function bootstrap() {
   // — tier 3 trong cascade tìm SP+gara). Refresh 30 phút/lần, load ngay lúc
   // start. Xem src/fb/priorityGarage.ts.
   startPriorityGarageCache()
+
+  // Cache RAM ánh xạ size lốp đã GỘP (categoryadmin type=SIZE/category=TIRE)
+  // → key nhóm thật, để query productadmin đúng ngay cả khi khách gõ biến
+  // thể (vd "C") khác với key admin đã gộp. Refresh 30 phút/lần. Xem
+  // docs/tire-size-key-merge.md (gốc repo production/) + src/fb/tireSizeMerge.ts.
+  startTireSizeMergeCache()
 
   // Đọc meta_capi_outbox → gửi Purchase sang Meta Conversions API. Có kênh
   // server-side thì pixel trình duyệt và Meta mới khử trùng lặp được cho nhau

@@ -31,6 +31,7 @@ import provinceJson from '../province.json'
 import wardJson from '../ward.json'
 import { extractProvinceFromAddress } from './ai-helper'
 import { getPriorityGarageCodes } from './priorityGarage'
+import { resolveMergedTireSizeKey } from './tireSizeMerge'
 
 // ── Public TYPES (input/output contracts) ─────────────────────────────────────
 
@@ -190,23 +191,31 @@ export async function fetchTireCatalog(params: {
   total: number
 }> {
   const { tireSize, tireBrand, skip = 0, limit = 3 } = params
-  const sizeKey = toSizeKey(tireSize) // '185/65R15' → '185_65R15'
+  const naiveSizeKey = toSizeKey(tireSize) // '185/65R15' → '185_65R15'
 
-  if (!sizeKey) return { items: [], productadminIds: [], total: 0 }
+  if (!naiveSizeKey) return { items: [], productadminIds: [], total: 0 }
+
+  // Ưu tiên key nhóm THẬT theo categoryadmin (xem tireSizeMerge.ts) — nguồn
+  // dữ liệu ADMIN ĐÃ CẤU HÌNH, đúng cả 2 chiều gộp (không chỉ riêng C↔không-C
+  // như stripSizeSuffix đoán bằng regex bên dưới).
+  const mergedKey = resolveMergedTireSizeKey(naiveSizeKey)
+  const sizeKey = mergedKey ?? naiveSizeKey
 
   const exact = await fetchTireCatalogExact(sizeKey, tireBrand, skip, limit)
   if (exact.items.length > 0) return exact
 
-  // Fallback: size có hậu tố TẢI TRỌNG (vd "195_70R15C") nhưng không ra kết
-  // quả → thử lại với size GỐC không hậu tố ("195_70R15") — theo yêu cầu
-  // user (2026-09-15, sau bug session ae22724b): "gửi 195/70R15C, nếu không
-  // có thì fallback về 195/70R15". KHÔNG áp dụng chiều ngược lại (khách gõ
-  // size thường → KHÔNG tự ý nới lên bản "C", vì "C" là lốp thương mại/xe
-  // tải nhẹ, kích thước vật lý khác — dễ bán nhầm loại lốp cho khách xe con).
-  const baseSizeKey = stripSizeSuffix(sizeKey)
+  // categoryadmin ĐÃ resolve ra key thật mà vẫn 0 kết quả → đó là câu trả
+  // lời ĐÚNG (nguồn dữ liệu admin, không phải size lạ) — không thử thêm gì.
+  if (mergedKey) return exact
+
+  // Size CHƯA từng được khai báo qua categoryadmin (không có trong cache) —
+  // fallback cũ: bỏ hậu tố tải trọng (vd "195_70R15C" → "195_70R15") làm lớp
+  // bảo vệ cuối, theo yêu cầu user (2026-09-15, sau bug session ae22724b).
+  // CHỈ 1 CHIỀU (có "C" → bỏ "C") — không suy ngược lại.
+  const baseSizeKey = stripSizeSuffix(naiveSizeKey)
   if (baseSizeKey) {
     console.log(
-      `[DB fetchTireCatalog] size="${sizeKey}" không có kết quả → fallback size gốc "${baseSizeKey}"`
+      `[DB fetchTireCatalog] size="${naiveSizeKey}" không có trong categoryadmin, không có kết quả → fallback size gốc "${baseSizeKey}"`
     )
     return await fetchTireCatalogExact(baseSizeKey, tireBrand, skip, limit)
   }
@@ -260,14 +269,19 @@ export async function getMinPriceForTireSize(
   tireSize: string,
   tireBrand?: string
 ): Promise<number | null> {
-  const sizeKey = toSizeKey(tireSize)
-  if (!sizeKey) return null
+  const naiveSizeKey = toSizeKey(tireSize)
+  if (!naiveSizeKey) return null
+
+  // Đồng bộ với fetchTireCatalog — ưu tiên key nhóm thật theo categoryadmin.
+  const mergedKey = resolveMergedTireSizeKey(naiveSizeKey)
+  const sizeKey = mergedKey ?? naiveSizeKey
 
   const exact = await getMinPriceForSizeKeyExact(sizeKey, tireBrand)
   if (exact !== null) return exact
+  if (mergedKey) return null
 
-  // Fallback về size gốc không hậu tố "C" — đồng bộ với fetchTireCatalog.
-  const baseSizeKey = stripSizeSuffix(sizeKey)
+  // Size chưa khai báo qua categoryadmin → fallback size gốc không hậu tố "C".
+  const baseSizeKey = stripSizeSuffix(naiveSizeKey)
   return baseSizeKey ? await getMinPriceForSizeKeyExact(baseSizeKey, tireBrand) : null
 }
 

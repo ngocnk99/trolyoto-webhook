@@ -374,6 +374,32 @@ function buildNationalGarageIntro(areaLabel: string | null | undefined): string 
 }
 
 /**
+ * Intro khi tier 3/4 kích hoạt VÌ LỌC GIÁ (`maxFinalPriceFloor`), KHÔNG PHẢI
+ * vì khu vực khách thực sự chưa có gara nào công khai giá — 2 lý do khác
+ * nhau hoàn toàn, dùng chung `buildPriorityGarageIntro`/`buildNationalGarageIntro`
+ * ("chưa ghi nhận gara ... công khai giá") sẽ SAI/MÂU THUẪN khi bot VỪA MỚI
+ * báo giá gara khu vực đó ở lượt trước (bug thật, session 472859b9,
+ * 2026-09-14: khách hỏi Quảng Ninh → bot báo giá 1 gara thật ngay tại Quảng
+ * Ninh; khách chê "2900k/1 quả đắt quá" → AI hiểu thành max_price=2900000 →
+ * ĐÚNG cái giá vừa báo bị loại bởi chính ngưỡng giá đó → fetch lại rơi
+ * xuống tier 3, nhưng bot lại nói "chưa ghi nhận gara ở Quảng Ninh công khai
+ * giá" — khách đọc thấy mâu thuẫn rõ ràng với tin bot vừa gửi giây trước).
+ * Dùng khi phát hiện được: có `maxFinalPriceFloor` VÀ trước đó ĐÃ từng biết
+ * giá local (`state.shown_garage_min_price`) mà giá đó bị loại bởi ngưỡng
+ * mới này.
+ */
+function buildPriceExcludedLocalIntro(
+  areaLabel: string | null | undefined,
+  maxPrice: number
+): string {
+  return (
+    `Hiện gara ${areaPhrase(areaLabel)}chưa có giá dưới ${formatCurrency(maxPrice)} ạ 😔\n` +
+    'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉\n' +
+    'Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "🎁 Xem khuyến mại" nhé 😊'
+  )
+}
+
+/**
  * Phần "Em đã nhận ${field}" — chỉ field "cuối cùng" khách cung cấp.
  * Priority: location > brand > size.
  * Trả '' nếu không có field nào trong updated array.
@@ -2422,13 +2448,27 @@ async function showSpGaraResults(
     // Có SP → intro. Tier 3/4 (kết quả KHÔNG thuộc khu vực khách) PHẢI dùng
     // buildPriorityGarageIntro() — buildSearchIntro ("gara gần mình") sẽ SAI
     // hoàn toàn trong case này, khách dễ tự nhận ra và mất niềm tin.
-    const msgFound = usedPriorityGarage
-      ? buildPriorityGarageIntro(locationLabel)
-      : usedNationalFallback
-        ? buildNationalGarageIntro(locationLabel)
-        : usedFallbackBrand
-          ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
-          : buildSearchIntro(state)
+    //
+    // NHƯNG nếu tier 3/4 kích hoạt VÌ LỌC GIÁ (khách vừa chê giá cũ → AI set
+    // max_price = ĐÚNG giá vừa báo → giá đó bị loại bởi chính ngưỡng đó) —
+    // xem docstring `buildPriceExcludedLocalIntro`. Dùng `state.shown_garage_min_price`
+    // (giá ĐÃ TỪNG báo ở lượt fetch trước, có sẵn trong state, không cần
+    // query thêm) làm tín hiệu: nếu giá đó ≥ ngưỡng giá mới → CHẮC CHẮN đây
+    // là lý do tier 1-3 fail, không phải "khu vực chưa có giá" thật.
+    const priceExcludedKnownLocal =
+      (usedPriorityGarage || usedNationalFallback) &&
+      typeof maxFinalPriceFloor === 'number' &&
+      typeof state.shown_garage_min_price === 'number' &&
+      state.shown_garage_min_price >= maxFinalPriceFloor
+    const msgFound = priceExcludedKnownLocal
+      ? buildPriceExcludedLocalIntro(locationLabel, maxFinalPriceFloor)
+      : usedPriorityGarage
+        ? buildPriorityGarageIntro(locationLabel)
+        : usedNationalFallback
+          ? buildNationalGarageIntro(locationLabel)
+          : usedFallbackBrand
+            ? `Dạ TROLYoto tìm thấy gara gần mình có những sản phẩm này ạ 😊 Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "Xem loại lốp khác" nhé!\n👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết, khuyến mại và gara gần mình nhé!`
+            : buildSearchIntro(state)
     await reply(psid, sessionId, msgFound)
     await delay(REPLY_GAP_MS)
     // displayLabel KHÔNG được lấy state.province_name/locationLabel (khu vực

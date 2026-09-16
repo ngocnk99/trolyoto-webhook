@@ -432,3 +432,19 @@ Logic: query size CHÍNH XÁC trước (giữ "C" nếu khách gõ có "C") → 
 
 Verify (cả 2 repo, DB thật): (1) "195/70R15C" (9 SP thật) → trả đúng 9 SP, KHÔNG kích hoạt fallback (đã có kết quả ở query đầu). (2) "195/70R15" (1 SP Toyo riêng, không liên quan) → trả đúng 1 SP đó, không bị fallback ảnh hưởng ngược. (3) "195/70R15X" (size bịa, không tồn tại, nhưng bản gốc "195/70R15" có 1 SP) → kích hoạt đúng fallback, trả về đúng SP Toyo đó. `npx tsc --noEmit` sạch cả 2 repo.
 
+## 22. Bot nói "chưa ghi nhận gara công khai giá" dù VỪA báo giá gara đó — bug "chê giá" (2026-09-16)
+
+User báo qua ảnh chụp thật (session `472859b9-5517-44bf-b2c8-62a42769a508`, psid `26905775152377704`): khách hỏi Michelin 205/55R17 ở Quảng Ninh — bot báo giá 1 gara THẬT ngay tại Quảng Ninh (Phường Hà Tu). Khách nhắn tiếp "2900k/1 quả đắt quá" — bot trả lời "Hiện TROLYoto chưa ghi nhận gara ở Phường Hà Tu, Quảng Ninh công khai giá ạ" rồi fallback ra gara ưu tiên KHU VỰC KHÁC — mâu thuẫn rõ ràng với tin bot VỪA gửi giây trước (đã có giá gara khu vực đó).
+
+**Root cause**: khách "2900k/1 quả đắt quá" = ĐỌC LẠI đúng giá vừa được báo, chê đắt — AI hiểu (đúng theo prompt hiện có) thành `max_price_vnd=2900000`. `handleGathering` re-fetch với `maxFinalPriceFloor=2900000` — biên so sánh trong `fetchGarageOffers` là `finalPrice >= maxFinalPriceFloor → loại` (`db.ts` dòng ~733) → ĐÚNG cái giá vừa báo (≈2.900.000đ) bị loại bởi chính ngưỡng giá khách vừa nêu → tier 1-3 (khu vực khách) fail → rơi xuống tier 3 (gara ưu tiên, khu vực khác) — kỹ thuật ĐÚNG (đúng là không còn gara nào ở Quảng Ninh RẺ HƠN 2.9tr), nhưng **câu intro dùng SAI** — `buildPriorityGarageIntro`/`buildNationalGarageIntro` ("chưa ghi nhận gara ... công khai giá") vốn dành cho case KHÔNG CÓ gara nào ở khu vực đó công khai giá THẬT SỰ, không phải case "có giá nhưng bị lọc bởi ngưỡng giá khách vừa nêu" — 2 lý do khác hẳn nhau, dùng chung 1 câu gây mâu thuẫn logic khách tự nhận ra ngay.
+
+Cùng bản chất "chọn sai câu intro khi tier 3/4 kích hoạt vì lý do KHÁC ngoài thiếu gara khu vực" như bug multi-brand đã fix trước đó (mục lịch sử "mâu thuẫn rõ ràng" — xem comment trong `showMultiBrandResults`/`runFetchMultiBrandOffers`), nhưng đây là root cause KHÁC (lọc giá, không phải multi-brand mix).
+
+**Fix** (single-brand path, cả 2 bot — KHÔNG động vào multi-brand/cascade, ngoài phạm vi bug report):
+- Thêm hàm `buildPriceExcludedLocalIntro`/`buildPriceExcludedLocalIntroWeb` — câu intro RIÊNG: "Hiện gara [khu vực] chưa có giá dưới [X]đ ạ" (chính xác về lý do — LỌC GIÁ, không phải THIẾU GARA).
+- Điều kiện kích hoạt: `(usedPriorityGarage || usedNationalFallback) && maxFinalPriceFloor` (có lọc giá) `&& state.shown_garage_min_price >= maxFinalPriceFloor` — dùng `shown_garage_min_price` (giá ĐÃ TỪNG báo ở lượt fetch TRƯỚC, lưu sẵn trong state, KHÔNG cần query thêm) làm bằng chứng chắc chắn: nếu giá cũ đó ≥ ngưỡng giá mới → CHẮC CHẮN đây là lý do tier 1-3 fail, loại trừ khả năng "khu vực thật sự chưa từng có giá".
+- FB (`v3/flow-handler.ts`, `showSpGaraResults`): field `shown_garage_min_price` đã có sẵn trong `SessionState`/được set mỗi lần show kết quả — chỉ cần thêm điều kiện + hàm intro mới.
+- Web (`route.ts`, `runFetchTireOffers`): **`shown_garage_min_price` CHƯA TỪNG có trong `WebChatState`** (asymmetry cũ với FB) — đã thêm field mới (`chatTypes.ts`) + tính từ `offers.flatMap(o => o.garages.map(g => g.finalPrice))` mỗi lần show kết quả, set song song `last_shown_tire_offers`.
+
+Verify: `npx tsc --noEmit` sạch cả 2 repo. Logic thuần (không cần AI call) — đã re-đọc kỹ điều kiện boolean, khớp đúng dữ liệu session thật (`state.max_price=2900000` cuối hội thoại, giá gara Quảng Ninh ban đầu chắc chắn ≈2.9tr theo đúng số khách đọc lại).
+

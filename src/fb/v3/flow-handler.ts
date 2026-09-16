@@ -390,11 +390,19 @@ function buildNationalGarageIntro(areaLabel: string | null | undefined): string 
  */
 function buildPriceExcludedLocalIntro(
   areaLabel: string | null | undefined,
-  maxPrice: number
+  maxPrice: number,
+  /** true = kết quả cuối đến từ tier 3 (gara ưu tiên, CÓ cam kết trợ giá +
+   *  miễn ship) — false = tier 4/5 (toàn bộ gara/toàn quốc, KHÔNG có cam kết
+   *  đó, xem phân biệt tương tự ở buildPriorityGarageIntro/buildNationalGarageIntro
+   *  — TRÁNH hứa hẹn sai khi kết quả thực ra đến từ tier national). */
+  isPriorityTier: boolean
 ): string {
+  const middle = isPriorityTier
+    ? 'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉'
+    : 'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có sản phẩm phù hợp, mời anh/chị tham khảo ạ 😊'
   return (
     `Hiện gara ${areaPhrase(areaLabel)}chưa có giá dưới ${formatCurrency(maxPrice)} ạ 😔\n` +
-    'Tuy nhiên, TROLYoto tìm thấy ĐẠI LÝ CHÍNH HÃNG sau đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉\n' +
+    `${middle}\n` +
     'Anh/chị có thể tìm được thương hiệu mong muốn khi chọn "🎁 Xem khuyến mại" nhé 😊'
   )
 }
@@ -2461,7 +2469,11 @@ async function showSpGaraResults(
       typeof state.shown_garage_min_price === 'number' &&
       state.shown_garage_min_price >= maxFinalPriceFloor
     const msgFound = priceExcludedKnownLocal
-      ? buildPriceExcludedLocalIntro(locationLabel, maxFinalPriceFloor)
+      ? buildPriceExcludedLocalIntro(
+          locationLabel,
+          maxFinalPriceFloor,
+          usedPriorityGarage
+        )
       : usedPriorityGarage
         ? buildPriorityGarageIntro(locationLabel)
         : usedNationalFallback

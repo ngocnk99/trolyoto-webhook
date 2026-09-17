@@ -50,7 +50,7 @@ import {
   appendConversationLog,
   resolveEffectiveSession
 } from '../session'
-import { takeThreadControl } from '../handover'
+import { takeThreadControl, passThreadControl } from '../handover'
 
 const FROM_TIME = process.env.FROM_TIME ?? '18:00'
 const END_TIME = process.env.END_TIME ?? '08:30'
@@ -386,11 +386,51 @@ export async function handleMessengerEventProduction(
         console.log(
           `[PROD] CSKH nhắc "xem khuyến mại" nhưng 2 tin gần nhất chưa có card → tự gửi lại card SP (state hiện có) session=${session.id}`
         )
-        await dispatchAndShowResults(psid, session.id, pageId, st, [])
-        // dispatchAndShowResults set is_active=true/step khác để phục vụ luồng
-        // gathering bình thường → re-pause NGAY, tránh bot vô tình "sống lại"
-        // trong lúc CSKH vẫn đang trực tiếp xử lý khách.
-        await pauseSessionByCskh(session.id)
+        // Bot KHÔNG giữ thread lúc này — event này TỚI ĐÂY chính là vì Pancake
+        // (appId) vừa gửi tin, tức Pancake đang là Primary Receiver. Gọi thẳng
+        // dispatchAndShowResults() (→ Send API) lúc này LUÔN THẤT BẠI ("app khác
+        // đang giữ thread"). Bug thật, phát hiện qua audit DB 2026-09-17: 189/199
+        // lỗi FB code=100/2018001 trong tuần đều rơi đúng vào nhánh này — khách
+        // không nhận được card, CSKH cũng không biết đã gửi hụt. Xem follow.md.
+        // Fix: chiếm thread TẠM THỜI để gửi card, xong trả ngay lại đúng app vừa
+        // giữ (appId) — không chờ auto-discover vì đã biết chắc target.
+        const taken = await takeThreadControl(
+          psid,
+          pageId,
+          'auto_resend_promo_card'
+        )
+        if (!taken) {
+          console.warn(
+            `[PROD] "xem khuyến mại" → take_thread_control fail session=${session.id} → bỏ qua gửi lại card (tránh gửi hụt)`
+          )
+        } else {
+          // Đánh dấu bot_owns_thread=true NGAY (giống mọi chỗ takeThreadControl
+          // khác trong file này) — nếu pass_thread_control bên dưới lỡ fail,
+          // cron 8:30 (`handover-cron.ts`) vẫn tự trả lại Pancake, không để bot
+          // giữ thread kẹt vĩnh viễn.
+          await setBotOwnsThread(session.id, true)
+          try {
+            await dispatchAndShowResults(psid, session.id, pageId, st, [])
+          } finally {
+            // dispatchAndShowResults set is_active=true/step khác để phục vụ luồng
+            // gathering bình thường → re-pause NGAY, tránh bot vô tình "sống lại"
+            // trong lúc CSKH vẫn đang trực tiếp xử lý khách.
+            await pauseSessionByCskh(session.id)
+            const passed = await passThreadControl(
+              psid,
+              pageId,
+              appId === 'unknown' ? undefined : String(appId),
+              'bot_pass_back_after_promo_card'
+            )
+            if (passed) {
+              await setBotOwnsThread(session.id, false)
+            } else {
+              console.warn(
+                `[PROD] pass_thread_control fail sau khi gửi lại card session=${session.id} → giữ bot_owns_thread=true để cron 8:30 tự trả lại`
+              )
+            }
+          }
+        }
       }
     }
     return

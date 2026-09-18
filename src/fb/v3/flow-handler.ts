@@ -1535,9 +1535,23 @@ async function handleGathering(
   // bằng tên tỉnh trần trụi — với tỉnh lớn kiểu "Hà Nội"/"Hồ Chí Minh" (rất
   // nhiều ward có path chứa sẵn tên tỉnh làm substring) sẽ vô tình khớp hàng
   // chục ward trùng tên → hỏi lại khách vô lý dù đã xác nhận khu vực từ trước.
+  // Bug thật (audit DB 2026-09-18, session 98466f35 — khách gõ "Thái bình"
+  // 2 lần liên tiếp, bot hỏi lại y hệt cả 2 lần, kẹt vô thời hạn): nếu lượt
+  // TRƯỚC AI đã trả province_name (vd "Thái Bình") nhưng resolve THẤT BẠI
+  // (province_code/ward_code không set được — vd rơi vào nhánh needWardConfirm
+  // bị bỏ dở, hoặc resolveAddress fail) thì state.province_name vẫn bị set
+  // (xem `newState.province_name = userInput`/`text` ở các nhánh fail bên
+  // dưới) dù CHƯA CÓ code thật. Lượt sau khách lặp lại ĐÚNG câu trả lời, AI
+  // trả về ĐÚNG province_name y hệt cũ → so sánh "!== state.province_name"
+  // thấy "không đổi" → bỏ qua toàn bộ khối resolve bên dưới → không bao giờ
+  // thử lại, không bao giờ tăng fail_location, không bao giờ handoff CSKH —
+  // bot lặp lại câu hỏi y hệt vĩnh viễn. Fix: vẫn coi là "fresh" (thử resolve
+  // lại) khi state CHƯA có province_code thật — không có gì để mất (chưa
+  // từng resolve thành công), so với chỉ so sánh text.
   const isFreshLocationUpdate =
     !!decision.updates.province_name &&
-    decision.updates.province_name !== state.province_name
+    (decision.updates.province_name !== state.province_name ||
+      !state.province_code)
   if (isFreshLocationUpdate && decision.updates.province_name) {
     // Clear location cũ — sẽ được set lại sau resolve
     newState.province_code = undefined
@@ -2229,9 +2243,18 @@ async function handleGathering(
   // ── Branch 2: gửi reply AI bình thường, có thể kèm brand QRs + tier block
   const needBrand = !!newState.tire_size && !hasBrandField(newState)
   const askingBrand = decision.action === 'continue' && needBrand
-  // Khi hỏi brand → kèm block mô tả phân khúc (nối vào sau AI reply)
+  // Bug thật (audit DB 2026-09-18, 5+ session thật): vừa xong size, còn thiếu
+  // brand — đúng ra phải hỏi "ưu tiên thương hiệu hoặc tầm giá" (ví dụ prompt
+  // dòng ~1443), nhưng AI hay LẪN sang câu hỏi giá chủ động "mong muốn tìm mức
+  // giá dưới bao nhiêu" (đúng ra CHỈ dành cho case khách chê giá, ví dụ dòng
+  // ~1446) — 2 worked example dễ nhầm vì cùng nói về "giá". Field thiếu-tiếp-
+  // theo ở bước này CHẮC CHẮN là brand (needBrand=true, không cần AI đoán) nên
+  // KHÔNG tin câu hỏi decision.reply tự soạn — chỉ giữ phần ACK (trước "\n\n"
+  // đầu tiên, đúng format mọi ví dụ prompt dùng), LUÔN dùng BRAND_ASK_TEXT_FULL
+  // (đã có sẵn BRAND_TIER_BLOCK) cho câu hỏi, đồng bộ cách `nextMissingFieldQuestion`
+  // đã dùng ở các nơi khác trong file.
   const replyText = askingBrand
-    ? `${decision.reply}\n\n${BRAND_TIER_BLOCK}`
+    ? `${decision.reply.split('\n\n')[0]}\n\n${BRAND_ASK_TEXT_FULL}`
     : decision.reply
   const replyQRs = askingBrand ? V3_BRAND_QRS() : undefined
   await reply(psid, sessionId, replyText, replyQRs)

@@ -2332,98 +2332,97 @@ async function showSpGaraResults(
 
     const maxFinalPriceFloor = state.max_price ?? undefined
 
-    // 1. Ưu tiên ward_code nếu có
-    if (wardCode) {
-      cards = await fetchSpGaraCards({
+    // Thứ tự cascade (user chốt 2026-09-18) — ĐÚNG size+brand LUÔN ưu tiên
+    // trước, kể cả khi phải sang gara ưu tiên tỉnh khác:
+    //   1. brand + ward → 2. brand + tỉnh → 3. brand + gara ưu tiên
+    //   4. bỏ brand + ward → 5. bỏ brand + tỉnh → 6. bỏ brand + gara ưu tiên
+    //   7. toàn quốc (brand → bỏ brand)
+    // Trước đây "bỏ brand trong khu vực" (4-5) chạy TRƯỚC "brand + gara ưu
+    // tiên" (3) → khách hỏi đúng hãng mà gara ưu tiên CÓ bán lại bị đẩy sang
+    // hãng khác ở gần. Đồng bộ với Web (src/libs/chat/server/route.ts
+    // runFetchTireOffers).
+    const fallbackProvinceCode =
+      provinceCode ?? (wardCode ? getWardParentCode(wardCode) : null)
+
+    /** Tìm trong khu vực khách: ward → toàn tỉnh/TP. provinceCode có thể null
+     *  (khách chỉ cho ward) → suy ra từ parent_code của ward. `fromProvince` =
+     *  có ward nhưng kết quả đến từ bước toàn tỉnh. */
+    const fetchLocal = async (
+      tireBrand: string
+    ): Promise<{ cards: SpGaraCard[]; fromProvince: boolean }> => {
+      if (wardCode) {
+        const wardCards = await fetchSpGaraCards({
+          tireSize,
+          tireBrand,
+          provinceCode: null,
+          wardCode,
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor
+        })
+        console.log(
+          `[V3 showSpGara] ward query (${wardCode}, brand="${tireBrand}") → ${wardCards.length} cards`
+        )
+        if (wardCards.length > 0) return { cards: wardCards, fromProvince: false }
+      }
+      if (!fallbackProvinceCode) return { cards: [], fromProvince: false }
+      const provinceCards = await fetchSpGaraCards({
         tireSize,
-        tireBrand: brandFilter,
-        provinceCode: null,
-        wardCode,
+        tireBrand,
+        provinceCode: fallbackProvinceCode,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor
+      })
+      const fromProvince = provinceCards.length > 0 && !!wardCode
+      console.log(
+        `[V3 showSpGara] province query (${fallbackProvinceCode}${provinceCode ? '' : ' ← ward parent'}, brand="${tireBrand}") → ${provinceCards.length} cards${fromProvince ? ' [WARD→PROVINCE fallback]' : ''}`
+      )
+      return { cards: provinceCards, fromProvince }
+    }
+
+    /** Gara ƯU TIÊN (bảng priority_garage, cache RAM) — CHỈ nới vị trí,
+     *  size/brand/giá giữ nguyên. */
+    const fetchPriority = async (tireBrand: string): Promise<SpGaraCard[]> => {
+      const priorityCards = await fetchPriorityGaraCards({
+        tireSize,
+        tireBrand,
         limit: 3,
         sortBy: 'lowest_price',
         maxFinalPriceFloor
       })
       console.log(
-        `[V3 showSpGara] ward query (${wardCode}) → ${cards.length} cards`
+        `[V3 showSpGara] priority garage (brand="${tireBrand}") → ${priorityCards.length} cards${priorityCards.length > 0 ? ' [PRIORITY GARAGE]' : ''}`
       )
+      return priorityCards
     }
 
-    // 2. Nếu ward không có gara → fallback toàn tỉnh/TP.
-    //    provinceCode có thể null (khách chỉ cho ward) → suy ra từ parent_code của ward.
+    // 1-3. Đúng brand: ward → tỉnh → gara ưu tiên
+    const local = await fetchLocal(brandFilter)
+    cards = local.cards
+    usedFallbackProvince = local.fromProvince
     if (cards.length === 0) {
-      const fallbackProvinceCode =
-        provinceCode ?? (wardCode ? getWardParentCode(wardCode) : null)
-      if (fallbackProvinceCode) {
-        cards = await fetchSpGaraCards({
-          tireSize,
-          tireBrand: brandFilter,
-          provinceCode: fallbackProvinceCode,
-          wardCode: null,
-          limit: 3,
-          sortBy: 'lowest_price',
-          maxFinalPriceFloor
-        })
-        usedFallbackProvince = !!wardCode // chỉ đánh dấu fallback khi có ward trước đó
-        console.log(
-          `[V3 showSpGara] province fallback (${fallbackProvinceCode}${provinceCode ? '' : ' ← ward parent'}) → ${cards.length} cards${usedFallbackProvince ? ' [WARD→PROVINCE fallback]' : ''}`
-        )
-      }
-    }
-
-    // 3. Vẫn không có gara (dù đã thử ward + toàn tỉnh) VÀ đang lọc theo brand
-    //    cụ thể (không phải "Xem tất cả") → thử lại CÙNG khu vực nhưng bỏ lọc
-    //    brand, để khách vẫn thấy lựa chọn khác thay vì đi thẳng CSKH. Vẫn giữ
-    //    điều kiện giá (maxFinalPriceFloor) nếu khách có nêu tầm giá.
-    if (cards.length === 0 && brandFilter !== '__skip_brand__') {
-      const fallbackWard = wardCode
-      const fallbackProvince =
-        provinceCode ?? (wardCode ? getWardParentCode(wardCode) : null)
-      if (fallbackWard || fallbackProvince) {
-        cards = await fetchSpGaraCards({
-          tireSize,
-          tireBrand: '__skip_brand__',
-          provinceCode: fallbackWard ? null : fallbackProvince,
-          wardCode: fallbackWard,
-          limit: 3,
-          sortBy: 'lowest_price',
-          maxFinalPriceFloor
-        })
-        usedFallbackBrand = cards.length > 0
-        console.log(
-          `[V3 showSpGara] brand fallback (all brands, ${fallbackWard ? `ward=${fallbackWard}` : `province=${fallbackProvince}`}) → ${cards.length} cards${usedFallbackBrand ? ' [BRAND fallback]' : ''}`
-        )
-      }
-    }
-
-    // 4. Hết cách theo KHU VỰC (ward → tỉnh → bỏ brand) → thử danh sách gara
-    //    ƯU TIÊN (bảng priority_garage, cache RAM). CHỈ nới vị trí; size/brand/
-    //    giá giữ nguyên. Thử brand đúng yêu cầu trước, rồi mới bỏ brand — cùng
-    //    thứ tự với 2 bước theo khu vực ở trên.
-    if (cards.length === 0) {
-      cards = await fetchPriorityGaraCards({
-        tireSize,
-        tireBrand: brandFilter,
-        limit: 3,
-        sortBy: 'lowest_price',
-        maxFinalPriceFloor
-      })
-      if (cards.length === 0 && brandFilter !== '__skip_brand__') {
-        cards = await fetchPriorityGaraCards({
-          tireSize,
-          tireBrand: '__skip_brand__',
-          limit: 3,
-          sortBy: 'lowest_price',
-          maxFinalPriceFloor
-        })
-        if (cards.length > 0) usedFallbackBrand = true
-      }
+      cards = await fetchPriority(brandFilter)
       usedPriorityGarage = cards.length > 0
-      console.log(
-        `[V3 showSpGara] priority garage fallback → ${cards.length} cards${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}`
-      )
     }
 
-    // 5. Vẫn không có gì → TOÀN BỘ gara, bỏ hẳn ràng buộc vị trí. Đây là bước
+    // 4-6. Đang lọc brand cụ thể mà cả 3 bước trên đều rỗng → bỏ lọc brand,
+    //      lặp lại ward → tỉnh → gara ưu tiên. Vẫn giữ điều kiện giá
+    //      (maxFinalPriceFloor) nếu khách có nêu tầm giá.
+    if (cards.length === 0 && brandFilter !== '__skip_brand__') {
+      const localAll = await fetchLocal('__skip_brand__')
+      cards = localAll.cards
+      usedFallbackProvince = localAll.fromProvince
+      if (cards.length === 0) {
+        cards = await fetchPriority('__skip_brand__')
+        usedPriorityGarage = cards.length > 0
+      }
+      usedFallbackBrand = cards.length > 0
+      if (usedFallbackBrand) console.log('[V3 showSpGara] [BRAND fallback]')
+    }
+
+    // 7. Vẫn không có gì → TOÀN BỘ gara, bỏ hẳn ràng buộc vị trí. Đây là bước
     //    cuối cùng trước khi chuyển CSKH — vẫn giữ nguyên size/brand/giá.
     if (cards.length === 0) {
       cards = await fetchNationalGaraCards({

@@ -6,6 +6,7 @@ import {
   setAiContext,
   type AiCallContext
 } from '../ai/usage-log'
+import { hasExplicitPriceMarker } from './priceMarker'
 
 /**
  * Bọc 1 helper AI để mọi request HTTP nó sinh ra được gắn tên hàm trong
@@ -1302,6 +1303,10 @@ TẦM GIÁ (max_price_vnd) — nhận diện khi khách nêu ngưỡng giá bằ
   * "2tr" / "2 triệu" → 2000000. "2tr5" / "2.5 triệu" → 2500000.
   * "dưới 2tr" / "tối đa 2tr" / "không quá 2tr" → max_price_vnd=2000000.
   * "tầm 1.5-2 triệu" (có khoảng) → lấy cận TRÊN → max_price_vnd=2000000.
+  * "N quả" / "N chiếc" / "N cái" / "N lốp" / "N bộ" là SỐ LƯỢNG lốp khách muốn mua,
+    TUYỆT ĐỐI KHÔNG phải giá (KHÔNG hiểu "2 quả" = 2 triệu). Vd "275/35r19 2 quả" →
+    tire_size='275/35R19', max_price_vnd=null. CHỈ điền max_price_vnd khi có ĐƠN VỊ
+    TIỀN rõ ràng (tr/triệu/k/củ/nghìn/ngàn/đ/đồng) hoặc số tiền đầy đủ (vd 800.000).
   * Khách CHỈ nêu tầm giá, KHÔNG nêu brand/phân khúc → max_price_vnd set, brand_tier=null, selected_brands=[].
   * Khách nêu CẢ brand/phân khúc VÀ tầm giá trong cùng câu (vd "michelin dưới 2tr") → điền CẢ HAI, tầm giá là filter THÊM chứ không thay thế brand.
   * Null/omit nếu khách KHÔNG nêu tầm giá bằng số cụ thể TRONG TIN NHẮN HIỆN TẠI này —
@@ -1451,6 +1456,7 @@ VÍ DỤ REPLY ĐÚNG (ngắn + LUÔN có câu hỏi khi còn thiếu + xưng "e
 VÍ DỤ REPLY SAI (TUYỆT ĐỐI TRÁNH):
 - ❌ Khách nhắn "giá cao quá" (không kèm số) → tự set max_price_vnd=800000 (lấy nhầm từ tin nhắn "TRỢ GIÁ tới 800K" trong lịch sử) rồi action tiếp tục fetch → ĐÚNG: max_price_vnd=null, hỏi lại khách muốn mức giá dưới bao nhiêu.
 - ❌ Khách hỏi "Bao nhiêu một chiếc vậy" (hỏi giá chung chung, chưa đủ 3 trường) → hiểu nhầm thành "chê giá cao", hỏi lại "mức giá dưới bao nhiêu" → ĐÚNG: max_price_vnd=null, off_topic_kind='generic_price_inquiry' — khách chỉ đang hỏi thông tin, KHÔNG muốn lọc giá.
+- ❌ Khách gõ "275/35r19 2 quả" → max_price_vnd=2000000 (hiểu "2 quả" = 2 triệu) → ĐÚNG: tire_size='275/35R19', max_price_vnd=null — "2 quả" là khách muốn mua 2 LỐP.
 - ❌ Cùng case trên nhưng TỰ soạn reply hỏi field thiếu (vd tự đoán "anh/chị ở khu vực nào") thay vì chỉ set off_topic_kind='generic_price_inquiry' → rủi ro đoán SAI field đang thiếu (vd brand thực ra vẫn còn thiếu) → ĐÚNG: để hệ thống tự xác định + hỏi đúng field.
 - ❌ "Dạ TROLY đã ghi nhận..." → ĐÚNG: "Dạ em đã ghi nhận..." (xưng "em", không xưng "TROLY" làm chủ ngữ)
 - ❌ "TROLY chưa hiểu..." / "Em chưa hiểu thông tin ạ" → ĐÚNG: "Để em hỗ trợ chính xác hơn, anh/chị gửi giúp em..." (tích cực, hành động)
@@ -1512,10 +1518,21 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         : null
 
     // max_price_vnd < 100k coi như nhiễu (vd AI hiểu nhầm "2" thành 2đ) — bỏ qua.
-    const normalizedMaxPrice =
+    // Tin khách KHÔNG có đơn vị/số tiền rõ ràng → bỏ luôn dù AI có trả giá (bug
+    // "2 quả" → 2 triệu, session e617aefa — xem priceMarker.ts).
+    const aiMaxPrice =
       typeof object.max_price_vnd === 'number' && object.max_price_vnd >= 100_000
         ? object.max_price_vnd
         : null
+    const normalizedMaxPrice =
+      aiMaxPrice != null && hasExplicitPriceMarker(input.userInput)
+        ? aiMaxPrice
+        : null
+    if (aiMaxPrice != null && normalizedMaxPrice == null) {
+      console.warn(
+        `[AI v3GatherTurn] BỎ max_price_vnd=${aiMaxPrice} — tin khách không có đơn vị/số tiền: "${input.userInput}"`
+      )
+    }
 
     return {
       updates: {

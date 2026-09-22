@@ -408,6 +408,17 @@ function buildPriceExcludedLocalIntro(
 }
 
 /**
+ * Đuôi cho cskh_reason khi không có kết quả MÀ đang lọc giá — trước đây lý
+ * do CSKH không nhắc gì tới max_price nên không ai nhận ra kết quả rỗng là do
+ * bộ lọc giá (bug "2 quả" → 2 triệu, session e617aefa, 2026-09-21).
+ */
+function priceFilterNote(maxPrice: number | null | undefined): string {
+  return typeof maxPrice === 'number'
+    ? ` — ĐANG LỌC GIÁ dưới ${formatCurrency(maxPrice)}`
+    : ''
+}
+
+/**
  * Phần "Em đã nhận ${field}" — chỉ field "cuối cùng" khách cung cấp.
  * Priority: location > brand > size.
  * Trả '' nếu không có field nào trong updated array.
@@ -2460,9 +2471,10 @@ async function showSpGaraResults(
         state: {
           ...state,
           cskh_reason:
-            brandFilter !== '__skip_brand__'
+            (brandFilter !== '__skip_brand__'
               ? `Không có gara cho size ${tireSize} (brand="${brandFilter}", đã thử cả all brand) ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
-              : `Không có gara cho size ${tireSize} ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
+              : `Không có gara cho size ${tireSize} ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`) +
+            priceFilterNote(maxFinalPriceFloor)
         }
       })
       await reply(psid, sessionId, msg1)
@@ -2867,7 +2879,9 @@ async function showCascadeResults(
         step: 'AWAITING_PHONE',
         state: {
           ...state,
-          cskh_reason: `Không có gara cho size ${tireSize} (cascade ${kind}) ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc`
+          cskh_reason:
+            `Không có gara cho size ${tireSize} (cascade ${kind}) ở ${locationLabel} — kể cả gara ưu tiên + toàn quốc` +
+            priceFilterNote(state.max_price)
         }
       })
       await reply(psid, sessionId, msg1)
@@ -3088,7 +3102,9 @@ async function showMultiBrandResults(
         step: 'AWAITING_PHONE',
         state: {
           ...state,
-          cskh_reason: `Không có gara cho size ${tireSize} ở các hãng ${(state.selected_brands ?? []).join(', ')} tại ${locationLabel}`
+          cskh_reason:
+            `Không có gara cho size ${tireSize} ở các hãng ${(state.selected_brands ?? []).join(', ')} tại ${locationLabel}` +
+            priceFilterNote(state.max_price)
         }
       })
       await reply(psid, sessionId, msg1)

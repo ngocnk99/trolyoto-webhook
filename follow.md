@@ -123,6 +123,8 @@ Ward fallback về tỉnh nếu không có gara tại ward cụ thể (log rõ `
 
 `max_price_vnd` nếu có → filter THÊM vào bất kỳ chiến lược nào, không phải case riêng.
 
+**⚠️ Chỉ nhận `max_price_vnd` khi tin khách có ĐƠN VỊ/SỐ TIỀN rõ ràng** (thêm 2026-09-22): `hasExplicitPriceMarker()` (FB `src/fb/priceMarker.ts` / Web `src/libs/chat/priceMarker.ts`, test ts-node kèm theo) — "tr/triệu/k/củ/nghìn/ngàn/đ/đồng/vnd" sau 1 con số, hoặc số tiền đầy đủ (≥5 chữ số / "800.000"). Không có → bỏ giá AI trả (log `BỎ max_price_vnd`). Bug thật session `e617aefa`: khách gõ "275/35r19 2 quả" (2 LỐP) → AI hiểu "2 quả" = 2 triệu (3/3 lần) → Hankook 4.650.000đ ở Hà Nội bị lọc sạch → báo "không có". "N quả/chiếc/cái/lốp/bộ" = SỐ LƯỢNG, đã thêm cả vào prompt. Khi không có kết quả mà đang lọc giá, `cskh_reason` (FB) / lý do handoff (Web) có đuôi `— ĐANG LỌC GIÁ dưới X`.
+
 **Reset `max_price`**: chỉ reset khi đổi size/brand/khu vực **SAU KHI đã show kết quả lần đầu** (`has_shown_results=true`) — đổi TRƯỚC lần fetch đầu tiên (đang gộp yêu cầu) thì GIỮ giá.
 
 **Sau khi show kết quả — nudge 15s + khách nhắn tiếp (`SHOWING_RESULTS_LOCAL`):**

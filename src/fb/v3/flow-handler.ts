@@ -61,6 +61,7 @@ import type {
   ConversationMessage,
   BrandTier
 } from '../types'
+import { modelForSession } from '../modelRouting'
 import {
   v3GatherTurn,
   getCarNameVariants,
@@ -1375,8 +1376,11 @@ async function handleGathering(
   // lại / hỏi lốp khác → tin nudge cũ sẽ ghi đè QR mới (vd: list size cho xe).
   cancelTimer(sessionId, 'v3-gathering-restart')
 
-  // 1. Gọi AI gather turn
+  // 1. Gọi AI gather turn — model lấy từ state (A/B, chốt lúc tạo session).
+  const turnModel = modelForSession(state)
+  console.log(`[V3 gather] session=${sessionId} ai_model=${turnModel}`)
   const decision = await v3GatherTurn({
+    model: turnModel,
     collected: {
       tire_size: state.tire_size,
       brand_tier: state.brand_tier as
@@ -3648,6 +3652,44 @@ export async function handleStandbyAdsReferralV3(
 //  Main dispatcher
 // ════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Hàng đợi theo PSID — mỗi khách xử lý TUẦN TỰ từng event.
+ *
+ * Bug thật (phát hiện 2026-09-24 khi test A/B model): khách gửi 2 tin sát nhau
+ * → 2 lượt chạy SONG SONG, cùng đọc state cũ rồi cùng `updateSession` ghi đè
+ * NGUYÊN object state → update của lượt chạy xong trước bị lượt sau xoá sạch.
+ * Thấy rõ ở 1 session: AI trích đúng size + hãng + giá 2.500.000đ nhưng state
+ * cuối trống trơn, bot hỏi lại từ đầu. Model càng chậm cửa sổ race càng rộng
+ * (gpt-6-luna chậm hơn gpt-4o-mini ~35%), nên phải chặn trước khi chạy A/B,
+ * nếu không nhánh model mới bị chấm oan.
+ *
+ * Có trần chờ: nếu lượt trước treo quá MAX_WAIT thì vẫn chạy lượt sau, tránh
+ * 1 event hỏng làm khách chết cứng.
+ */
+const psidQueue = new Map<string, Promise<unknown>>()
+const QUEUE_MAX_WAIT_MS = 60_000
+
+function runSerializedByPsid<T>(
+  psid: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = psidQueue.get(psid)
+  const waitPrev = prev
+    ? Promise.race([
+        prev.catch(() => undefined),
+        new Promise(r => setTimeout(r, QUEUE_MAX_WAIT_MS))
+      ])
+    : Promise.resolve()
+  const next = waitPrev.then(fn)
+  psidQueue.set(psid, next)
+  void next
+    .catch(() => undefined)
+    .then(() => {
+      if (psidQueue.get(psid) === next) psidQueue.delete(psid)
+    })
+  return next
+}
+
 export async function handleMessengerEventV3(
   event: MessengerEvent,
   pageId: string
@@ -3664,9 +3706,16 @@ export async function handleMessengerEventV3(
       pageId
     },
     () =>
-      requestContext.run({ token: tokenForPageId(pageId), pageId }, () =>
-        handleMessengerEventV3Inner(event, pageId)
-      )
+      requestContext.run({ token: tokenForPageId(pageId), pageId }, () => {
+        // Echo (sender = page) thì "khách" là recipient — xếp hàng theo đúng
+        // PSID khách, không phải page id.
+        const isEcho = !!event.message?.is_echo
+        const queueKey =
+          (isEcho ? event.recipient?.id : event.sender?.id) ?? 'unknown'
+        return runSerializedByPsid(queueKey, () =>
+          handleMessengerEventV3Inner(event, pageId)
+        )
+      })
   )
 }
 

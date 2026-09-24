@@ -1,4 +1,4 @@
-import { openai } from '@ai-sdk/openai'
+import { openaiModel } from '../ai/openai-reasoning'
 import { generateObject } from 'ai'
 import { z } from 'zod'
 import {
@@ -6,7 +6,18 @@ import {
   setAiContext,
   type AiCallContext
 } from '../ai/usage-log'
-import { hasExplicitPriceMarker } from './priceMarker'
+import { hasExplicitPriceMarker, extractExplicitPriceVnd } from './priceMarker'
+
+/** Bỏ dấu + lowercase để so khớp text tiếng Việt (dùng cho cảnh báo địa danh). */
+function stripForCompare(s: string): string {
+  return (s ?? '')
+    .toLowerCase()
+    .replace(/đ/g, 'd')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 /**
  * Bọc 1 helper AI để mọi request HTTP nó sinh ra được gắn tên hàm trong
@@ -27,7 +38,10 @@ function traced<A extends unknown[], R>(
 }
 
 // Model rẻ + đủ cho classification/extraction. Đổi sang gpt-4o nếu cần độ chính xác cao hơn.
-const MODEL = 'gpt-4o-mini'
+// Env `AI_MODEL` chỉ để BENCHMARK đổi model mà không phải sửa code (đồng bộ tên
+// biến với Web: src/libs/chat/ai/prompts.ts). Production KHÔNG set env này —
+// mặc định giữ nguyên gpt-4o-mini. Xem scripts/model-bench/.
+const MODEL = process.env.AI_MODEL ?? 'gpt-4o-mini'
 
 /**
  * Trích kích cỡ lốp (định dạng `XXX/YYRZZ`) từ free text của user.
@@ -39,7 +53,7 @@ async function extractTireSizeImpl(
 ): Promise<string | null> {
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         tireSize: z
           .string()
@@ -73,7 +87,7 @@ async function extractTireSizeImpl(
 async function getTireSizesForCarImpl(carModel: string): Promise<string[]> {
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         sizes: z
           .array(z.string())
@@ -136,7 +150,7 @@ async function getCarNameVariantsImpl(
   }
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         exact: z
           .array(z.string())
@@ -177,7 +191,7 @@ async function verifyTireSizesForCarImpl(
   if (!candidateSizes.length) return { compatibleSizes: [] }
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         compatible_sizes: z
           .array(z.string())
@@ -240,7 +254,7 @@ async function resolveCarModelImpl(params: {
   const modelToUse = useStrongModel ? STRONG_MODEL : MODEL
   try {
     const { object } = await generateObject({
-      model: openai(modelToUse) as any,
+      model: openaiModel(modelToUse) as any,
       schema: z.object({
         car_model: z
           .string()
@@ -399,7 +413,7 @@ async function resolveAddressImpl(params: {
   const { userInput } = params
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         province_name: z
           .string()
@@ -489,7 +503,7 @@ async function extractProvinceFromAddressImpl(
 ): Promise<string | null> {
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         province: z
           .string()
@@ -547,7 +561,7 @@ async function classifyTireInputImpl(
   if (!userInput || userInput.trim().length < 1) return fallback
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         kind: z
           .enum(['size', 'car', 'unknown'])
@@ -624,7 +638,7 @@ async function extractBrandNeedImpl(
   if (!userInput || userInput.trim().length < 1) return fallback
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         understood: z
           .boolean()
@@ -721,7 +735,7 @@ async function analyzeTireImageImpl(
     const visionModel = process.env.VISION_MODEL ?? 'gpt-4o'
     console.log(`[AI analyzeTireImage] using model=${visionModel}`)
     const { object } = await generateObject({
-      model: openai(visionModel) as any,
+      model: openaiModel(visionModel) as any,
       schema: z.object({
         tire_size: z
           .string()
@@ -857,6 +871,13 @@ export interface V3GatherInput {
   userInput: string
   /** Lịch sử hội thoại gần đây (tối đa 6 turn) để AI có ngữ cảnh */
   recentHistory?: Array<{ role: 'bot' | 'user'; text: string }>
+  /**
+   * Model cho RIÊNG lượt này — phục vụ A/B (xem `modelRouting.ts`). Không
+   * truyền = dùng mặc định (`AI_MODEL` env / gpt-4o-mini). Model được chốt 1
+   * lần lúc tạo session và lưu ở `state.ai_model` nên mọi lượt trong cùng hội
+   * thoại luôn chạy CÙNG 1 model (không trộn giữa chừng).
+   */
+  model?: string
 }
 
 export interface V3GatherUpdate {
@@ -945,9 +966,10 @@ async function v3GatherTurnImpl(
     `wants_best_quality: ${collected.wants_best_quality ?? '(missing)'}`
   ].join('\n')
 
+  const turnModel = input.model ?? MODEL
   try {
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(turnModel) as any,
       // FLAT schema + .nullish() cho field optional — tolerant với AI khi nó omit field.
       schema: z.object({
         tire_size: z
@@ -1524,7 +1546,7 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
       typeof object.max_price_vnd === 'number' && object.max_price_vnd >= 100_000
         ? object.max_price_vnd
         : null
-    const normalizedMaxPrice =
+    let normalizedMaxPrice =
       aiMaxPrice != null && hasExplicitPriceMarker(input.userInput)
         ? aiMaxPrice
         : null
@@ -1533,15 +1555,67 @@ Trả về JSON với updates (chỉ điền trường thay đổi), reply (tin 
         `[AI v3GatherTurn] BỎ max_price_vnd=${aiMaxPrice} — tin khách không có đơn vị/số tiền: "${input.userInput}"`
       )
     }
+    // CHỐT CHẶN NGƯỢC LẠI — AI BỎ SÓT giá khách nêu rõ ràng thì tự trích bằng
+    // luật cố định. Benchmark 2026-09-24: gpt-5.6-luna/gpt-6-luna trả null ở
+    // 6/6 lượt khách nêu giá trong câu so sánh ("2150k/quả à", "bên kia báo
+    // 1.65tr") — mất ngưỡng lọc, bot tiếp tục đẩy hàng đắt hơn mức khách nói.
+    if (normalizedMaxPrice == null) {
+      const fromText = extractExplicitPriceVnd(input.userInput)
+      if (fromText != null) {
+        normalizedMaxPrice = fromText
+        console.log(
+          `[AI v3GatherTurn] BỔ SUNG max_price=${fromText} từ luật cố định (AI trả ${aiMaxPrice}): "${input.userInput}"`
+        )
+      }
+    }
+
+    const collected = input.collected ?? {}
+    /**
+     * CHỐT CHẶN ECHO — field AI trả về TRÙNG giá trị đã có trong state thì coi
+     * như không có cập nhật. Echo là lỗi kinh điển (follow.md ⚠️ "không
+     * re-trigger khi AI echo lại giá trị CŨ"): gpt-4o-mini echo ở 208/290
+     * khác biệt đo được, gpt-6-luna vẫn echo ở 7 lượt vô nghĩa (khách nhắn
+     * SĐT, bấm nút) → fetch lại thừa. Chặn tại đây thay vì rải ở từng call
+     * site như trước.
+     */
+    const dropEcho = <T>(field: string, value: T, old: unknown): T | null => {
+      if (value == null) return value
+      const same =
+        Array.isArray(value) && Array.isArray(old)
+          ? JSON.stringify([...(value as string[])].sort()) ===
+            JSON.stringify([...(old as string[])].sort())
+          : String(value).trim().toUpperCase() ===
+            String(old ?? '').trim().toUpperCase()
+      if (!same) return value
+      console.log(`[AI v3GatherTurn] BỎ echo ${field}=${JSON.stringify(value)}`)
+      return null
+    }
+
+    const provinceName = object.province_name?.trim() || null
+    // CHỐT CHẶN ĐỊA DANH — chỉ CẢNH BÁO, không tự bỏ: tên tỉnh AI trả có thể
+    // là suy luận đúng và hữu ích ("Cầu Giấy" → "Hà Nội"), nhưng cũng có thể
+    // là nghe nhầm (benchmark: gpt-5.6-luna đọc "Tay ho" → "Thái Hòa" ở Nghệ
+    // An). Phần resolve thật luôn chạy deterministic trên userInput GỐC trước
+    // (v3/flow-handler.ts tryResolveDeterministic) nên không tin field này mù
+    // quáng; log ra để theo dõi tần suất nghe nhầm khi chạy A/B model.
+    if (provinceName && !stripForCompare(input.userInput).includes(stripForCompare(provinceName))) {
+      console.log(
+        `[AI v3GatherTurn] province_name="${provinceName}" KHÔNG xuất hiện nguyên văn trong tin khách: "${input.userInput}"`
+      )
+    }
 
     return {
       updates: {
-        tire_size: normalizedSize,
-        brand_tier: object.brand_tier ?? null,
-        selected_brands: normalizedBrands,
-        province_name: object.province_name?.trim() || null,
+        tire_size: dropEcho('tire_size', normalizedSize, collected.tire_size),
+        brand_tier: dropEcho('brand_tier', object.brand_tier ?? null, collected.brand_tier),
+        selected_brands: dropEcho(
+          'selected_brands',
+          normalizedBrands,
+          collected.selected_brands
+        ),
+        province_name: dropEcho('province_name', provinceName, collected.province_name),
         car_model: object.car_model?.trim() || null,
-        max_price: normalizedMaxPrice,
+        max_price: dropEcho('max_price', normalizedMaxPrice, collected.max_price),
         wants_best_quality: object.wants_best_quality ?? null
       },
       // object.reply có thể null khi action='handoff_cskh' (schema cho phép
@@ -1600,7 +1674,7 @@ async function matchOptionImpl(
   try {
     const validPayloads = options.map(o => o.payload)
     const { object } = await generateObject({
-      model: openai(MODEL) as any,
+      model: openaiModel(MODEL) as any,
       schema: z.object({
         match: z
           .boolean()

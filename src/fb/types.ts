@@ -69,6 +69,10 @@ export interface SessionState {
   province_name?: string | null
   total_product_count?: number
   shown_national?: boolean         // đã show kết quả toàn quốc rồi (dùng cho Step 13)
+  /** Model AI dùng cho TOÀN BỘ session này — chốt 1 lần lúc tạo session để
+   *  thử nghiệm A/B (xem `modelRouting.ts`). Session cũ không có field này →
+   *  mặc định model A, KHÔNG bốc lại giữa chừng. */
+  ai_model?: string
 
   // ── V3 — ward fallback khi province không resolve được ─────────────────
   /** Mã xã/phường khách xác nhận (vd '13225' = Phường Thái Bình, Hưng Yên).

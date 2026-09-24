@@ -41,6 +41,10 @@ interface Price {
 const PRICES: Record<string, Price> = {
   'gpt-4o': { input: 2.5, cached: 1.25, output: 10 },
   'gpt-4o-mini': { input: 0.15, cached: 0.075, output: 0.6 },
+  // Model mới (giá 2026-09-24) — thêm SẴN để khi benchmark/đổi model không bị
+  // log cost_usd=0 âm thầm (priceFor trả null → costUsd trả 0, không warn).
+  'gpt-5.6-luna': { input: 0.2, cached: 0.02, output: 1.2 },
+  'gpt-6-luna': { input: 0.1, cached: 0.01, output: 0.5 },
   'text-embedding-3-small': { input: 0.02, cached: 0.02, output: 0 },
   'text-embedding-3-large': { input: 0.13, cached: 0.13, output: 0 }
 }

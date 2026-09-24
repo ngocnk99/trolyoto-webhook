@@ -1,4 +1,5 @@
 import { supabaseAmin } from './supabase'
+import { pickModelForNewSession } from './modelRouting'
 import type {
   ConversationMessage,
   FbSession,
@@ -58,13 +59,17 @@ export async function createSession(
   psid: string,
   pageId: string
 ): Promise<FbSession> {
+  // Chốt model A/B NGAY lúc tạo session (xem modelRouting.ts) — mọi lượt sau
+  // đọc lại từ state, không bốc lại, để 1 hội thoại không trộn 2 model.
+  const aiModel = pickModelForNewSession()
+  console.log(`[FB session] session mới psid=${psid} → ai_model=${aiModel}`)
   const { data, error } = await supabaseAmin
     .from(TABLE)
     .insert({
       psid,
       page_id: pageId,
       step: 'WELCOME' as MessengerStep,
-      state: {} as SessionState,
+      state: { ai_model: aiModel } as SessionState,
       is_active: true,
       is_paused_by_cskh: false
     })

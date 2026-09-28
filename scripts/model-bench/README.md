@@ -46,14 +46,31 @@ dòng vào `ai_call_log`, làm hỏng số liệu chi phí production.
 
 Kết quả ghi ra scratchpad, KHÔNG ghi vào repo (chứa nội dung chat thật của khách).
 
-## Thử nghiệm A/B đang chạy (bật 2026-09-24)
+## Kết quả A/B (24/9 → 28/9/2026) — ĐÃ CHUYỂN HẲN SANG gpt-6-luna
 
-Session MỚI bốc ngẫu nhiên 50/50 `gpt-4o-mini` / `gpt-6-luna`, chốt 1 lần vào
-`state.ai_model`; session CŨ (không có field này) giữ `gpt-4o-mini`. Xem
-`src/fb/modelRouting.ts`.
+107 session `gpt-4o-mini` vs 106 session `gpt-6-luna` trên khách thật, 682 lượt gọi:
 
-Env điều khiển: `AB_MODEL_ENABLED=false` (tắt, mọi session mới về model A),
-`AB_MODEL_PERCENT_B` (đổi tỉ lệ), `AB_MODEL_A` / `AB_MODEL_B` (đổi model).
+| Chỉ số | gpt-4o-mini | gpt-6-luna |
+|---|---|---|
+| Chi phí / lượt | $0.001415 | **$0.000377** (−73%) |
+| Độ trễ trung bình | 1906ms | 1902ms |
+| p95 / chậm nhất | 3103ms / 10267ms | **2886ms / 4092ms** |
+| Lỗi API / retry | 0 / 0 | 0 / 0 |
+| Trích được size / khu vực | 65% / 53% | **75% / 61%** |
+| Số lần bot hiểu sai (fail_*) | 16 | **10** |
+| Session lỗi | 5 | **2** |
+| Ra được sản phẩm | 51% | **57%** |
+| Khách để lại SĐT khi được hỏi | **9/20** | 4/21 |
+
+Chỉ số cuối là điểm DUY NHẤT luna kém (p≈0.09, chưa đủ ý nghĩa thống kê; soi
+tay 4 hội thoại thấy lý do là khách bực/hỏi việc ngoài lốp) — **vẫn phải theo
+dõi tiếp**, đủ ~100 lượt hỏi SĐT mà còn thấp rõ thì rollback.
+
+Rollback khẩn: đặt env `AI_MODEL=gpt-4o-mini` rồi restart (thắng cả
+`state.ai_model` đã lưu). Xem `src/fb/modelRouting.ts`.
+
+Phạm vi đổi: CHỈ `v3GatherTurn`. `analyzeTireImage` vẫn `gpt-4o` (luna đọc sai
+thương hiệu 20/20 ảnh), các hàm AI phụ vẫn `gpt-4o-mini` (chưa benchmark).
 
 **Theo dõi — chi phí, tốc độ, lỗi theo nhánh:**
 

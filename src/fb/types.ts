@@ -32,6 +32,24 @@ export type MessengerStep =
 
 export type BrandTier = 'premium' | 'balanced' | 'budget' | 'all'
 
+/** Địa điểm khách sau khi resolve (RPC dia_diem_resolve / dia_diem_tu_toa_do). */
+export interface DiaDiemState {
+  dvhc_id: number | null
+  /** 'tinh' | 'huyen' | 'xa' (theo dvhc) hoặc 'ghim' (khách gửi vị trí Messenger) */
+  cap: 'tinh' | 'huyen' | 'xa' | 'ghim'
+  he: 'moi' | 'cu' | null
+  /** "Huyện Quỳnh Phụ (Thái Bình cũ), Hưng Yên" */
+  ten: string
+  lat: number
+  lng: number
+  ban_kinh_m: number
+  tinh_moi_code: string | null
+  xa_moi_code: string | null
+  so_gara_trong_tinh?: number
+  /** dòng dia_diem_log của lần resolve này (để cập nhật gara đã đưa ra) */
+  log_id?: number | null
+}
+
 export interface SessionState {
   consult_type?: 'AI' | 'CSKH'
   area?: string
@@ -79,6 +97,18 @@ export interface SessionState {
    *  Khi có ward_code → query gara theo ward_code (chính xác hơn province). */
   ward_code?: string
   ward_name?: string
+
+  // ── Địa điểm V2 (task dia-diem-tim-gara, cờ DIA_DIEM_V2_ENABLED) ───────
+  /** Điểm + bán kính khách đang ở, resolve bằng RPC dia_diem_resolve / ghim Messenger.
+   *  Có field này (và cờ bật) → tìm gara theo khoảng cách (garage_tim_lop_gan)
+   *  thay cho lọc bằng ward_code → province_code → gara ưu tiên → toàn quốc. */
+  dia_diem?: DiaDiemState | null
+  /** Ứng viên đang chờ khách chọn qua quick reply V3_DD:<dvhc_id> (tên trùng ở nhiều nơi). */
+  dia_diem_ung_vien?: DiaDiemState[]
+  /** Đã hỏi "quận/huyện nào" 1 lần cho tỉnh nhiều gara — không hỏi lại. */
+  dia_diem_da_hoi_quan?: boolean
+  /** Lượt sau là câu trả lời "quận/huyện nào" → resolve lại kể cả khi AI không trả province_name. */
+  dia_diem_cho_quan?: boolean
 
   // ── V3 — fail counter per step (size / brand / location) ──────────────
   /** Số lần khách trả lời không hiểu ở mỗi step (size/brand/location).

@@ -47,10 +47,21 @@ import {
   getWardParentCode,
   getWardByCode,
   resolveBrandAliasFromText,
+  type DiemTimKiem,
   type SpGaraCard,
   type WardMatch
 } from '../db'
+import {
+  DIA_DIEM_V2_ENABLED,
+  DIA_DIEM_XA_KM,
+  capNhatDiaDiemLog,
+  diaDiemTuToaDo,
+  ghiDiaDiemLog,
+  toDiaDiemState
+} from '../diaDiem'
+import { apDiaDiem, xuLyDiaDiemV2 } from './dia-diem-v2'
 import type {
+  DiaDiemState,
   MessengerEvent,
   SessionState,
   QuickReply,
@@ -519,6 +530,131 @@ async function showWardConfirmOptions(
   )
 }
 
+/**
+ * Địa điểm V2: tên khách nói trùng ở nhiều nơi gần điểm nhau (vd "Trần Phú, Hà Nội" — phường ở Hoàng Mai và
+ * xã ở Chương Mỹ) → liệt kê đủ tên trong tin nhắn, quick reply đánh số (title FB ≤ 20 ký tự).
+ */
+async function showDiaDiemConfirmOptions(
+  psid: string,
+  sessionId: string,
+  userText: string,
+  ungVien: DiaDiemState[],
+  state: SessionState
+): Promise<void> {
+  console.log(
+    `[V3 diaDiemConfirm] "${userText}" → ${ungVien.length} options: ${ungVien.map(u => `${u.dvhc_id}=${u.ten}`).join(' | ')}`
+  )
+  await updateSession(sessionId, {
+    step: 'V3_GATHERING',
+    state: { ...state, cskh_reason: `Địa điểm trùng tên chưa xác định cho "${userText}"` }
+  })
+  const qrs: QuickReply[] = ungVien.map((u, i) => {
+    const title = `${i + 1}. ${u.ten}`
+    return qr(title.length <= 20 ? title : title.slice(0, 19) + '…', `V3_DD:${u.dvhc_id}`)
+  })
+  qrs.push(qr(QR_TITLE.CHAT_TVV, 'V3_CHAT_TVV'))
+  await reply(
+    psid,
+    sessionId,
+    `Em thấy "${userText}" có ở ${ungVien.length} nơi ạ 😊\n` +
+      ungVien.map((u, i) => `${i + 1}. ${u.ten}`).join('\n') +
+      '\n\nAnh/chị chọn đúng khu vực của mình giúp em nhé:',
+    qrs
+  )
+}
+
+async function handleDiaDiemChoice(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  dvhcId: number
+): Promise<void> {
+  const chon = session.state.dia_diem_ung_vien?.find(u => u.dvhc_id === dvhcId)
+  console.log(`[V3 flow] V3_DD click → dvhc_id=${dvhcId} ${chon ? chon.ten : '(không còn trong ứng viên)'}`)
+  if (!chon) {
+    await reply(psid, session.id, 'Anh/chị nhắn giúp em quận/huyện và tỉnh/thành mình đang ở nhé 😊')
+    return
+  }
+  const newState: SessionState = {
+    ...session.state,
+    ...(session.state.has_shown_results ? { max_price: null } : {})
+  }
+  const dd: DiaDiemState = { ...chon }
+  dd.log_id = await ghiDiaDiemLog({ sessionId: session.id, rawText: `[chọn] ${chon.ten}`, ketQua: dd, method: 'quick_reply' })
+  apDiaDiem(newState, dd)
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ ghi nhận khu vực ${chon.ten} ạ 👍`
+  if (newState.tire_size && hasBrandField(newState)) {
+    await dispatchAndShowResults(psid, session.id, pageId, newState, ['location'])
+    return
+  }
+  const nextQ = nextMissingFieldQuestion(newState)
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
+  await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText, needBrand && nextQ ? V3_BRAND_QRS() : undefined)
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
+}
+
+/** Địa điểm V2: khách gửi vị trí Messenger → điểm chính xác (bán kính 500 m) + xã mới gần nhất. */
+async function handleLocationPin(
+  psid: string,
+  session: FbSession,
+  pageId: string,
+  lat: number,
+  lng: number
+): Promise<void> {
+  const u = await diaDiemTuToaDo(lat, lng)
+  console.log(`[V3 flow] location pin (${lat},${lng}) → ${u ? u.ten_hien_thi : 'không xác định'}`)
+  if (!u) {
+    await reply(psid, session.id, 'Em chưa đọc được vị trí này ạ 😔 Anh/chị nhắn giúp em quận/huyện và tỉnh/thành mình đang ở nhé!')
+    return
+  }
+  const newState: SessionState = {
+    ...session.state,
+    dia_diem_cho_quan: false,
+    ...(session.state.has_shown_results ? { max_price: null } : {})
+  }
+  const dd = toDiaDiemState(u, true)
+  dd.log_id = await ghiDiaDiemLog({ sessionId: session.id, rawText: `[ghim] ${lat},${lng}`, ketQua: dd, method: 'ghim' })
+  apDiaDiem(newState, dd)
+  await updateSession(session.id, { step: 'V3_GATHERING', state: newState })
+
+  const ackText = `Dạ em đã nhận vị trí của anh/chị (gần ${u.ten_hien_thi}) 👍`
+  if (newState.tire_size && hasBrandField(newState)) {
+    await reply(psid, session.id, ackText)
+    await dispatchAndShowResults(psid, session.id, pageId, newState, ['location'])
+    return
+  }
+  const nextQ = nextMissingFieldQuestion(newState)
+  const needBrand = !!newState.tire_size && !hasBrandField(newState)
+  await reply(psid, session.id, nextQ ? `${ackText}\n\n${nextQ}` : ackText, needBrand && nextQ ? V3_BRAND_QRS() : undefined)
+  maybeScheduleInfoNudge(psid, session.id, pageId, newState)
+}
+
+/** Địa điểm V2: điểm tìm gara theo khoảng cách (cờ bật + đã resolve được điểm). */
+function diemTimKiemV2(state: SessionState): DiemTimKiem | null {
+  if (!DIA_DIEM_V2_ENABLED || !state.dia_diem) return null
+  return { lat: state.dia_diem.lat, lng: state.dia_diem.lng, banKinhM: state.dia_diem.ban_kinh_m }
+}
+
+/**
+ * Địa điểm V2: kết quả gần nhất nằm ở "khu vực khác" (ngoài tỉnh khách VÀ xa hơn DIA_DIEM_XA_KM) → dùng lại
+ * câu intro tier 3 (gara ưu tiên) / tier 4 để không nói "gara gần mình" sai sự thật.
+ */
+function phanLoaiKetQuaV2(
+  state: SessionState,
+  cards: SpGaraCard[]
+): { usedPriorityGarage: boolean; usedNationalFallback: boolean } {
+  const first = cards[0]
+  const xa =
+    !!first &&
+    typeof first.distanceKm === 'number' &&
+    first.distanceKm > DIA_DIEM_XA_KM &&
+    !!first.garageProvinceCode &&
+    first.garageProvinceCode !== state.dia_diem?.tinh_moi_code
+  return { usedPriorityGarage: xa && !!first.isPriority, usedNationalFallback: xa && !first.isPriority }
+}
+
 /** Lấy lịch sử gần đây từ conversation_log để feed AI ngữ cảnh. */
 /**
  * Lịch sử gửi cho AI (v3GatherTurn) — CHỈ hội thoại thật giữa khách và bot
@@ -706,10 +842,17 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
     ? `${TROLYOTO_URL}/lop/${card.productSlug}`
     : undefined
   const listingUrl = `${TROLYOTO_URL}/lop?size=${encodeURIComponent(card.size)}`
+  // Địa điểm V2: kèm khoảng cách ("cách ~X km") — số xấp xỉ vì điểm khách là tâm quận/xã khách nói.
+  const kmText =
+    typeof card.distanceKm === 'number'
+      ? `cách ~${card.distanceKm < 1 ? '1' : Math.round(card.distanceKm)} km`
+      : null
   const subtitle = [
     `🏪 ${card.garageName}`,
     `💰 ${formatCurrency(card.finalPrice)}/lốp`,
-    card.garageAddress ? `📍 ${card.garageAddress}` : null
+    card.garageAddress || kmText
+      ? `📍 ${[kmText, card.garageAddress].filter(Boolean).join(' · ')}`
+      : null
   ]
     .filter(Boolean)
     .join('\n')
@@ -1567,11 +1710,34 @@ async function handleGathering(
     !!decision.updates.province_name &&
     (decision.updates.province_name !== state.province_name ||
       !state.province_code)
-  if (isFreshLocationUpdate && decision.updates.province_name) {
+
+  // Địa điểm V2 (task dia-diem-tim-gara, cờ DIA_DIEM_V2_ENABLED): 1 RPC dùng chung với web chat resolve
+  // ra điểm + bán kính, thay cả khối deterministic/alias/resolveAddress bên dưới. RPC lỗi → đường cũ.
+  // Đang chờ câu trả lời "quận/huyện nào" thì resolve cả khi AI không trích province_name.
+  let diaDiemConfirm: DiaDiemState[] | null = null
+  let diaDiemV2Handled = false
+  if (DIA_DIEM_V2_ENABLED && (isFreshLocationUpdate || state.dia_diem_cho_quan)) {
+    const v2 = await xuLyDiaDiemV2({
+      sessionId,
+      userInput,
+      llmText: decision.updates.province_name ?? null,
+      state,
+      newState
+    })
+    if (v2) {
+      diaDiemV2Handled = true
+      diaDiemConfirm = v2.confirm ?? null
+      locationAskAgainMsg = v2.askAgainMsg ?? null
+      locationHandoffReason = v2.handoffReason ?? null
+    }
+  }
+
+  if (!diaDiemV2Handled && isFreshLocationUpdate && decision.updates.province_name) {
     // Clear location cũ — sẽ được set lại sau resolve
     newState.province_code = undefined
     newState.ward_code = undefined
     newState.ward_name = undefined
+    newState.dia_diem = undefined // đường cũ không có điểm → không tìm theo điểm của lượt trước
     const text = decision.updates.province_name
 
     // Thử match deterministic (merged-alias + sync) trên USERINPUT GỐC TRƯỚC —
@@ -1934,6 +2100,10 @@ async function handleGathering(
     )
     return
   }
+  if (diaDiemConfirm) {
+    await showDiaDiemConfirmOptions(psid, sessionId, userInput, diaDiemConfirm, newState)
+    return
+  }
 
   // V3: AUTO fetch_results nếu state đã đủ 3 trường (size + brand + location)
   //  — bất kể AI quyết định gì. Cover case khách re-gather: gửi size mới mà
@@ -1969,7 +2139,12 @@ async function handleGathering(
   const provinceChanged =
     !!decision.updates.province_name &&
     decision.updates.province_name !== state.province_name
-  const relevantFieldUpdated = sizeChanged || brandChanged || provinceChanged
+  // Địa điểm V2: câu trả lời "quận/huyện nào" có thể không kèm province_name mới từ AI → so theo điểm đã resolve.
+  const diaDiemChanged =
+    DIA_DIEM_V2_ENABLED &&
+    !!newState.dia_diem &&
+    (newState.dia_diem.dvhc_id !== state.dia_diem?.dvhc_id || newState.dia_diem.cap !== state.dia_diem?.cap)
+  const relevantFieldUpdated = sizeChanged || brandChanged || provinceChanged || diaDiemChanged
 
   // Detect: khách EXPLICIT nêu size (vd "vf3 205/55r17") qua regex trong tin gốc.
   // Nếu AI extract car_model nhưng khách KHÔNG viết size pattern → bỏ qua tire_size
@@ -2012,7 +2187,7 @@ async function handleGathering(
     ) {
       updatedFields.push('price')
     }
-    if (decision.updates.province_name) updatedFields.push('location')
+    if (decision.updates.province_name || diaDiemChanged) updatedFields.push('location')
     await dispatchAndShowResults(
       psid,
       sessionId,
@@ -2318,12 +2493,16 @@ async function showSpGaraResults(
   const brandFilter = brandFilterFromState(state)
   const wardCode = state.ward_code ?? null
   const provinceCode = state.province_code ?? null
-  const locationLabel = state.ward_name
-    ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
-    : (state.province_name ?? '')
+  // Địa điểm V2: có điểm → 1 truy vấn gara gần nhất trên toàn quốc thay cho chuỗi ward → tỉnh → ưu tiên → toàn quốc.
+  const diem = diemTimKiemV2(state)
+  const locationLabel = state.dia_diem && diem
+    ? state.dia_diem.ten
+    : state.ward_name
+      ? `${state.ward_name}${state.province_name ? `, ${state.province_name}` : ''}`
+      : (state.province_name ?? '')
 
-  // V3 yêu cầu: BẮT BUỘC có ward_code hoặc province_code mới query
-  if (!wardCode && !provinceCode) {
+  // V3 yêu cầu: BẮT BUỘC có ward_code hoặc province_code (hoặc điểm V2) mới query
+  if (!wardCode && !provinceCode && !diem) {
     console.warn(`[V3 showSpGara] no ward/province → cskhHandoff`)
     await cskhHandoff(
       psid,
@@ -2365,6 +2544,19 @@ async function showSpGaraResults(
     const fetchLocal = async (
       tireBrand: string
     ): Promise<{ cards: SpGaraCard[]; fromProvince: boolean }> => {
+      if (diem) {
+        const ganCards = await fetchSpGaraCards({
+          tireSize,
+          tireBrand,
+          provinceCode: null,
+          wardCode: null,
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor,
+          diaDiem: diem
+        })
+        return { cards: ganCards, fromProvince: false }
+      }
       if (wardCode) {
         const wardCards = await fetchSpGaraCards({
           tireSize,
@@ -2414,10 +2606,11 @@ async function showSpGaraResults(
     }
 
     // 1-3. Đúng brand: ward → tỉnh → gara ưu tiên
+    //   (V2: bước "local" đã là gara gần nhất toàn quốc, gara ưu tiên chỉ lên trước trong cùng dải → bỏ tier 3/4)
     const local = await fetchLocal(brandFilter)
     cards = local.cards
     usedFallbackProvince = local.fromProvince
-    if (cards.length === 0) {
+    if (cards.length === 0 && !diem) {
       cards = await fetchPriority(brandFilter)
       usedPriorityGarage = cards.length > 0
     }
@@ -2429,7 +2622,7 @@ async function showSpGaraResults(
       const localAll = await fetchLocal('__skip_brand__')
       cards = localAll.cards
       usedFallbackProvince = localAll.fromProvince
-      if (cards.length === 0) {
+      if (cards.length === 0 && !diem) {
         cards = await fetchPriority('__skip_brand__')
         usedPriorityGarage = cards.length > 0
       }
@@ -2437,9 +2630,16 @@ async function showSpGaraResults(
       if (usedFallbackBrand) console.log('[V3 showSpGara] [BRAND fallback]')
     }
 
+    // V2: phân loại "gần mình" / "khu vực khác" theo khoảng cách để chọn câu intro đúng.
+    if (diem && cards.length > 0) {
+      const pl = phanLoaiKetQuaV2(state, cards)
+      usedPriorityGarage = pl.usedPriorityGarage
+      usedNationalFallback = pl.usedNationalFallback
+    }
+
     // 7. Vẫn không có gì → TOÀN BỘ gara, bỏ hẳn ràng buộc vị trí. Đây là bước
     //    cuối cùng trước khi chuyển CSKH — vẫn giữ nguyên size/brand/giá.
-    if (cards.length === 0) {
+    if (cards.length === 0 && !diem) {
       cards = await fetchNationalGaraCards({
         tireSize,
         tireBrand: brandFilter,
@@ -2533,13 +2733,14 @@ async function showSpGaraResults(
       psid,
       sessionId,
       cards.map(buildSpGaraCard),
-      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedFallbackBrand ? ' (brand fallback)' : ''}${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}`
+      `${cards.length} SP+gara ở ${displayLabel}${usedFallbackProvince ? ' (ward fallback)' : ''}${usedFallbackBrand ? ' (brand fallback)' : ''}${usedPriorityGarage ? ' [PRIORITY GARAGE]' : ''}${usedNationalFallback ? ' [NATIONAL FALLBACK]' : ''}${diem ? ` [DIA_DIEM_V2 ~${cards[0]?.distanceKm ?? '?'}km]` : ''}`
     )
 
     const shownCodes = cards
       .map(c => c.garageCode)
       .filter((c): c is string => !!c)
     const minPrice = Math.min(...cards.map(c => c.finalPrice))
+    if (diem) await capNhatDiaDiemLog(state.dia_diem?.log_id, shownCodes, cards[0]?.distanceKm ?? null)
 
     await updateSession(sessionId, {
       step: 'SHOWING_RESULTS_LOCAL',
@@ -2634,6 +2835,30 @@ async function fetchBestQualityCascade(
   const provinceCode =
     state.province_code ?? (wardCode ? getWardParentCode(wardCode) : null)
   const maxFinalPriceFloor = state.max_price ?? undefined
+
+  // Địa điểm V2: gara gần nhất toàn quốc theo từng phân khúc (premium→…→all), không còn tầng ward/tỉnh/ưu tiên.
+  const diem = diemTimKiemV2(state)
+  if (diem) {
+    for (const tier of TIER_CASCADE_ORDER) {
+      const brandFilter =
+        tier === 'all' ? '__skip_brand__' : BRAND_TIERS[tier].brands.join('|')
+      const cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brandFilter,
+        provinceCode: null,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor,
+        diaDiem: diem
+      })
+      console.log(`[V3 cascade best] [DIA_DIEM_V2] tier=${tier} → ${cards.length} cards`)
+      if (cards.length > 0) {
+        return { cards, usedFallbackProvince: false, ...phanLoaiKetQuaV2(state, cards) }
+      }
+    }
+    return { cards: [], usedFallbackProvince: false, usedPriorityGarage: false, usedNationalFallback: false }
+  }
 
   const locations: Array<{
     wardCode: string | null
@@ -2735,6 +2960,43 @@ async function fetchViewAllCascade(
 
   const collected: SpGaraCard[] = []
   let usedFallbackProvince = false
+
+  // Địa điểm V2: mỗi phân khúc lấy gara gần nhất toàn quốc, trống cả 3 thì bỏ lọc hãng; không tầng ưu tiên/toàn quốc.
+  const diem = diemTimKiemV2(state)
+  if (diem) {
+    for (const tier of tiers) {
+      const cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: BRAND_TIERS[tier].brands.join('|'),
+        provinceCode: null,
+        wardCode: null,
+        limit: 1,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor,
+        excludeGarageCodes: collected.map(c => c.garageCode).filter((c): c is string => !!c),
+        diaDiem: diem
+      })
+      if (cards.length > 0) collected.push(cards[0])
+      console.log(`[V3 cascade viewAll] [DIA_DIEM_V2] tier=${tier} → ${cards.length > 0 ? 1 : 0} card`)
+    }
+    if (collected.length === 0) {
+      collected.push(
+        ...(await fetchSpGaraCards({
+          tireSize,
+          tireBrand: '__skip_brand__',
+          provinceCode: null,
+          wardCode: null,
+          limit: 3,
+          sortBy: 'lowest_price',
+          maxFinalPriceFloor,
+          diaDiem: diem
+        }))
+      )
+    }
+    // Cards 3 phân khúc có thể ở dải khác nhau → xếp gần trước rồi phân loại theo card gần nhất.
+    collected.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0))
+    return { cards: collected.slice(0, 3), usedFallbackProvince: false, ...phanLoaiKetQuaV2(state, collected) }
+  }
 
   for (const tier of tiers) {
     const brandFilter = BRAND_TIERS[tier].brands.join('|')
@@ -2945,6 +3207,10 @@ async function showCascadeResults(
       .map(c => c.garageCode)
       .filter((c): c is string => !!c)
     const minPrice = Math.min(...cards.map(c => c.finalPrice))
+    if (diemTimKiemV2(state)) {
+      const kms = cards.map(c => c.distanceKm).filter((k): k is number => typeof k === 'number')
+      await capNhatDiaDiemLog(state.dia_diem?.log_id, shownCodes, kms.length ? Math.min(...kms) : null)
+    }
 
     await updateSession(sessionId, {
       step: 'SHOWING_RESULTS_LOCAL',
@@ -3004,8 +3270,27 @@ async function fetchMultiBrandResults(
     usedNationalFallback: boolean
   }> = []
 
+  const diem = diemTimKiemV2(state)
   for (const brand of brands) {
     let cards: SpGaraCard[] = []
+    // Địa điểm V2: mỗi hãng 1 truy vấn gara gần nhất toàn quốc (không tầng ward/tỉnh/ưu tiên/toàn quốc).
+    if (diem) {
+      cards = await fetchSpGaraCards({
+        tireSize,
+        tireBrand: brand,
+        provinceCode: null,
+        wardCode: null,
+        limit: 3,
+        sortBy: 'lowest_price',
+        maxFinalPriceFloor,
+        diaDiem: diem
+      })
+      console.log(`[V3 multiBrand] [DIA_DIEM_V2] brand=${brand} → ${cards.length} cards`)
+      if (cards.length > 0) {
+        results.push({ brand, cards, usedFallbackProvince: false, ...phanLoaiKetQuaV2(state, cards) })
+      }
+      continue
+    }
     if (wardCode) {
       cards = await fetchSpGaraCards({
         tireSize,
@@ -3178,6 +3463,10 @@ async function showMultiBrandResults(
     }
 
     const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : undefined
+    if (diemTimKiemV2(state)) {
+      const kms = results.flatMap(r => r.cards.map(c => c.distanceKm)).filter((k): k is number => typeof k === 'number')
+      await capNhatDiaDiemLog(state.dia_diem?.log_id, allShownCodes, kms.length ? Math.min(...kms) : null)
+    }
 
     await updateSession(sessionId, {
       step: 'SHOWING_RESULTS_LOCAL',
@@ -4027,6 +4316,20 @@ async function handleMessengerEventV3Inner(
       }).catch(e => console.error('[V3 log user]', e))
     }
 
+    // ── Địa điểm V2: khách GHIM vị trí Messenger → dùng toạ độ chính xác ─
+    //  Trước đây event này lọt qua mọi nhánh, bot im lặng (bao-cao-log-chat.md mục 7).
+    const locationCoords = attachments.find(a => a.type === 'location')?.payload?.coordinates
+    if (DIA_DIEM_V2_ENABLED && locationCoords && !messageText && !payload) {
+      appendConversationLog(session.id, {
+        role: 'user',
+        type: 'text',
+        text: `[vị trí: ${locationCoords.lat},${locationCoords.long}]`,
+        ts: new Date().toISOString()
+      }).catch(e => console.error('[V3 log location]', e))
+      await handleLocationPin(psid, session, pageId, locationCoords.lat, locationCoords.long)
+      return
+    }
+
     // ── Image attachment → handleImage ──────────────────────────────────
     if (imageUrl) {
       await handleImage(psid, session, pageId, imageUrl)
@@ -4116,6 +4419,12 @@ async function handleMessengerEventV3Inner(
       if (payload.startsWith('V3_WARD:')) {
         const wardCode = payload.replace('V3_WARD:', '')
         await handleWardChoice(psid, session, pageId, wardCode)
+        return
+      }
+
+      // Địa điểm V2: khách chọn 1 trong các nơi trùng tên
+      if (payload.startsWith('V3_DD:')) {
+        await handleDiaDiemChoice(psid, session, pageId, Number(payload.replace('V3_DD:', '')))
         return
       }
 

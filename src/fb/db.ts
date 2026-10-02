@@ -809,6 +809,19 @@ export interface SpGaraCard {
   garageSold: number | null
   /** Link "Xem khuyến mại" → trang chi tiết SP của gara */
   detailUrl: string
+  /** Địa điểm V2: khoảng cách gara → điểm khách (km) */
+  distanceKm?: number
+  /** Địa điểm V2: gara nằm trong priority_garage */
+  isPriority?: boolean
+  /** Địa điểm V2: tỉnh mới của gara (so với tỉnh khách để biết "khu vực khác") */
+  garageProvinceCode?: string | null
+}
+
+/** Điểm tìm gara (Địa điểm V2) — tâm + bán kính độ mờ của địa điểm khách. */
+export interface DiemTimKiem {
+  lat: number
+  lng: number
+  banKinhM: number
 }
 
 /**
@@ -853,6 +866,11 @@ export async function fetchSpGaraCards(params: {
    * 10 SP rẻ nhất rồi kết luận nhầm là "không có hàng".
    */
   catalogLimit?: number
+  /**
+   * Địa điểm V2: có điểm → tìm gara GẦN NHẤT có hàng trên toàn quốc (RPC garage_tim_lop_gan),
+   * bỏ qua ward/province/restrict/nationwide. Caller chỉ truyền khi cờ DIA_DIEM_V2_ENABLED bật.
+   */
+  diaDiem?: DiemTimKiem | null
 }): Promise<SpGaraCard[]> {
   const {
     tireSize,
@@ -865,8 +883,13 @@ export async function fetchSpGaraCards(params: {
     sortBy = 'lowest_price',
     excludeGarageCodes,
     maxFinalPriceFloor,
-    catalogLimit
+    catalogLimit,
+    diaDiem
   } = params
+
+  if (diaDiem) {
+    return fetchSpGaraCardsGan({ tireSize, tireBrand, diaDiem, limit, sortBy, excludeGarageCodes, maxFinalPriceFloor })
+  }
 
   // BẮT BUỘC có province_code/ward_code — TRỪ tier 3 (restrictGarageCodes) và
   // tier 4 (allowNationwide=true tường minh). Xem docstring cùng tên ở
@@ -947,6 +970,122 @@ export async function fetchSpGaraCards(params: {
       finalPrice: offer.finalPrice,
       garageSold: offer.garageSold,
       detailUrl: offer.detailUrl
+    }
+  })
+}
+
+interface GaraGanRow {
+  productadmin_id: string
+  pa_name: string
+  brand: string | null
+  size_key: string | null
+  pa_slug: string
+  pa_code: string | null
+  pa_price: number | null
+  pa_lastprice: number | null
+  pa_promotional_price: number | null
+  pa_rating: number | null
+  pa_quantitysold: number | null
+  main_image: string | null
+  gia_cuoi: number
+  quantitysold: number | null
+  garage_code: string | null
+  garage_name: string
+  garage_slug: string | null
+  garage_rating: number | null
+  ward_code: string | null
+  province_code: string | null
+  distance_km: number
+  la_uu_tien: boolean
+}
+
+/**
+ * Địa điểm V2 — SP+gara gần điểm khách nhất (RPC garage_tim_lop_gan, 1 query JOIN ở DB).
+ * Mỗi card 1 gara khác nhau (p_moi_gara=1). sortBy='lowest_price' → trong CÙNG DẢI khoảng cách rẻ trước;
+ * gara ưu tiên chỉ lên trước trong cùng dải (không còn tier "gara ưu tiên tỉnh khác").
+ * Size: dùng key gộp theo categoryadmin như fetchTireCatalog; chưa khai báo gộp thì thử bỏ hậu tố tải trọng.
+ */
+async function fetchSpGaraCardsGan(params: {
+  tireSize: string
+  tireBrand: string
+  diaDiem: DiemTimKiem
+  limit: number
+  sortBy: GarageSortBy
+  excludeGarageCodes?: string[]
+  maxFinalPriceFloor?: number
+}): Promise<SpGaraCard[]> {
+  const { tireSize, tireBrand, diaDiem, limit, sortBy, excludeGarageCodes, maxFinalPriceFloor } = params
+  const naiveSizeKey = toSizeKey(tireSize)
+  if (!naiveSizeKey) return []
+  const mergedKey = resolveMergedTireSizeKey(naiveSizeKey)
+  const brands = parseBrandFilter(tireBrand)
+
+  const query = async (sizeKey: string): Promise<GaraGanRow[]> => {
+    const { data, error } = await supabaseAmin.rpc('garage_tim_lop_gan', {
+      p_lat: diaDiem.lat,
+      p_lng: diaDiem.lng,
+      p_size_key: sizeKey,
+      p_brands: brands.length ? brands : null,
+      p_ban_kinh_m: diaDiem.banKinhM,
+      p_gia_toi_da: typeof maxFinalPriceFloor === 'number' ? maxFinalPriceFloor : null,
+      p_loai_tru_gara: excludeGarageCodes?.length ? excludeGarageCodes : null,
+      p_sap_xep: sortBy === 'lowest_price' ? 'gia_thap' : 'gan_nhat',
+      p_moi_gara: 1,
+      p_limit: limit
+    })
+    if (error) {
+      console.error('[FB db] garage_tim_lop_gan error:', error.message)
+      return []
+    }
+    return (data ?? []) as GaraGanRow[]
+  }
+
+  let rows = await query(mergedKey ?? naiveSizeKey)
+  if (rows.length === 0 && !mergedKey) {
+    const baseSizeKey = stripSizeSuffix(naiveSizeKey)
+    if (baseSizeKey) rows = await query(baseSizeKey)
+  }
+  console.log(
+    `[DB fetchSpGaraCardsGan] size="${tireSize}" brand="${tireBrand}" điểm=(${diaDiem.lat},${diaDiem.lng}) r=${diaDiem.banKinhM}m → ${rows.length} gara [DIA_DIEM_V2] ${rows
+      .map(r => `${r.garage_code}@${r.distance_km}km${r.la_uu_tien ? '*' : ''}`)
+      .join(' ')}`
+  )
+
+  return rows.map(r => {
+    const product = mapProductadminToCatalogItem({
+      id: r.productadmin_id,
+      name: r.pa_name,
+      BRAND: r.brand,
+      SIZE: r.size_key,
+      slug: r.pa_slug,
+      code: r.pa_code,
+      price: r.pa_price,
+      lastprice: r.pa_lastprice,
+      promotional_price: r.pa_promotional_price,
+      rating: r.pa_rating,
+      quantitysold: r.pa_quantitysold,
+      main_image: r.main_image
+    } as ProductadminRow)
+    const detailUrl = r.garage_code
+      ? `${TROLYOTO_URL}/lop/${r.pa_slug}?code-gara=${r.garage_code}`
+      : `${TROLYOTO_URL}/lop/${r.pa_slug}`
+    return {
+      productId: product.id,
+      brand: product.brand,
+      size: product.size,
+      productSlug: product.slug,
+      image: product.image,
+      productListPrice: product.price,
+      garageName: r.garage_name,
+      garageCode: r.garage_code,
+      garageAddress: extractAddressFromGarage({ ward: r.ward_code, province: r.province_code }),
+      garageRating: r.garage_rating != null ? Number(r.garage_rating) : null,
+      finalPrice: Number(r.gia_cuoi),
+      garageSold: r.quantitysold != null ? Number(r.quantitysold) : null,
+      detailUrl,
+      distanceKm: Number(r.distance_km),
+      isPriority: r.la_uu_tien,
+      garageProvinceCode: r.province_code
     }
   })
 }

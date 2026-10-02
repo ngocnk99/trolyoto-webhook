@@ -1390,21 +1390,21 @@
     "parent_code": "31"
   },
   "11914": {
-    "name": "Đặc khu Cát Hải",
+    "name": "Cát Hải",
     "type": "khac",
     "slug": "dac-khu-cat-hai",
     "name_with_type": "Đặc khu Cát Hải",
-    "path": "Đặc khu Cát Hải, Hải Phòng",
+    "path": "Cát Hải, Hải Phòng",
     "path_with_type": "Đặc khu Cát Hải, Thành phố Hải Phòng",
     "code": "11914",
     "parent_code": "31"
   },
   "11948": {
-    "name": "Đặc khu Bạch Long Vĩ",
+    "name": "Bạch Long Vĩ",
     "type": "khac",
     "slug": "dac-khu-bach-long-vi",
     "name_with_type": "Đặc khu Bạch Long Vĩ",
-    "path": "Đặc khu Bạch Long Vĩ, Hải Phòng",
+    "path": "Bạch Long Vĩ, Hải Phòng",
     "path_with_type": "Đặc khu Bạch Long Vĩ, Thành phố Hải Phòng",
     "code": "11948",
     "parent_code": "31"
@@ -2560,12 +2560,12 @@
     "parent_code": "37"
   },
   "13396": {
-    "name": "Nguyễn Uý",
+    "name": "Nguyễn Úy",
     "type": "phuong",
     "slug": "nguyen-uy",
-    "name_with_type": "Phường Nguyễn Uý",
-    "path": "Nguyễn Uý, Ninh Bình",
-    "path_with_type": "Phường Nguyễn Uý, Tỉnh Ninh Bình",
+    "name_with_type": "Phường Nguyễn Úy",
+    "path": "Nguyễn Úy, Ninh Bình",
+    "path_with_type": "Phường Nguyễn Úy, Tỉnh Ninh Bình",
     "code": "13396",
     "parent_code": "37"
   },
@@ -3210,12 +3210,12 @@
     "parent_code": "37"
   },
   "14167": {
-    "name": "Giao Thuỷ",
+    "name": "Giao Thủy",
     "type": "xa",
     "slug": "giao-thuy",
-    "name_with_type": "Xã Giao Thuỷ",
-    "path": "Giao Thuỷ, Ninh Bình",
-    "path_with_type": "Xã Giao Thuỷ, Tỉnh Ninh Bình",
+    "name_with_type": "Xã Giao Thủy",
+    "path": "Giao Thủy, Ninh Bình",
+    "path_with_type": "Xã Giao Thủy, Tỉnh Ninh Bình",
     "code": "14167",
     "parent_code": "37"
   },
@@ -3230,12 +3230,12 @@
     "parent_code": "37"
   },
   "14182": {
-    "name": "Giao Hoà",
+    "name": "Giao Hòa",
     "type": "xa",
     "slug": "giao-hoa",
-    "name_with_type": "Xã Giao Hoà",
-    "path": "Giao Hoà, Ninh Bình",
-    "path_with_type": "Xã Giao Hoà, Tỉnh Ninh Bình",
+    "name_with_type": "Xã Giao Hòa",
+    "path": "Giao Hòa, Ninh Bình",
+    "path_with_type": "Xã Giao Hòa, Tỉnh Ninh Bình",
     "code": "14182",
     "parent_code": "37"
   },
@@ -8160,11 +8160,11 @@
     "parent_code": "44"
   },
   "19742": {
-    "name": "Đặc khu Cồn Cỏ",
+    "name": "Cồn Cỏ",
     "type": "khac",
     "slug": "dac-khu-con-co",
     "name_with_type": "Đặc khu Cồn Cỏ",
-    "path": "Đặc khu Cồn Cỏ, Quảng Trị",
+    "path": "Cồn Cỏ, Quảng Trị",
     "path_with_type": "Đặc khu Cồn Cỏ, Tỉnh Quảng Trị",
     "code": "19742",
     "parent_code": "44"
@@ -8720,12 +8720,12 @@
     "parent_code": "48"
   },
   "20333": {
-    "name": "Đặc khu Hoàng Sa",
+    "name": "Hoàng Sa",
     "type": "khac",
     "slug": "dac-khu-hoang-sa",
-    "name_with_type": "Đặc khu Hoàng Sa",
-    "path": "Đặc khu Hoàng Sa, Đà Nẵng",
-    "path_with_type": "Đặc khu Hoàng Sa, Thành phố Đà Nẵng",
+    "name_with_type": "Đặc khu Hoàng Sa",
+    "path": "Hoàng Sa, Đà Nẵng",
+    "path_with_type": "Đặc khu Hoàng Sa, Thành phố Đà Nẵng",
     "code": "20333",
     "parent_code": "48"
   },
@@ -10060,11 +10060,11 @@
     "parent_code": "51"
   },
   "21548": {
-    "name": "Đặc khu Lý Sơn",
+    "name": "Lý Sơn",
     "type": "khac",
     "slug": "dac-khu-ly-son",
     "name_with_type": "Đặc khu Lý Sơn",
-    "path": "Đặc khu Lý Sơn, Quảng Ngãi",
+    "path": "Lý Sơn, Quảng Ngãi",
     "path_with_type": "Đặc khu Lý Sơn, Tỉnh Quảng Ngãi",
     "code": "21548",
     "parent_code": "51"
@@ -11390,11 +11390,11 @@
     "parent_code": "56"
   },
   "22736": {
-    "name": "Đặc khu Trường Sa",
+    "name": "Trường Sa",
     "type": "khac",
     "slug": "dac-khu-truong-sa",
     "name_with_type": "Đặc khu Trường Sa",
-    "path": "Đặc khu Trường Sa, Khánh Hòa",
+    "path": "Trường Sa, Khánh Hòa",
     "path_with_type": "Đặc khu Trường Sa, Tỉnh Khánh Hòa",
     "code": "22736",
     "parent_code": "56"
@@ -11650,12 +11650,12 @@
     "parent_code": "68"
   },
   "22924": {
-    "name": "Phú Thuỷ",
+    "name": "Phú Thủy",
     "type": "phuong",
     "slug": "phu-thuy",
-    "name_with_type": "Phường Phú Thuỷ",
-    "path": "Phú Thuỷ, Lâm Đồng",
-    "path_with_type": "Phường Phú Thuỷ, Tỉnh Lâm Đồng",
+    "name_with_type": "Phường Phú Thủy",
+    "path": "Phú Thủy, Lâm Đồng",
+    "path_with_type": "Phường Phú Thủy, Tỉnh Lâm Đồng",
     "code": "22924",
     "parent_code": "68"
   },
@@ -12080,11 +12080,11 @@
     "parent_code": "68"
   },
   "23272": {
-    "name": "Đặc khu Phú Quý",
+    "name": "Phú Quý",
     "type": "khac",
     "slug": "dac-khu-phu-quy",
     "name_with_type": "Đặc khu Phú Quý",
-    "path": "Đặc khu Phú Quý, Lâm Đồng",
+    "path": "Phú Quý, Lâm Đồng",
     "path_with_type": "Đặc khu Phú Quý, Tỉnh Lâm Đồng",
     "code": "23272",
     "parent_code": "68"
@@ -13330,12 +13330,12 @@
     "parent_code": "66"
   },
   "24184": {
-    "name": "Ea H’Leo",
+    "name": "Ea H'Leo",
     "type": "xa",
     "slug": "ea-h-leo",
-    "name_with_type": "Xã Ea H’Leo",
-    "path": "Ea H’Leo, Đắk Lắk",
-    "path_with_type": "Xã Ea H’Leo, Tỉnh Đắk Lắk",
+    "name_with_type": "Xã Ea H'Leo",
+    "path": "Ea H'Leo, Đắk Lắk",
+    "path_with_type": "Xã Ea H'Leo, Tỉnh Đắk Lắk",
     "code": "24184",
     "parent_code": "66"
   },
@@ -13480,22 +13480,22 @@
     "parent_code": "66"
   },
   "24280": {
-    "name": "Cư M’gar",
+    "name": "Cư M'gar",
     "type": "xa",
     "slug": "cu-m-gar",
-    "name_with_type": "Xã Cư M’gar",
-    "path": "Cư M’gar, Đắk Lắk",
-    "path_with_type": "Xã Cư M’gar, Tỉnh Đắk Lắk",
+    "name_with_type": "Xã Cư M'gar",
+    "path": "Cư M'gar, Đắk Lắk",
+    "path_with_type": "Xã Cư M'gar, Tỉnh Đắk Lắk",
     "code": "24280",
     "parent_code": "66"
   },
   "24286": {
-    "name": "Ea M’Droh",
+    "name": "Ea M'Droh",
     "type": "xa",
     "slug": "ea-m-droh",
-    "name_with_type": "Xã Ea M’Droh",
-    "path": "Ea M’Droh, Đắk Lắk",
-    "path_with_type": "Xã Ea M’Droh, Tỉnh Đắk Lắk",
+    "name_with_type": "Xã Ea M'Droh",
+    "path": "Ea M'Droh, Đắk Lắk",
+    "path_with_type": "Xã Ea M'Droh, Tỉnh Đắk Lắk",
     "code": "24286",
     "parent_code": "66"
   },
@@ -13660,12 +13660,12 @@
     "parent_code": "66"
   },
   "24412": {
-    "name": "M’Drắk",
+    "name": "M'Drắk",
     "type": "xa",
     "slug": "m-drak",
-    "name_with_type": "Xã M’Drắk",
-    "path": "M’Drắk, Đắk Lắk",
-    "path_with_type": "Xã M’Drắk, Tỉnh Đắk Lắk",
+    "name_with_type": "Xã M'Drắk",
+    "path": "M'Drắk, Đắk Lắk",
+    "path_with_type": "Xã M'Drắk, Tỉnh Đắk Lắk",
     "code": "24412",
     "parent_code": "66"
   },
@@ -13690,12 +13690,12 @@
     "parent_code": "66"
   },
   "24436": {
-    "name": "Cư M’ta",
+    "name": "Cư M'ta",
     "type": "xa",
     "slug": "cu-m-ta",
-    "name_with_type": "Xã Cư M’ta",
-    "path": "Cư M’ta, Đắk Lắk",
-    "path_with_type": "Xã Cư M’ta, Tỉnh Đắk Lắk",
+    "name_with_type": "Xã Cư M'ta",
+    "path": "Cư M'ta, Đắk Lắk",
+    "path_with_type": "Xã Cư M'ta, Tỉnh Đắk Lắk",
     "code": "24436",
     "parent_code": "66"
   },
@@ -14280,12 +14280,12 @@
     "parent_code": "68"
   },
   "24829": {
-    "name": "B’Lao",
+    "name": "B'Lao",
     "type": "phuong",
     "slug": "b-lao",
-    "name_with_type": "Phường B’Lao",
-    "path": "B’Lao, Lâm Đồng",
-    "path_with_type": "Phường B’Lao, Tỉnh Lâm Đồng",
+    "name_with_type": "Phường B'Lao",
+    "path": "B'Lao, Lâm Đồng",
+    "path_with_type": "Phường B'Lao, Tỉnh Lâm Đồng",
     "code": "24829",
     "parent_code": "68"
   },
@@ -14430,12 +14430,12 @@
     "parent_code": "68"
   },
   "24934": {
-    "name": "D’Ran",
+    "name": "D'Ran",
     "type": "xa",
     "slug": "d-ran",
-    "name_with_type": "Xã D’Ran",
-    "path": "D’Ran, Lâm Đồng",
-    "path_with_type": "Xã D’Ran, Tỉnh Lâm Đồng",
+    "name_with_type": "Xã D'Ran",
+    "path": "D'Ran, Lâm Đồng",
+    "path_with_type": "Xã D'Ran, Tỉnh Lâm Đồng",
     "code": "24934",
     "parent_code": "68"
   },
@@ -16690,11 +16690,11 @@
     "parent_code": "79"
   },
   "26732": {
-    "name": "Đặc khu Côn Đảo",
+    "name": "Côn Đảo",
     "type": "khac",
     "slug": "dac-khu-con-dao",
     "name_with_type": "Đặc khu Côn Đảo",
-    "path": "Đặc khu Côn Đảo, Hồ Chí Minh",
+    "path": "Côn Đảo, Hồ Chí Minh",
     "path_with_type": "Đặc khu Côn Đảo, Thành phố Hồ Chí Minh",
     "code": "26732",
     "parent_code": "79"
@@ -21570,31 +21570,31 @@
     "parent_code": "91"
   },
   "31078": {
-    "name": "Đặc khu Phú Quốc",
+    "name": "Phú Quốc",
     "type": "khac",
     "slug": "dac-khu-phu-quoc",
     "name_with_type": "Đặc khu Phú Quốc",
-    "path": "Đặc khu Phú Quốc, An Giang",
+    "path": "Phú Quốc, An Giang",
     "path_with_type": "Đặc khu Phú Quốc, Tỉnh An Giang",
     "code": "31078",
     "parent_code": "91"
   },
   "31105": {
-    "name": "Đặc khu Thổ Châu",
+    "name": "Thổ Châu",
     "type": "khac",
     "slug": "dac-khu-tho-chau",
     "name_with_type": "Đặc khu Thổ Châu",
-    "path": "Đặc khu Thổ Châu, An Giang",
+    "path": "Thổ Châu, An Giang",
     "path_with_type": "Đặc khu Thổ Châu, Tỉnh An Giang",
     "code": "31105",
     "parent_code": "91"
   },
   "31108": {
-    "name": "Đặc khu Kiên Hải",
+    "name": "Kiên Hải",
     "type": "khac",
     "slug": "dac-khu-kien-hai",
     "name_with_type": "Đặc khu Kiên Hải",
-    "path": "Đặc khu Kiên Hải, An Giang",
+    "path": "Kiên Hải, An Giang",
     "path_with_type": "Đặc khu Kiên Hải, Tỉnh An Giang",
     "code": "31108",
     "parent_code": "91"
@@ -22123,9 +22123,9 @@
     "name": "Vĩnh Tường",
     "type": "xa",
     "slug": "vinh-tuong",
-    "name_with_type": "Xã  Vĩnh Tường",
+    "name_with_type": "Xã Vĩnh Tường",
     "path": "Vĩnh Tường, Cần Thơ",
-    "path_with_type": "Xã  Vĩnh Tường, Thành phố Cần Thơ",
+    "path_with_type": "Xã Vĩnh Tường, Thành phố Cần Thơ",
     "code": "31459",
     "parent_code": "92"
   },
@@ -23303,9 +23303,9 @@
     "name": "Hoàn Kiếm",
     "type": "phuong",
     "slug": "hoan-kiem",
-    "name_with_type": "Phường \nHoàn Kiếm",
+    "name_with_type": "Phường Hoàn Kiếm",
     "path": "Hoàn Kiếm, Hà Nội",
-    "path_with_type": "Phường \nHoàn Kiếm, Thành phố Hà Nội",
+    "path_with_type": "Phường Hoàn Kiếm, Thành phố Hà Nội",
     "code": "00070",
     "parent_code": "01"
   },
@@ -23620,12 +23620,12 @@
     "parent_code": "01"
   },
   "00385": {
-    "name": "Xã Trung Giã",
+    "name": "Trung Giã",
     "type": "xa",
     "slug": "xa-trung-gia",
-    "name_with_type": "Xã Trung Giã",
-    "path": "Xã Trung Giã, Hà Nội",
-    "path_with_type": "Xã Trung Giã, Thành phố Hà Nội",
+    "name_with_type": "Xã Trung Giã",
+    "path": "Trung Giã, Hà Nội",
+    "path_with_type": "Xã Trung Giã, Thành phố Hà Nội",
     "code": "00385",
     "parent_code": "01"
   },
@@ -24170,12 +24170,12 @@
     "parent_code": "08"
   },
   "00922": {
-    "name": "Thuận Hoà",
+    "name": "Thuận Hòa",
     "type": "xa",
     "slug": "thuan-hoa",
-    "name_with_type": "Xã Thuận Hoà",
-    "path": "Thuận Hoà, Tuyên Quang",
-    "path_with_type": "Xã Thuận Hoà, Tỉnh Tuyên Quang",
+    "name_with_type": "Xã Thuận Hòa",
+    "path": "Thuận Hòa, Tuyên Quang",
+    "path_with_type": "Xã Thuận Hòa, Tỉnh Tuyên Quang",
     "code": "00922",
     "parent_code": "08"
   },
@@ -25630,12 +25630,12 @@
     "parent_code": "08"
   },
   "02287": {
-    "name": "Chiêm Hoá",
+    "name": "Chiêm Hóa",
     "type": "xa",
     "slug": "chiem-hoa",
-    "name_with_type": "Xã Chiêm Hoá",
-    "path": "Chiêm Hoá, Tuyên Quang",
-    "path_with_type": "Xã Chiêm Hoá, Tỉnh Tuyên Quang",
+    "name_with_type": "Xã Chiêm Hóa",
+    "path": "Chiêm Hóa, Tuyên Quang",
+    "path_with_type": "Xã Chiêm Hóa, Tỉnh Tuyên Quang",
     "code": "02287",
     "parent_code": "08"
   },
@@ -25720,12 +25720,12 @@
     "parent_code": "08"
   },
   "02353": {
-    "name": "Hoà An",
+    "name": "Hòa An",
     "type": "xa",
     "slug": "hoa-an",
-    "name_with_type": "Xã Hoà An",
-    "path": "Hoà An, Tuyên Quang",
-    "path_with_type": "Xã Hoà An, Tỉnh Tuyên Quang",
+    "name_with_type": "Xã Hòa An",
+    "path": "Hòa An, Tuyên Quang",
+    "path_with_type": "Xã Hòa An, Tỉnh Tuyên Quang",
     "code": "02353",
     "parent_code": "08"
   },
@@ -25810,12 +25810,12 @@
     "parent_code": "08"
   },
   "02419": {
-    "name": "Thái Hoà",
+    "name": "Thái Hòa",
     "type": "xa",
     "slug": "thai-hoa",
-    "name_with_type": "Xã Thái Hoà",
-    "path": "Thái Hoà, Tuyên Quang",
-    "path_with_type": "Xã Thái Hoà, Tỉnh Tuyên Quang",
+    "name_with_type": "Xã Thái Hòa",
+    "path": "Thái Hòa, Tuyên Quang",
+    "path_with_type": "Xã Thái Hòa, Tỉnh Tuyên Quang",
     "code": "02419",
     "parent_code": "08"
   },
@@ -26030,12 +26030,12 @@
     "parent_code": "08"
   },
   "02620": {
-    "name": "Sơn Thuỷ",
+    "name": "Sơn Thủy",
     "type": "xa",
     "slug": "son-thuy",
-    "name_with_type": "Xã Sơn Thuỷ",
-    "path": "Sơn Thuỷ, Tuyên Quang",
-    "path_with_type": "Xã Sơn Thuỷ, Tỉnh Tuyên Quang",
+    "name_with_type": "Xã Sơn Thủy",
+    "path": "Sơn Thủy, Tuyên Quang",
+    "path_with_type": "Xã Sơn Thủy, Tỉnh Tuyên Quang",
     "code": "02620",
     "parent_code": "08"
   },
@@ -29980,12 +29980,12 @@
     "parent_code": "20"
   },
   "06325": {
-    "name": "xã Bắc Sơn",
+    "name": "Bắc Sơn",
     "type": "xa",
     "slug": "xa-bac-son",
-    "name_with_type": "xã Bắc Sơn",
-    "path": "xã Bắc Sơn, Lạng Sơn",
-    "path_with_type": "xã Bắc Sơn, Tỉnh Lạng Sơn",
+    "name_with_type": "Xã Bắc Sơn",
+    "path": "Bắc Sơn, Lạng Sơn",
+    "path_with_type": "Xã Bắc Sơn, Tỉnh Lạng Sơn",
     "code": "06325",
     "parent_code": "20"
   },
@@ -30670,11 +30670,11 @@
     "parent_code": "22"
   },
   "06994": {
-    "name": "Đặc khu Vân Đồn",
+    "name": "Vân Đồn",
     "type": "khac",
     "slug": "dac-khu-van-don",
     "name_with_type": "Đặc khu Vân Đồn",
-    "path": "Đặc khu Vân Đồn, Quảng Ninh",
+    "path": "Vân Đồn, Quảng Ninh",
     "path_with_type": "Đặc khu Vân Đồn, Tỉnh Quảng Ninh",
     "code": "06994",
     "parent_code": "22"
@@ -30820,11 +30820,11 @@
     "parent_code": "22"
   },
   "07192": {
-    "name": "Đặc khu Cô Tô",
+    "name": "Cô Tô",
     "type": "khac",
     "slug": "dac-khu-co-to",
     "name_with_type": "Đặc khu Cô Tô",
-    "path": "Đặc khu Cô Tô, Quảng Ninh",
+    "path": "Cô Tô, Quảng Ninh",
     "path_with_type": "Đặc khu Cô Tô, Tỉnh Quảng Ninh",
     "code": "07192",
     "parent_code": "22"
@@ -31380,12 +31380,12 @@
     "parent_code": "24"
   },
   "07840": {
-    "name": "Hiệp Hoà",
+    "name": "Hiệp Hòa",
     "type": "xa",
     "slug": "hiep-hoa",
-    "name_with_type": "Xã Hiệp Hoà",
-    "path": "Hiệp Hoà, Bắc Ninh",
-    "path_with_type": "Xã Hiệp Hoà, Tỉnh Bắc Ninh",
+    "name_with_type": "Xã Hiệp Hòa",
+    "path": "Hiệp Hòa, Bắc Ninh",
+    "path_with_type": "Xã Hiệp Hòa, Tỉnh Bắc Ninh",
     "code": "07840",
     "parent_code": "24"
   },
@@ -33060,12 +33060,12 @@
     "parent_code": "01"
   },
   "09784": {
-    "name": "Xã Đan Phượng",
+    "name": "Đan Phượng",
     "type": "xa",
     "slug": "xa-dan-phuong",
-    "name_with_type": "Xã Đan Phượng",
-    "path": "Xã Đan Phượng, Hà Nội",
-    "path_with_type": "Xã Đan Phượng, Thành phố Hà Nội",
+    "name_with_type": "Xã Đan Phượng",
+    "path": "Đan Phượng, Hà Nội",
+    "path_with_type": "Xã Đan Phượng, Thành phố Hà Nội",
     "code": "09784",
     "parent_code": "01"
   },
@@ -33160,12 +33160,12 @@
     "parent_code": "01"
   },
   "09931": {
-    "name": "Xã Hưng Đạo",
+    "name": "Hưng Đạo",
     "type": "xa",
     "slug": "xa-hung-dao",
-    "name_with_type": "Xã Hưng Đạo",
-    "path": "Xã Hưng Đạo, Hà Nội",
-    "path_with_type": "Xã Hưng Đạo, Thành phố Hà Nội",
+    "name_with_type": "Xã Hưng Đạo",
+    "path": "Hưng Đạo, Hà Nội",
+    "path_with_type": "Xã Hưng Đạo, Thành phố Hà Nội",
     "code": "09931",
     "parent_code": "01"
   },

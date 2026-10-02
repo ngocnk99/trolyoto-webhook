@@ -409,6 +409,55 @@ function buildPriceExcludedLocalIntro(
 }
 
 /**
+ * Intro cho luồng ĐA THƯƠNG HIỆU khi kết quả LẪN LỘN — có hãng tìm được ngay
+ * khu vực khách, có hãng phải lấy tỉnh khác.
+ *
+ * KHÔNG dùng `buildSearchIntro` ở case này: câu đó hứa "gara GẦN MÌNH" cho
+ * TOÀN BỘ response, trong khi 1 trong các carousel bên dưới là gara tỉnh khác
+ * (bug thật session 3d498e22 — khách Bắc Ninh thấy card gara Sài Gòn dưới câu
+ * "gara gần mình"). Cũng KHÔNG dùng `buildPriorityGarageIntro` ("chưa ghi nhận
+ * gara ở {khu vực}") vì có hãng CÓ gara thật ngay khu vực đó (bug 58e55875).
+ * Câu trung tính + ghi chú riêng từng hãng (`buildBrandHeaderLine`) mới nói
+ * đúng cả 2 vế.
+ */
+function buildMixedBrandIntro(): string {
+  return (
+    'Dạ TROLYoto đã tìm được sản phẩm phù hợp 😊\n' +
+    '👇 Anh/chị bấm vào sản phẩm để xem giá chi tiết và khuyến mại nhé!'
+  )
+}
+
+/**
+ * Dòng tiêu đề trước mỗi carousel hãng trong luồng đa thương hiệu. Hãng nào
+ * phải lấy gara tỉnh khác thì NÓI THẲNG lý do ngay tại đây — trước đây chỉ có
+ * "🔹 {hãng}" trống trơn, nhãn phân biệt nằm trong log nội bộ nên khách không
+ * hề biết vì sao đang ở Bắc Ninh lại thấy gara Sài Gòn.
+ *
+ * Phân biệt tier 3 và tier 4 giống `buildPriorityGarageIntro` /
+ * `buildNationalGarageIntro`: chỉ gara ƯU TIÊN mới được hứa TRỢ GIÁ + MIỄN SHIP.
+ */
+function buildBrandHeaderLine(
+  brand: string,
+  areaLabel: string | null | undefined,
+  tier: { usedPriorityGarage: boolean; usedNationalFallback: boolean }
+): string {
+  const area = areaLabel ? `ở ${areaLabel} ` : ''
+  if (tier.usedPriorityGarage) {
+    return (
+      `🔹 ${brand}\n` +
+      `Hiện chưa có gara ${area}bán ${brand} ạ 😔 Đây là ĐẠI LÝ CHÍNH HÃNG tỉnh khác, đang có TRỢ GIÁ + MIỄN SHIP ạ 🎉`
+    )
+  }
+  if (tier.usedNationalFallback) {
+    return (
+      `🔹 ${brand}\n` +
+      `Hiện chưa có gara ${area}bán ${brand} ạ 😔 Đây là ĐẠI LÝ CHÍNH HÃNG ở tỉnh khác, mời anh/chị tham khảo ạ 😊`
+    )
+  }
+  return `🔹 ${brand}`
+}
+
+/**
  * Đuôi cho cskh_reason khi không có kết quả MÀ đang lọc giá — trước đây lý
  * do CSKH không nhắc gì tới max_price nên không ai nhận ra kết quả rỗng là do
  * bộ lọc giá (bug "2 quả" → 2 triệu, session e617aefa, 2026-09-21).
@@ -570,6 +619,13 @@ async function reply(
   hiddenFromAi = false
 ): Promise<void> {
   const tok = currentToken()
+  // Test local với PSID giả: Graph API từ chối (code 100) nên hàm này RETURN
+  // SỚM, không ghi conversation_log → không có cách nào đọc được câu bot định
+  // gửi. Bật `DEBUG_LOG_REPLY=true` để in ra console. Tắt mặc định, không ảnh
+  // hưởng production.
+  if (process.env.DEBUG_LOG_REPLY === 'true') {
+    console.log(`[V3 reply-text] ${JSON.stringify(text)}`)
+  }
   sendTypingOn(psid, tok).catch(e => console.error('[V3 typing]', e))
   const result = await sendMessage(
     psid,
@@ -3132,16 +3188,26 @@ async function showMultiBrandResults(
     // tiên" để chọn câu intro cho CẢ response khiến bot nói "chưa ghi nhận
     // gara ở Hà Đông" dù đang show đúng 1 card gara Hà Đông thật ngay bên
     // dưới — khách đọc thấy mâu thuẫn rõ ràng. Chỉ dùng câu "chưa ghi nhận gara
-    // khu vực này" khi TẤT CẢ hãng đều phải fallback — mix thì dùng câu bình
-    // thường, để nhãn riêng từng hãng (`displayLabel` trong loop dưới) tự nói
-    // rõ hãng nào rơi xuống tier 3/4.
+    // khu vực này" khi TẤT CẢ hãng đều phải fallback.
+    //
+    // Bug thật thứ 2 (session 3d498e22, 2026-10-02): khách ở Bắc Ninh hỏi
+    // HANKOOK + GOODYEAR — HANKOOK có gara Từ Sơn thật, GOODYEAR cả nước chỉ
+    // có 3 gara ở TP.HCM/Đồng Nai nên rơi tier 4. Vì mix nên intro dùng
+    // `buildSearchIntro` ("...gara GẦN MÌNH nhé!") rồi ngay dưới là card gara
+    // Sài Gòn — khách tưởng bot tìm sai khu vực. Nhãn phân biệt
+    // `(gara ưu tiên — khu vực khác)` CHỈ nằm trong log sendCards, khách KHÔNG
+    // thấy. Fix: (1) mix → intro bỏ chữ "gần mình"; (2) mỗi hãng phải lấy tỉnh
+    // khác thì dòng "🔹 {hãng}" tự nói rõ lý do (xem buildBrandHeaderLine).
     const allUsedFallback = results.every(
       r => r.usedPriorityGarage || r.usedNationalFallback
     )
     const anyUsedPriority = results.some(r => r.usedPriorityGarage)
     const anyUsedNational = results.some(r => r.usedNationalFallback)
+    const someUsedFallback = anyUsedPriority || anyUsedNational
     const msgFound = !allUsedFallback
-      ? buildSearchIntro(state)
+      ? someUsedFallback
+        ? buildMixedBrandIntro()
+        : buildSearchIntro(state)
       : anyUsedPriority
         ? buildPriorityGarageIntro(locationLabel)
         : anyUsedNational
@@ -3163,7 +3229,14 @@ async function showMultiBrandResults(
           : usedFallbackProvince
             ? (state.province_name ?? locationLabel)
             : locationLabel
-      await reply(psid, sessionId, `🔹 ${brand}`)
+      await reply(
+        psid,
+        sessionId,
+        buildBrandHeaderLine(brand, locationLabel, {
+          usedPriorityGarage,
+          usedNationalFallback
+        })
+      )
       await sendCards(
         psid,
         sessionId,

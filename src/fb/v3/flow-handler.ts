@@ -845,7 +845,7 @@ function buildSpGaraCard(card: SpGaraCard): GenericElement {
   // Địa điểm V2: kèm khoảng cách ("cách ~X km") — số xấp xỉ vì điểm khách là tâm quận/xã khách nói.
   const kmText =
     typeof card.distanceKm === 'number'
-      ? `cách ~${card.distanceKm < 1 ? '1' : Math.round(card.distanceKm)} km`
+      ? `~${card.distanceKm < 1 ? '1' : Math.round(card.distanceKm)} km`
       : null
   const subtitle = [
     `🏪 ${card.garageName}`,

@@ -104,6 +104,8 @@ Khi đủ 3 field → chọn chiến lược theo state:
 
 **Cascade khi tìm SP+gara (cả 2 bot — thêm 2026-08-27, đổi thứ tự 2026-09-18):**
 
+> 📄 Bản tra cứu nhanh đầy đủ 4 chiến lược + câu bot nói ứng với từng tầng: [`luong-tim-gara.md`](./luong-tim-gara.md)
+
 ⚠️ **ĐÚNG size+brand LUÔN ưu tiên trước** (user chốt 2026-09-18) — chiến lược chuẩn (FB `showSpGaraResults` / Web `runFetchTireOffers`) chạy đúng thứ tự:
 `brand+ward → brand+tỉnh → brand+gara ưu tiên → bỏ brand+ward → bỏ brand+tỉnh → bỏ brand+gara ưu tiên → toàn quốc (brand → bỏ brand)`.
 Trước 2026-09-18 "bỏ brand trong khu vực" chạy TRƯỚC "brand + gara ưu tiên" → khách hỏi đúng hãng mà gara ưu tiên CÓ bán vẫn bị đẩy sang hãng khác ở gần. Ví dụ kiểm chứng (175/75R16): SAILUN + "thái bình" → gara ưu tiên GA0079/GA0045 (đúng SAILUN); MICHELIN (không gara nào có) + "thái bình" hay "hưng yên" → cùng ra GA0074 (Hưng Yên, bỏ brand). Đa brand: mỗi hãng tự đi ward → tỉnh → ưu tiên → toàn quốc, KHÔNG có bước bỏ brand. Cascade phân khúc/"Xem hết" giữ nguyên (tự duyệt `TIER_CASCADE_ORDER` trong từng khu vực).
